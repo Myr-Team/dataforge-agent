@@ -41,6 +41,24 @@ class _Secrets:
 
 
 class _Transport:
+    def get_json(self, **values: object) -> ProviderHttpResponse:
+        if values.get("path") == "/user/balance":
+            return ProviderHttpResponse(
+                status_code=200,
+                headers={},
+                json_body={"is_available": True},
+            )
+        return ProviderHttpResponse(
+            status_code=200,
+            headers={},
+            json_body={
+                "data": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "deepseek-v4-pro"},
+                ]
+            },
+        )
+
     def post_json(self, **_: object) -> ProviderHttpResponse:
         return ProviderHttpResponse(
             status_code=200,
@@ -116,6 +134,18 @@ def _client(
         "get_provider_transport",
         lambda: transport or _Transport(),
     )
+    from backend.provider_connection_probe import DeepSeekConnectionProbe
+
+    monkeypatch.setattr(
+        "backend.model_provider_service.DeepSeekConnectionProbe",
+        lambda *, transport: DeepSeekConnectionProbe(
+            transport=transport,
+            resolver=lambda _host, port, **_kwargs: [
+                (2, 1, 6, "", ("8.8.8.8", port))
+            ],
+            tls_probe=lambda _host, _port, _timeout: None,
+        ),
+    )
     monkeypatch.setattr(
         provider_router,
         "_authorized_workspace_roles",
@@ -155,6 +185,15 @@ def test_owner_creates_tests_and_lists_masked_deepseek_provider(monkeypatch) -> 
 
     assert created.status_code == 201
     assert created.json()["connection_state"] == "connected"
+    assert created.json()["connection_stage"] == "completed"
+    assert list(created.json()["stage_durations_ms"]) == [
+        "secret_read",
+        "endpoint_resolution",
+        "tls_connect",
+        "provider_auth",
+        "minimal_inference",
+        "model_discovery",
+    ]
     assert created.json()["secret_status"] == "stored"
     assert listed.status_code == 200
     assert listed.json()["count"] == 1

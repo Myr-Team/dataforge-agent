@@ -27,7 +27,7 @@ class _Transport:
         return self.response
 
 
-def _invocation(*, stream: bool = False) -> ProviderInvocation:
+def _invocation(*, stream: bool = False, thinking: str | None = None) -> ProviderInvocation:
     return ProviderInvocation(
         request_ref="req_safe",
         correlation_ref="corr_safe",
@@ -40,6 +40,7 @@ def _invocation(*, stream: bool = False) -> ProviderInvocation:
             ProviderMessage(role="user", content="Analyze the evidence."),
         ],
         stream=stream,
+        thinking=thinking,
     )
 
 
@@ -90,6 +91,24 @@ def test_deepseek_adapter_normalizes_text_tools_and_usage() -> None:
     assert result.output_started is True
     assert transport.calls[0]["path"] == "/chat/completions"
     assert transport.calls[0]["api_key"] == "secret-marker"
+
+
+def test_deepseek_adapter_serializes_explicit_non_thinking_mode() -> None:
+    transport = _Transport(
+        ProviderHttpResponse(
+            status_code=200,
+            headers={},
+            json_body={"choices": [{"message": {"content": "OK"}}]},
+        )
+    )
+
+    DeepSeekProvider(transport=transport).invoke(
+        _invocation(thinking="disabled"),
+        api_key="secret-marker",
+        base_url="https://api.deepseek.com",
+    )
+
+    assert transport.calls[0]["payload"]["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.parametrize(

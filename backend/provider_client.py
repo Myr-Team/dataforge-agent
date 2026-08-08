@@ -35,6 +35,7 @@ class ProviderInvocation(BaseModel):
     stream: bool = False
     temperature: float | None = Field(default=None, ge=0, le=2)
     max_tokens: int | None = Field(default=None, ge=1, le=384_000)
+    thinking: Literal["enabled", "disabled"] | None = None
 
 
 class NormalizedToolCall(BaseModel):
@@ -94,6 +95,45 @@ class RequestsProviderTransport:
         payload: Mapping[str, Any],
         timeout_seconds: float,
     ) -> ProviderHttpResponse:
+        return self._request_json(
+            method="POST",
+            provider_type=provider_type,
+            base_url=base_url,
+            path=path,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+            payload=payload,
+        )
+
+    def get_json(
+        self,
+        *,
+        provider_type: str,
+        base_url: str,
+        path: str,
+        api_key: str,
+        timeout_seconds: float,
+    ) -> ProviderHttpResponse:
+        return self._request_json(
+            method="GET",
+            provider_type=provider_type,
+            base_url=base_url,
+            path=path,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _request_json(
+        self,
+        *,
+        method: Literal["GET", "POST"],
+        provider_type: str,
+        base_url: str,
+        path: str,
+        api_key: str,
+        timeout_seconds: float,
+        payload: Mapping[str, Any] | None = None,
+    ) -> ProviderHttpResponse:
         origin = validate_provider_endpoint(
             provider_type,
             base_url,
@@ -101,18 +141,22 @@ class RequestsProviderTransport:
         )
         normalized_path = _request_path(path)
         url = f"{origin}{normalized_path}"
+        request_options: dict[str, Any] = {
+            "headers": {
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+            "timeout": max(1.0, min(float(timeout_seconds), 120.0)),
+            "allow_redirects": False,
+        }
+        if payload is not None:
+            request_options["headers"]["Content-Type"] = "application/json"
+            request_options["json"] = dict(payload)
         try:
             response = self._session.request(
-                "POST",
+                method,
                 url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                    "Accept": "application/json",
-                },
-                json=dict(payload),
-                timeout=max(1.0, min(float(timeout_seconds), 120.0)),
-                allow_redirects=False,
+                **request_options,
             )
         except requests.Timeout:
             raise ProviderTransportError("provider_timeout") from None

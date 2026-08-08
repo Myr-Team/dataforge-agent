@@ -20,6 +20,16 @@ ConnectionState = Literal[
 ]
 GovernanceState = Literal["pending", "governed", "degraded", "unmanaged"]
 ProviderSupportState = Literal["supported", "unsupported", "unpriced"]
+ConnectionStage = Literal[
+    "secret_read",
+    "endpoint_resolution",
+    "tls_connect",
+    "provider_auth",
+    "minimal_inference",
+    "model_discovery",
+    "completed",
+]
+PROVIDER_CONNECTION_STAGES = frozenset(ConnectionStage.__args__)
 DEEPSEEK_API_ENDPOINT = "https://api.deepseek.com"
 
 
@@ -61,6 +71,8 @@ class ModelProviderRecord(BaseModel):
     last_tested_at: datetime | None = None
     last_success_at: datetime | None = None
     safe_error_category: str | None = Field(default=None, max_length=64)
+    connection_stage: ConnectionStage | None = None
+    stage_durations_ms: dict[str, int] = Field(default_factory=dict)
     revision: int = Field(ge=1)
     created_by_ref: str = Field(min_length=1, max_length=160, exclude=True, repr=False)
     updated_by_ref: str = Field(min_length=1, max_length=160, exclude=True, repr=False)
@@ -71,6 +83,15 @@ class ModelProviderRecord(BaseModel):
     @classmethod
     def _base_url(cls, value: str) -> str:
         return _https_endpoint(value)
+
+    @field_validator("stage_durations_ms")
+    @classmethod
+    def _stage_durations(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(key not in PROVIDER_CONNECTION_STAGES for key in value):
+            raise ValueError("unknown provider connection stage")
+        if any(not isinstance(duration, int) or duration < 0 for duration in value.values()):
+            raise ValueError("invalid provider stage duration")
+        return value
 
     @model_validator(mode="after")
     def _bedrock_control_endpoint(self) -> "ModelProviderRecord":
@@ -122,6 +143,19 @@ class ProviderPatch(BaseModel):
     last_tested_at: datetime | None = None
     last_success_at: datetime | None = None
     safe_error_category: str | None = Field(default=None, max_length=64)
+    connection_stage: ConnectionStage | None = None
+    stage_durations_ms: dict[str, int] | None = None
+
+    @field_validator("stage_durations_ms")
+    @classmethod
+    def _stage_durations(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return None
+        if any(key not in PROVIDER_CONNECTION_STAGES for key in value):
+            raise ValueError("unknown provider connection stage")
+        if any(not isinstance(duration, int) or duration < 0 for duration in value.values()):
+            raise ValueError("invalid provider stage duration")
+        return value
 
     @field_validator("base_url")
     @classmethod
@@ -180,6 +214,7 @@ def _https_endpoint(value: str) -> str:
 
 __all__ = [
     "ConnectionState",
+    "ConnectionStage",
     "DEEPSEEK_API_ENDPOINT",
     "GovernanceState",
     "ModelProviderRecord",
@@ -187,5 +222,6 @@ __all__ = [
     "ProviderPatch",
     "ProviderSupportState",
     "ProviderType",
+    "PROVIDER_CONNECTION_STAGES",
     "deepseek_api_endpoint",
 ]

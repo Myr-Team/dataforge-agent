@@ -468,6 +468,9 @@ BEGIN
         last_tested_at DATETIME2(7) NULL,
         last_success_at DATETIME2(7) NULL,
         safe_error_category NVARCHAR(64) NULL,
+        connection_stage NVARCHAR(64) NULL,
+        stage_durations_json NVARCHAR(MAX) NOT NULL
+            CONSTRAINT DF_finops_model_provider_stage_durations DEFAULT N'{}',
         revision INT NOT NULL,
         created_by_ref NVARCHAR(160) NOT NULL,
         updated_by_ref NVARCHAR(160) NOT NULL,
@@ -492,10 +495,27 @@ BEGIN
         CONSTRAINT CK_finops_model_provider_models CHECK (
             ISJSON(available_models_json) = 1
         ),
+        CONSTRAINT CK_finops_model_provider_stage_durations CHECK (
+            ISJSON(stage_durations_json) = 1
+        ),
         CONSTRAINT CK_finops_model_provider_revision CHECK (revision >= 1)
     );
     CREATE UNIQUE INDEX UQ_finops_model_provider_name
         ON df_finops.model_provider (tenant_ref, display_name);
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.model_provider', N'connection_stage') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD connection_stage NVARCHAR(64) NULL');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.model_provider', N'stage_durations_json') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD stage_durations_json NVARCHAR(MAX) NULL');
+    EXEC(N'UPDATE df_finops.model_provider SET stage_durations_json = N''{}'' WHERE stage_durations_json IS NULL');
+    EXEC(N'ALTER TABLE df_finops.model_provider ALTER COLUMN stage_durations_json NVARCHAR(MAX) NOT NULL');
 END;
 GO
 

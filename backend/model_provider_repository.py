@@ -221,7 +221,8 @@ class SqlModelProviderRepository:
                 SELECT provider_id, tenant_ref, provider_type, display_name,
                     base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
-                    safe_error_category, revision, created_by_ref,
+                    safe_error_category, connection_stage, stage_durations_json,
+                    revision, created_by_ref,
                     updated_by_ref, created_at, updated_at
                 FROM df_finops.model_provider
                 WHERE tenant_ref = ?
@@ -237,7 +238,8 @@ class SqlModelProviderRepository:
                 SELECT provider_id, tenant_ref, provider_type, display_name,
                     base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
-                    safe_error_category, revision, created_by_ref,
+                    safe_error_category, connection_stage, stage_durations_json,
+                    revision, created_by_ref,
                     updated_by_ref, created_at, updated_at
                 FROM df_finops.model_provider
                 WHERE tenant_ref = ? AND provider_id = ?""",
@@ -256,9 +258,9 @@ class SqlModelProviderRepository:
                     tenant_ref, provider_id, provider_type, display_name,
                     base_url, region, secret_ref, connection_state, governance_state,
                     available_models_json, last_tested_at, last_success_at,
-                    safe_error_category, revision, created_by_ref,
-                    updated_by_ref, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    safe_error_category, connection_stage, stage_durations_json,
+                    revision, created_by_ref, updated_by_ref, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 *_record_parameters(value),
             )
         return value.model_copy(deep=True)
@@ -291,7 +293,8 @@ class SqlModelProviderRepository:
                     display_name = ?, base_url = ?, region = ?, connection_state = ?,
                     governance_state = ?, available_models_json = ?,
                     last_tested_at = ?, last_success_at = ?,
-                    safe_error_category = ?, revision = ?,
+                    safe_error_category = ?, connection_stage = ?,
+                    stage_durations_json = ?, revision = ?,
                     updated_by_ref = ?, updated_at = ?
                 WHERE tenant_ref = ? AND provider_id = ? AND revision = ?""",
                 updated.display_name,
@@ -303,6 +306,8 @@ class SqlModelProviderRepository:
                 updated.last_tested_at,
                 updated.last_success_at,
                 updated.safe_error_category,
+                updated.connection_stage,
+                json.dumps(updated.stage_durations_ms, separators=(",", ":")),
                 updated.revision,
                 updated.updated_by_ref,
                 updated.updated_at,
@@ -394,6 +399,8 @@ def _record_parameters(value: ModelProviderRecord) -> tuple[Any, ...]:
         value.last_tested_at,
         value.last_success_at,
         value.safe_error_category,
+        value.connection_stage,
+        json.dumps(value.stage_durations_ms, separators=(",", ":")),
         value.revision,
         value.created_by_ref,
         value.updated_by_ref,
@@ -419,11 +426,13 @@ def _record_from_row(row: Any) -> ModelProviderRecord:
         last_tested_at=values[10],
         last_success_at=values[11],
         safe_error_category=str(values[12]) if values[12] is not None else None,
-        revision=int(values[13]),
-        created_by_ref=str(values[14]),
-        updated_by_ref=str(values[15]),
-        created_at=values[16],
-        updated_at=values[17],
+        connection_stage=str(values[13]) if values[13] is not None else None,
+        stage_durations_ms=json.loads(str(values[14] or "{}")),
+        revision=int(values[15]),
+        created_by_ref=str(values[16]),
+        updated_by_ref=str(values[17]),
+        created_at=values[18],
+        updated_at=values[19],
     )
 
 

@@ -46,6 +46,8 @@ def test_finops_schema_allows_bedrock_and_adds_region() -> None:
     assert "DROP CONSTRAINT CK_finops_model_provider_type" in sql
     assert "definition" in sql
     assert "IF NOT EXISTS" in sql
+    assert "connection_stage NVARCHAR(64) NULL" in sql
+    assert "stage_durations_json NVARCHAR(MAX)" in sql
 
 
 @pytest.mark.parametrize(
