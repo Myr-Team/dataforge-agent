@@ -145,6 +145,16 @@ test("decision surfaces reserve readable type and a safe area for the AI launche
 });
 
 
+test("operations pages use one display-scaled shell and semantic 8-to-4 grids", async () => {
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  assert.match(styles, /--finops-shell-width:\s*1500px/);
+  assert.match(styles, /--finops-grid-gap:\s*14px/);
+  assert.match(styles, /\.finops-content\s*\{[^}]*width:\s*min\(var\(--finops-shell-width\), 100%\)/s);
+  assert.match(styles, /\.finops-grid-wide\s*\{[^}]*minmax\(0, 8fr\)[^}]*minmax\(320px, 4fr\)/s);
+  assert.match(styles, /\.finops-decision-risk-evidence-card p\s*\{[^}]*font-size:\s*11px/s);
+});
+
+
 test("trend bars scale inside a dedicated plot track without clipping near-maximum values", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),

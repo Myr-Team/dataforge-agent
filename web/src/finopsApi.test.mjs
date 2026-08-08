@@ -447,6 +447,13 @@ test("metric-aware assistant sends only the typed request body", async () => {
 });
 
 
+test("assistant bootstrap uses one workspace-scoped request", async () => {
+  const source = await readFile(new URL("./api.js", import.meta.url), "utf8");
+  assert.match(source, /loadFinOpsAssistantBootstrap/);
+  assert.match(source, /assistant\/bootstrap/);
+});
+
+
 test("planning APIs use bounded native endpoints", async () => {
   const source = await readFile(new URL("./api.js", import.meta.url), "utf8");
 

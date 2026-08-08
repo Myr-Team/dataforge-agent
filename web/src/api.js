@@ -289,6 +289,14 @@ export function queryFinOpsAssistant(payload, options = {}) {
   });
 }
 
+export function loadFinOpsAssistantBootstrap(workspaceId, options = {}) {
+  return loadFinOpsResource(
+    "assistant/bootstrap",
+    { workspaceId },
+    options,
+  );
+}
+
 export function loadFinOpsAssistantConversations(workspaceId, options = {}) {
   return loadFinOpsResource(
     "assistant/conversations",

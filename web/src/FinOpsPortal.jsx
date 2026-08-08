@@ -64,6 +64,7 @@ import {
   useFinOpsTabResource,
 } from "./finopsPortalLifecycle.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
+import { prefetchFinOpsAssistantHistory } from "./finopsAssistantHistory.js";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
 import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
@@ -1364,6 +1365,10 @@ export function FinOpsPortal({
       model: filters.model,
     },
   }), [filters, query.from, query.to, workspaceId]);
+  useEffect(() => {
+    if (!workspaceId) return;
+    prefetchFinOpsAssistantHistory(workspaceId).catch(() => undefined);
+  }, [workspaceId]);
   const tabKeys = useMemo(() => Object.fromEntries(
     ["overview", "cost", "roi", "risk"].map((item) => [
       item,

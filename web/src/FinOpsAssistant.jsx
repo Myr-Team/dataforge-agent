@@ -92,6 +92,7 @@ export function FinOpsAssistant({
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState("quick");
   const [historyLoading, setHistoryLoading] = useState(false);
   const [messages, setMessages] = useState([]);
   const [conversationRef, setConversationRef] = useState("");
@@ -116,10 +117,10 @@ export function FinOpsAssistant({
     const cached = peekFinOpsAssistantHistory(workspaceId);
     setConversationRef(cached?.conversationRef || "");
     setMessages(cached?.messages || []);
-    setHistoryLoading(true);
+    setHistoryLoading(!cached);
     let active = true;
     const startVersion = interactionVersionRef.current;
-    prefetchFinOpsAssistantHistory(workspaceId, { force: Boolean(cached) })
+    prefetchFinOpsAssistantHistory(workspaceId)
       .then((history) => {
         if (!active || interactionVersionRef.current !== startVersion) return;
         setConversationRef(history?.conversationRef || "");
@@ -157,6 +158,7 @@ export function FinOpsAssistant({
     try {
       const response = await queryFinOpsAssistant({
         question,
+        mode,
         metric_context: context,
         history,
         ...(conversationRef ? { conversation_ref: conversationRef } : {}),
@@ -286,6 +288,27 @@ export function FinOpsAssistant({
               <button type="button" onClick={onClearContext}>清除指标</button>
             ) : null}
           </div>
+          <div className="finops-ai-mode" role="group" aria-label="分析深度">
+            <button
+              type="button"
+              className={mode === "quick" ? "active" : ""}
+              aria-pressed={mode === "quick"}
+              onClick={() => setMode("quick")}
+              disabled={busy}
+            >
+              快速回答
+            </button>
+            <button
+              type="button"
+              className={mode === "deep" ? "active" : ""}
+              aria-pressed={mode === "deep"}
+              onClick={() => setMode("deep")}
+              disabled={busy}
+            >
+              深入分析
+            </button>
+            <small>{mode === "quick" ? "适合指标解释" : "使用 FinOps 分析 Agent"}</small>
+          </div>
           <div className="finops-ai-messages" aria-live="polite">
             {historyLoading ? <div className="finops-ai-history-sync"><Loader2 className="spin" size={12} />正在同步历史</div> : null}
             {!messages.length ? (
@@ -338,7 +361,7 @@ export function FinOpsAssistant({
                 ) : null}
               </article>
             ))}
-            {busy ? <div className="finops-ai-thinking"><Loader2 className="spin" size={14} />正在询问当前指标</div> : null}
+            {busy ? <div className="finops-ai-thinking"><Loader2 className="spin" size={14} />{mode === "quick" ? "正在整理指标依据" : "正在执行深入分析"}</div> : null}
           </div>
           <div className="finops-ai-suggestions">
             {suggestions.slice(0, 4).map((question) => (
