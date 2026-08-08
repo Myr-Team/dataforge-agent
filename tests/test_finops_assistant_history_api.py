@@ -38,6 +38,14 @@ def test_operations_ai_conversation_persists_and_clears(monkeypatch) -> None:
     assert created.status_code == 201
     conversation_ref = created.json()["conversation"]["conversation_ref"]
 
+    bootstrapped = client.get(
+        "/api/finops/assistant/bootstrap?workspace_id=ws-a",
+        headers=headers,
+    )
+    assert bootstrapped.status_code == 200
+    assert bootstrapped.json()["conversation"]["conversation_ref"] == conversation_ref
+    assert bootstrapped.json()["messages"] == []
+
     listed = client.get(
         "/api/finops/assistant/conversations?workspace_id=ws-a",
         headers=headers,
@@ -49,3 +57,22 @@ def test_operations_ai_conversation_persists_and_clears(monkeypatch) -> None:
         headers=headers,
     )
     assert cleared.status_code == 204
+
+
+def test_operations_ai_bootstrap_rejects_unauthorized_workspace(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
+    monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "finops-test-secret")
+    monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: {"ws-a": "member"},
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/finops/assistant/bootstrap?workspace_id=ws-b",
+        headers=trusted_headers(actor_id="member-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 403

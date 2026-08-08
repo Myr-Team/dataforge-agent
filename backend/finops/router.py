@@ -59,6 +59,7 @@ from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
 from .agent_inputs import build_finops_agent_input, build_roi_agent_input
 from .analysis_agents import FinOpsAnalysisAgent, analysis_agent_id
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
+from .assistant_bootstrap import AssistantBootstrapCache
 from .assistant_store import (
     AssistantConversationExpired,
     AssistantMessage,
@@ -194,6 +195,7 @@ _MEMBER_BUDGET_REPOSITORY = InMemoryMemberBudgetRepository()
 _SQL_MEMBER_BUDGET_REPOSITORY: SqlMemberBudgetRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
+_ASSISTANT_BOOTSTRAP_CACHE = AssistantBootstrapCache()
 _RISK_SCAN_REPOSITORY = InMemoryRiskScanRepository()
 _SQL_RISK_SCAN_REPOSITORY: SqlRiskScanRepository | None = None
 
@@ -423,6 +425,10 @@ def get_finops_assistant_store() -> Any:
             )
         return _SQL_ASSISTANT_STORE
     return _ASSISTANT_STORE
+
+
+def get_finops_assistant_bootstrap_cache() -> AssistantBootstrapCache:
+    return _ASSISTANT_BOOTSTRAP_CACHE
 
 
 def get_finops_anomaly_service() -> FinOpsAnomalyService:
@@ -1055,6 +1061,34 @@ def _assistant_scope(request: Request, workspace_id: str) -> AssistantScope:
     )
 
 
+@router.get("/assistant/bootstrap")
+async def bootstrap_assistant_history(
+    request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> dict[str, Any]:
+    scope = _assistant_scope(request, workspace_id)
+    cached = get_finops_assistant_bootstrap_cache().load(
+        scope,
+        lambda: get_finops_assistant_store().bootstrap(scope, message_limit=40),
+    )
+    value = cached.value
+    return {
+        "conversation": (
+            value.conversation.model_dump(mode="json")
+            if value.conversation is not None
+            else None
+        ),
+        "messages": [item.model_dump(mode="json") for item in value.messages],
+        "loaded_at": value.loaded_at.isoformat(),
+        "expires_at": (
+            value.conversation.expires_at.isoformat()
+            if value.conversation is not None
+            else None
+        ),
+        "cache_status": cached.cache_status,
+    }
+
+
 @router.get("/assistant/conversations")
 async def list_assistant_conversations(
     request: Request,
@@ -1075,6 +1109,7 @@ async def create_assistant_conversation(
 ) -> dict[str, Any]:
     scope = _assistant_scope(request, body.workspace_id)
     value = get_finops_assistant_store().create(scope, title=body.title)
+    get_finops_assistant_bootstrap_cache().invalidate(scope)
     return {"conversation": value.model_dump(mode="json")}
 
 
@@ -1106,6 +1141,7 @@ async def clear_assistant_conversation(
     scope = _assistant_scope(request, workspace_id)
     try:
         get_finops_assistant_store().clear(scope, conversation_ref)
+        get_finops_assistant_bootstrap_cache().invalidate(scope)
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
@@ -1182,6 +1218,7 @@ async def assistant_query(
                     ),
                 ),
             )
+            get_finops_assistant_bootstrap_cache().invalidate(scope)
         except AssistantConversationExpired as exc:
             raise HTTPException(
                 status_code=404,
@@ -1238,6 +1275,7 @@ async def assistant_query(
                     },
                 ),
             )
+            get_finops_assistant_bootstrap_cache().invalidate(scope)
         except AssistantConversationExpired:
             pass
     return {

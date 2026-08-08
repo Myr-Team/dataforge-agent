@@ -6,6 +6,7 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .assistant_store import (
+    AssistantBootstrap,
     AssistantConversation,
     AssistantMessage,
     AssistantScope,
@@ -149,6 +150,71 @@ class SqlAssistantConversationStore:
                 created_at=row[3],
             )
             for row in rows
+        )
+
+    def bootstrap(
+        self,
+        scope: AssistantScope,
+        *,
+        message_limit: int = 40,
+    ) -> AssistantBootstrap:
+        limit = max(1, min(int(message_limit), 40))
+        rows = self._query(
+            """/* finops:bootstrap-assistant-history */
+            WITH latest AS (
+                SELECT TOP (1)
+                    conversation_ref, title, created_at, updated_at, expires_at
+                FROM df_finops.assistant_conversation
+                WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+                  AND expires_at > SYSUTCDATETIME()
+                ORDER BY updated_at DESC, conversation_ref DESC
+            )
+            SELECT c.conversation_ref, c.title, c.created_at, c.updated_at,
+                c.expires_at, m.role, m.content, m.metric_context_payload,
+                m.created_at, m.message_id
+            FROM latest AS c
+            OUTER APPLY (
+                SELECT TOP (?) role, content, metric_context_payload,
+                    created_at, message_id
+                FROM df_finops.assistant_message
+                WHERE tenant_ref = ? AND actor_ref = ? AND workspace_id = ?
+                  AND conversation_ref = c.conversation_ref
+                ORDER BY message_id DESC
+            ) AS m
+            ORDER BY m.message_id""",
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+            limit,
+            scope.tenant_ref,
+            scope.actor_ref,
+            scope.workspace_id,
+        )
+        loaded_at = self._now()
+        if not rows:
+            return AssistantBootstrap(loaded_at=loaded_at)
+        first = rows[0]
+        conversation = AssistantConversation(
+            conversation_ref=first[0],
+            title=first[1],
+            created_at=first[2],
+            updated_at=first[3],
+            expires_at=first[4],
+        )
+        messages = tuple(
+            AssistantMessage(
+                role=row[5],
+                content=row[6],
+                metric_context_payload=json.loads(row[7]) if row[7] else None,
+                created_at=row[8],
+            )
+            for row in rows
+            if row[5] is not None
+        )
+        return AssistantBootstrap(
+            conversation=conversation,
+            messages=messages,
+            loaded_at=loaded_at,
         )
 
     def clear(

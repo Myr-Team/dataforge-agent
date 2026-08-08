@@ -39,6 +39,14 @@ class AssistantMessage(BaseModel):
     created_at: datetime | None = None
 
 
+class AssistantBootstrap(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    conversation: AssistantConversation | None = None
+    messages: tuple[AssistantMessage, ...] = ()
+    loaded_at: datetime
+
+
 class InMemoryAssistantConversationStore:
     def __init__(self, *, now: Callable[[], datetime] | None = None) -> None:
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -106,6 +114,24 @@ class InMemoryAssistantConversationStore:
                 return ()
             return tuple(self._messages.get(key, ()))
 
+    def bootstrap(
+        self,
+        scope: AssistantScope,
+        *,
+        message_limit: int = 40,
+    ) -> AssistantBootstrap:
+        conversations = self.list_conversations(scope)
+        conversation = conversations[0] if conversations else None
+        messages: tuple[AssistantMessage, ...] = ()
+        if conversation is not None:
+            limit = max(1, min(int(message_limit), 40))
+            messages = self.get_messages(scope, conversation.conversation_ref)[-limit:]
+        return AssistantBootstrap(
+            conversation=conversation,
+            messages=messages,
+            loaded_at=self._now(),
+        )
+
     def append(
         self,
         scope: AssistantScope,
@@ -155,6 +181,7 @@ class InMemoryAssistantConversationStore:
 
 __all__ = [
     "AssistantConversation",
+    "AssistantBootstrap",
     "AssistantConversationExpired",
     "AssistantMessage",
     "AssistantScope",

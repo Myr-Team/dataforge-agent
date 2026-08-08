@@ -109,3 +109,22 @@ def test_append_to_expired_conversation_raises_instead_of_reviving() -> None:
         )
     # The expired conversation is not silently revived.
     assert store.list_conversations(_scope()) == ()
+
+
+def test_assistant_bootstrap_returns_latest_conversation_and_bounded_messages() -> None:
+    store = InMemoryAssistantConversationStore()
+    store.create(_scope(), title="旧会话")
+    latest = store.create(_scope(), title="最新会话")
+    for index in range(45):
+        store.append(
+            _scope(),
+            latest.conversation_ref,
+            AssistantMessage(role="user", content=f"消息 {index}"),
+        )
+
+    result = store.bootstrap(_scope(), message_limit=40)
+
+    assert result.conversation is not None
+    assert result.conversation.conversation_ref == latest.conversation_ref
+    assert len(result.messages) == 40
+    assert result.messages[0].content == "消息 5"

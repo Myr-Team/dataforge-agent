@@ -39,6 +39,27 @@ def set_json(key: str, value: dict[str, Any], *, ttl_seconds: int | None = None)
         return meta | {"status": "unavailable", "elapsed_ms": int((time.monotonic() - started) * 1000), "error": _err(exc)}
 
 
+def delete(key: str) -> dict[str, Any]:
+    client, meta = _client()
+    if client is None:
+        return meta | {"deleted": 0}
+    started = time.monotonic()
+    try:
+        deleted = int(client.delete(key) or 0)
+        return meta | {
+            "status": "deleted",
+            "deleted": deleted,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+        }
+    except Exception as exc:
+        return meta | {
+            "status": "unavailable",
+            "deleted": 0,
+            "elapsed_ms": int((time.monotonic() - started) * 1000),
+            "error": _err(exc),
+        }
+
+
 def get_int(key: str) -> tuple[int | None, dict[str, Any]]:
     client, meta = _client()
     if client is None:
