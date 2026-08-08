@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from backend.finops.agent_inputs import (
+    build_finops_assistant_input,
     build_finops_agent_input,
     build_roi_agent_input,
 )
@@ -131,6 +132,39 @@ def test_finops_agent_input_projects_only_requested_authorized_evidence() -> Non
     )
     assert empty["status"] == "insufficient_data"
     assert empty["evidence_refs"] == []
+
+
+def test_finops_assistant_input_uses_single_compact_bootstrap() -> None:
+    query, service = _query_service()
+
+    class BootstrapOnlyService:
+        def __init__(self) -> None:
+            self.bootstrap_calls = 0
+
+        def bootstrap(self, selected_query: FinOpsQuery) -> dict[str, object]:
+            self.bootstrap_calls += 1
+            return service.bootstrap(selected_query)
+
+        def trends(self, *_args: object) -> object:
+            raise AssertionError("assistant input must not load trends separately")
+
+        def breakdowns(self, *_args: object) -> object:
+            raise AssertionError("assistant input must not load breakdowns separately")
+
+    compact_service = BootstrapOnlyService()
+    event = service.events(query)[0]
+    payload = build_finops_assistant_input(
+        query,
+        compact_service,
+        metric_context={"metric_id": "estimated_cost", "label": "估算成本"},
+        evidence_items=[event],
+    )
+
+    assert compact_service.bootstrap_calls == 1
+    assert payload["status"] == "ready"
+    assert payload["evidence_refs"] == ["req_aaaaaaaaaaaa"]
+    assert payload["overview"]["metrics"]["requests"] == 1
+    assert len(str(payload).encode("utf-8")) < 24_000
 
 
 def test_roi_agent_input_accepts_only_verified_outcome_events() -> None:

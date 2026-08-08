@@ -93,6 +93,7 @@ class AssistantRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     question: str = Field(min_length=1, max_length=600)
+    mode: Literal["quick", "deep"] = "quick"
     metric_context: AssistantMetricContext
     history: list[AssistantTurn] = Field(default_factory=list, max_length=6)
     conversation_ref: str | None = Field(
@@ -248,7 +249,7 @@ class FinOpsAssistantService:
                 "df-finops-analyst",
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 response_schema=AssistantAnswerOutput.model_json_schema(),
-                max_output_tokens=1200,
+                max_output_tokens=650 if request.mode == "quick" else 1200,
             )
             structured = raw.get("structured")
             if not isinstance(structured, Mapping):

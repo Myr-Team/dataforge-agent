@@ -52,6 +52,33 @@ def test_assistant_request_rejects_unknown_or_unsafe_context_fields() -> None:
         _request(filters={"workspace_id": "ws-a", "resource_id": "/subscriptions/secret"})
 
 
+def test_assistant_request_defaults_to_quick_and_bounds_model_output() -> None:
+    calls: list[int] = []
+
+    def runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        calls.append(int(kwargs["max_output_tokens"]))
+        return {
+            "structured": {
+                "conclusion": "当前指标可复核。[req_safe]",
+                "basis": "依据来自授权证据。[req_safe]",
+                "impact": "影响范围有限。",
+                "recommendation": "继续观察。",
+                "caveat": "仅限当前窗口。",
+                "evidence_refs": ["req_safe"],
+            }
+        }
+
+    service = FinOpsAssistantService(model_runner=runner)
+    quick = _request()
+    deep = quick.model_copy(update={"mode": "deep"})
+
+    assert quick.mode == "quick"
+    service.answer(request=quick, evidence_payload={"evidence_refs": ["req_safe"]})
+    service.answer(request=deep, evidence_payload={"evidence_refs": ["req_safe"]})
+
+    assert calls == [650, 1200]
+
+
 def test_assistant_request_accepts_only_bounded_policy_request_evidence() -> None:
     request = _request(
         policy_type="p95_latency",

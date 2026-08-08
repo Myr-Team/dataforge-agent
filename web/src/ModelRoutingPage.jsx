@@ -323,6 +323,50 @@ export function ModelRoutingPage({
               </label>
             </section>
 
+            <section className="routing-section routing-assistant-models">
+              <header className="routing-section-head">
+                <div>
+                  <h2>运营 AI 模型</h2>
+                  <p>快速回答优先低等待；深入分析使用 FinOps Agent。两种模式分别统计模型、Token 与估算成本。</p>
+                </div>
+              </header>
+              <div className="routing-assignment-table">
+                <div className="routing-assignment-row routing-assignment-head"><span>模式</span><span>主要模型</span><span>备用模型</span></div>
+                {[
+                  {
+                    id: "quick",
+                    label: "快速回答",
+                    description: "解释单个指标和当前证据",
+                    value: assignments.direct_reply || {},
+                    routes: chatRoutes,
+                    update: updateAssignment,
+                    target: "direct_reply",
+                  },
+                  {
+                    id: "deep",
+                    label: "深入分析",
+                    description: "综合证据并形成结构化建议",
+                    value: agentAssignments["df-finops-analyst"] || {},
+                    routes: analysisRoutes,
+                    update: updateAgentAssignment,
+                    target: "df-finops-analyst",
+                  },
+                ].map((item) => (
+                  <div className="routing-assignment-row" key={item.id}>
+                    <div><b>{item.label}</b><small>{item.description}</small></div>
+                    <select aria-label={`${item.label}主要模型`} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
+                      <option value="">继承工作区默认</option>
+                      {item.routes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                    </select>
+                    <select aria-label={`${item.label}备用模型`} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
+                      <option value="">不设置备用</option>
+                      {item.routes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </section>
+
             <section className="routing-section">
               <header className="routing-section-head">
                 <div>

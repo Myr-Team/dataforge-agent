@@ -56,7 +56,11 @@ from .evidence_repository import (
     SqlEvidenceAliasRepository,
 )
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
-from .agent_inputs import build_finops_agent_input, build_roi_agent_input
+from .agent_inputs import (
+    build_finops_agent_input,
+    build_finops_assistant_input,
+    build_roi_agent_input,
+)
 from .analysis_agents import FinOpsAnalysisAgent, analysis_agent_id
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
 from .assistant_bootstrap import AssistantBootstrapCache
@@ -495,7 +499,8 @@ def get_finops_assistant_service() -> FinOpsAssistantService:
 def _finops_model_route_scope(
     *,
     workspace_id: str,
-    agent_id: str,
+    agent_id: str | None,
+    execution_kind: str = "full_analysis",
 ) -> Iterator[SelectedTextRoute]:
     configuration = load_workspace_model_configuration(workspace_id)
     policy = (
@@ -530,7 +535,7 @@ def _finops_model_route_scope(
     )
     with workspace_model_policy_scope(policy=policy, price_card=price_card):
         selected = select_text_route_record(
-            "full_analysis",
+            execution_kind,
             agent_id=agent_id,
         )
         with model_route_scope(route=selected, price_card=price_card):
@@ -1235,20 +1240,23 @@ async def assistant_query(
         )
     )
     requested_refs = set(context.evidence_refs)
-    effective_refs = [
+    selected_refs = {
         item.request_ref
         for item in selected.items
         if not requested_refs or item.request_ref in requested_refs
-    ]
-    evidence_payload = build_finops_agent_input(
+    }
+    selected_items = [event for event in events if event.request_ref in selected_refs]
+    evidence_payload = build_finops_assistant_input(
         query,
         query_service,
+        metric_context=context.model_dump(mode="json", by_alias=True),
         evidence_name_resolver=_assistant_evidence_name,
-        evidence_refs=effective_refs,
+        evidence_items=selected_items,
     )
     with _finops_model_route_scope(
         workspace_id=workspace_id,
-        agent_id=analysis_agent_id("finops"),
+        agent_id=(analysis_agent_id("finops") if body.mode == "deep" else None),
+        execution_kind=("full_analysis" if body.mode == "deep" else "direct_reply"),
     ):
         response = get_finops_assistant_service().answer(
             request=body,

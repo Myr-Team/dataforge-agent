@@ -73,7 +73,12 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     assert len(daily_costs) == 30
     assert len({round(value, 2) for value in daily_costs.values()}) >= 12
     assert first.model_routing_policy == {
-        "assignments": {},
+        "assignments": {
+            "direct_reply": {
+                "primary_route_id": "analysis",
+                "fallback_route_id": None,
+            },
+        },
         "agent_assignments": {
             "df-finops-analyst": {
                 "primary_route_id": "terra",

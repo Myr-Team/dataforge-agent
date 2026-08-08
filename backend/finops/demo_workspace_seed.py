@@ -56,7 +56,12 @@ def demo_operations_model_policy() -> dict[str, Any]:
     it remains an Owner action through the existing audited model-routing API.
     """
     return {
-        "assignments": {},
+        "assignments": {
+            "direct_reply": {
+                "primary_route_id": "analysis",
+                "fallback_route_id": None,
+            },
+        },
         "agent_assignments": {
             "df-finops-analyst": {
                 "primary_route_id": "terra",

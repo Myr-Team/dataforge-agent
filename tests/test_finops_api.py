@@ -676,6 +676,7 @@ def test_finops_assistant_uses_workspace_terra_agent_policy(
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
         json={
             "question": "请分析当前调用情况。",
+            "mode": "deep",
             "metric_context": {
                 "metric_id": "requests",
                 "label": "调用次数",
@@ -801,6 +802,7 @@ def test_finops_assistant_uses_configured_analysis_fallback_when_terra_is_unavai
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
         json={
             "question": "请分析当前调用情况。",
+            "mode": "deep",
             "metric_context": {
                 "metric_id": "requests",
                 "label": "调用次数",
