@@ -1315,6 +1315,25 @@ def test_finops_request_detail_returns_application_request_and_visible_response(
         assert forbidden not in response.text
 
 
+def test_finops_workspace_display_name_is_reused_within_refresh_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = getattr(finops_router, "_WORKSPACE_NAME_CACHE", None)
+    if isinstance(cache, dict):
+        cache.clear()
+    calls: list[str] = []
+
+    def workspaces() -> list[dict[str, str]]:
+        calls.append("load")
+        return [{"workspace_id": "ws-a", "name": "Commerce"}]
+
+    monkeypatch.setattr(finops_router, "list_workspaces", workspaces)
+
+    assert finops_router._workspace_name("ws-a") == "Commerce"
+    assert finops_router._workspace_name("ws-a") == "Commerce"
+    assert calls == ["load"]
+
+
 def test_finops_request_detail_builds_server_owned_azure_monitor_link(
     client: TestClient,
     repository: InMemoryFinOpsRepository,

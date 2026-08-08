@@ -4,6 +4,7 @@ import os
 import hashlib
 import json
 import re
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -578,14 +579,28 @@ def get_finops_saved_view_service() -> FinOpsSavedViewService:
     return FinOpsSavedViewService(_SAVED_VIEW_REPOSITORY)
 
 
+_WORKSPACE_NAME_CACHE_SECONDS = 300.0
+_WORKSPACE_NAME_CACHE: dict[str, tuple[float, str]] = {}
+
+
 def _workspace_name(workspace_id: str) -> str:
+    now = time.monotonic()
+    cached = _WORKSPACE_NAME_CACHE.get(workspace_id)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    name = ""
     for item in list_workspaces():
         if (
             isinstance(item, Mapping)
             and str(item.get("workspace_id") or "").strip() == workspace_id
         ):
-            return str(item.get("name") or "").strip()
-    return ""
+            name = str(item.get("name") or "").strip()
+            break
+    _WORKSPACE_NAME_CACHE[workspace_id] = (
+        now + _WORKSPACE_NAME_CACHE_SECONDS,
+        name,
+    )
+    return name
 
 
 def _assistant_evidence_name(item: Mapping[str, Any]) -> str:
