@@ -1157,6 +1157,26 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         existing.revision += 1;
       }
       body = { provider_id: "provider_bedrock" };
+    } else if (/^\/api\/model-providers\/[^/]+\/rotate-secret$/.test(path)) {
+      const providerId = decodeURIComponent(path.split("/")[3]);
+      const existing = control.providerItems.find((item) => item.provider_id === providerId);
+      if (existing) {
+        existing.secret_status = "stored";
+        existing.connection_state = "connected";
+        existing.connection_stage = "completed";
+        existing.stage_durations_ms = {
+          secret_read: 2,
+          endpoint_resolution: 4,
+          tls_connect: 7,
+          provider_auth: 12,
+          minimal_inference: 90,
+          model_discovery: 16,
+        };
+        existing.safe_error_category = null;
+        existing.last_tested_at = NOW;
+        existing.revision += 1;
+      }
+      body = { provider_id: providerId };
     } else if (path === "/api/workspaces/demo-corpus/governance/model-routing") {
       body = {
         workspace_id: "demo-corpus",

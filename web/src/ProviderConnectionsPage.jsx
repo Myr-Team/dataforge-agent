@@ -222,11 +222,29 @@ export function ProviderConnectionsPage() {
                   ) : (
                     <>
                       <p>{item.providerLabel} · {item.baseUrl}</p>
-                      <small>最近检测：{formatTime(item.lastTestedAt)} · 凭据：{item.secretStored ? "已安全保存" : "未保存"}</small>
                     </>
                   )}
                 </div>
               </div>
+              {!item.isBedrock ? (
+                <dl className="provider-fact-grid" aria-label={`${item.name} 连接事实`}>
+                  <div>
+                    <dt>凭据</dt>
+                    <dd className={item.credentialTone}>{item.credentialLabel}</dd>
+                    <small>仅保存在安全凭据存储中</small>
+                  </div>
+                  <div>
+                    <dt>连接</dt>
+                    <dd>{item.connectionLabel}</dd>
+                    <small>{item.stageLabel}</small>
+                  </div>
+                  <div>
+                    <dt>最近检测</dt>
+                    <dd>{formatTime(item.lastTestedAt)}</dd>
+                    <small>{item.totalDurationLabel}</small>
+                  </div>
+                </dl>
+              ) : null}
               {item.safeErrorLabel ? (
                 <div className="provider-safe-error"><CircleAlert size={14} />{item.safeErrorLabel}</div>
               ) : null}
@@ -266,7 +284,7 @@ export function ProviderConnectionsPage() {
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={Boolean(busy) || item.connectionState === "disabled"}
+                  disabled={Boolean(busy) || !item.canTest}
                   onClick={() => runAction(
                     `test:${item.providerId}`,
                     () => testModelProvider(item.providerId),
@@ -276,8 +294,8 @@ export function ProviderConnectionsPage() {
                   {busy === `test:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <PlugZap size={14} />}
                   检测连接
                 </button>
-                <label className="provider-secret-field">
-                  <span>更新 Key</span>
+                <label className={`provider-secret-field ${item.primaryAction === "rotate_secret" ? "required" : ""}`}>
+                  <span>{item.primaryAction === "rotate_secret" ? "重新录入 Key" : "更新 Key"}</span>
                   <input
                     type="password"
                     autoComplete="new-password"

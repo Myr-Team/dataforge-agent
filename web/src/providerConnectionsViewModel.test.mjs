@@ -48,6 +48,62 @@ test("degraded provider remains visible but cannot be assigned", () => {
   assert.equal(view.summary.actionRequired, 1);
 });
 
+test("missing DeepSeek credential asks for re-entry and disables test", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_missing",
+      provider_type: "deepseek",
+      display_name: "DeepSeek",
+      connection_state: "invalid",
+      governance_state: "pending",
+      secret_status: "missing",
+      connection_stage: "secret_read",
+      stage_durations_ms: { secret_read: 3 },
+      safe_error_category: "provider_secret_missing",
+      revision: 1,
+      available_models: [],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.credentialLabel, "需要重新录入 Key");
+  assert.equal(item.canTest, false);
+  assert.equal(item.primaryAction, "rotate_secret");
+  assert.equal(item.stageLabel, "读取安全凭据");
+  assert.equal(item.safeErrorLabel, "需要重新录入 Key。保存后将重新检测连接。");
+});
+
+test("connected DeepSeek exposes staged connection facts without raw errors", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_ready",
+      provider_type: "deepseek",
+      display_name: "DeepSeek",
+      connection_state: "connected",
+      governance_state: "governed",
+      secret_status: "stored",
+      connection_stage: "completed",
+      stage_durations_ms: {
+        secret_read: 2,
+        endpoint_resolution: 4,
+        tls_connect: 7,
+        provider_auth: 12,
+        minimal_inference: 90,
+        model_discovery: 16,
+      },
+      revision: 2,
+      available_models: [],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.credentialLabel, "已安全保存");
+  assert.equal(item.canTest, true);
+  assert.equal(item.primaryAction, "test");
+  assert.equal(item.stageLabel, "全部检测完成");
+  assert.equal(item.totalDurationLabel, "131 ms");
+});
+
 test("Bedrock discovery is connected but never assignable", () => {
   const view = providerConnectionsViewModel({
     items: [{

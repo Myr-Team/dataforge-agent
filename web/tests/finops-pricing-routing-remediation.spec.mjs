@@ -195,3 +195,35 @@ test("Bedrock save copy remains neutral until the refreshed record is connected"
   await expect(page.getByRole("status")).toContainText("测试结果已刷新");
   await expect(page.getByRole("status")).not.toContainText("配置测试可用");
 });
+
+test("missing DeepSeek credential is re-entered without exposing secret material", async ({ page }) => {
+  const keyMarker = "deepseek-private-key-marker";
+  await installFinOpsMockApi(page, [], {
+    providerItems: [{
+      provider_id: "provider_deepseek",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      base_url: "https://api.deepseek.com",
+      connection_state: "invalid",
+      governance_state: "pending",
+      secret_status: "missing",
+      connection_stage: "secret_read",
+      stage_durations_ms: { secret_read: 3 },
+      safe_error_category: "provider_secret_missing",
+      revision: 1,
+      available_models: [],
+    }],
+  });
+  await openProviderSettings(page);
+
+  await expect(page.getByText("需要重新录入 Key", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "检测连接" })).toBeDisabled();
+  await page.getByLabel("重新录入 Key").fill(keyMarker);
+  await page.getByRole("button", { name: "更换凭据" }).click();
+
+  await expect(page.getByText("已安全保存", { exact: true })).toBeVisible();
+  await expect(page.getByText("全部检测完成", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "检测连接" })).toBeEnabled();
+  expect(await page.locator("body").innerText()).not.toContain(keyMarker);
+  expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain(keyMarker);
+});
