@@ -1252,6 +1252,7 @@ async def assistant_query(
         metric_context=context.model_dump(mode="json", by_alias=True),
         evidence_name_resolver=_assistant_evidence_name,
         evidence_items=selected_items,
+        include_summary=body.mode == "deep",
     )
     with _finops_model_route_scope(
         workspace_id=workspace_id,

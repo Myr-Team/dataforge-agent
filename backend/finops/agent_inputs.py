@@ -12,9 +12,10 @@ def build_finops_assistant_input(
     metric_context: Mapping[str, Any],
     evidence_items: Iterable[Any] = (),
     evidence_name_resolver: Callable[[Mapping[str, Any]], str] | None = None,
+    include_summary: bool = True,
 ) -> dict[str, Any]:
     """Build the small, cached context used by interactive Operations AI."""
-    bootstrap = query_service.bootstrap(query)
+    bootstrap = query_service.bootstrap(query) if include_summary else {}
     projected_evidence: list[dict[str, Any]] = []
     for raw in list(evidence_items)[:3]:
         item = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else raw

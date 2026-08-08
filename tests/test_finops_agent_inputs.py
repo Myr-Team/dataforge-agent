@@ -167,6 +167,28 @@ def test_finops_assistant_input_uses_single_compact_bootstrap() -> None:
     assert len(str(payload).encode("utf-8")) < 24_000
 
 
+def test_quick_finops_assistant_input_skips_full_bootstrap() -> None:
+    query, service = _query_service()
+
+    class EvidenceOnlyService:
+        def bootstrap(self, _selected_query: FinOpsQuery) -> dict[str, object]:
+            raise AssertionError("quick assistant input must not load full bootstrap")
+
+    event = service.events(query)[0]
+    payload = build_finops_assistant_input(
+        query,
+        EvidenceOnlyService(),
+        metric_context={"metric_id": "estimated_cost", "label": "估算成本"},
+        evidence_items=[event],
+        include_summary=False,
+    )
+
+    assert payload["status"] == "ready"
+    assert payload["evidence_refs"] == ["req_aaaaaaaaaaaa"]
+    assert payload["overview"]["metrics"] == {}
+    assert payload["trust"] == {}
+
+
 def test_roi_agent_input_accepts_only_verified_outcome_events() -> None:
     snapshot = {
         "status": "verified",
