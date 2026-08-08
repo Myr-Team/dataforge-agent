@@ -616,14 +616,21 @@ def _configured_apim_openai_client() -> Any | None:
 def _configured_azure_openai_client() -> Any | None:
     endpoint = str(os.environ.get("OPENAI_ENDPOINT") or os.environ.get("AZURE_OPENAI_ENDPOINT") or "").strip()
     api_key = str(os.environ.get("AZURE_OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY") or "").strip()
-    if not endpoint or not api_key:
+    if not endpoint:
         return None
-    return AzureOpenAI(
-        azure_endpoint=endpoint,
-        api_key=api_key,
-        api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
-        max_retries=0,
-    )
+    client_args: dict[str, Any] = {
+        "azure_endpoint": endpoint,
+        "api_version": os.environ.get("AZURE_OPENAI_API_VERSION", "2025-04-01-preview"),
+        "max_retries": 0,
+    }
+    if api_key:
+        client_args["api_key"] = api_key
+    else:
+        client_args["azure_ad_token_provider"] = get_bearer_token_provider(
+            DefaultAzureCredential(),
+            "https://cognitiveservices.azure.com/.default",
+        )
+    return AzureOpenAI(**client_args)
 
 
 def _openai_client() -> Any:
