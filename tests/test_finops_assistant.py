@@ -79,6 +79,53 @@ def test_assistant_request_defaults_to_quick_and_bounds_model_output() -> None:
     assert calls == [650, 1200]
 
 
+def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> None:
+    captured: dict[str, object] = {}
+
+    def runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        captured.update(kwargs)
+        raise TimeoutError("provider timeout")
+
+    result = FinOpsAssistantService(model_runner=runner).answer(
+        request=_request(
+            label="Gateway coverage",
+            value=93.2,
+            unit="%",
+            policy_type="apim_coverage",
+        ),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "Demo analysis run"}
+            ],
+        },
+    )
+
+    assert captured["request_timeout_seconds"] == 6.0
+    assert captured["retry_limit"] == 0
+    assert result.status == "ready"
+    assert result.evidence_refs == ["req_safe"]
+    assert result.evidence_labels == ["Demo analysis run"]
+    assert result.sections is not None
+    assert "Gateway coverage" in result.sections.conclusion
+    assert "Demo analysis run" in result.sections.basis
+    assert result.evidence_state == "observed"
+
+
+def test_deep_assistant_keeps_fail_closed_behavior_when_model_is_unavailable() -> None:
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            TimeoutError("provider timeout")
+        )
+    ).answer(
+        request=_request().model_copy(update={"mode": "deep"}),
+        evidence_payload={"evidence_refs": ["req_safe"]},
+    )
+
+    assert result.status == "unavailable"
+    assert result.evidence_refs == []
+
+
 def test_assistant_request_accepts_only_bounded_policy_request_evidence() -> None:
     request = _request(
         policy_type="p95_latency",

@@ -709,7 +709,17 @@ def _llm_retry_delay(attempt: int) -> float:
     return base + random.uniform(0.0, 0.2)
 
 
-def _responses_create_with_retry(openai_client: Any, **create_args: Any) -> Any:
+def _responses_create_with_retry(
+    openai_client: Any,
+    *,
+    retry_limit: int | None = None,
+    **create_args: Any,
+) -> Any:
+    effective_retry_limit = (
+        len(_LLM_RETRY_DELAYS)
+        if retry_limit is None
+        else max(0, min(int(retry_limit), len(_LLM_RETRY_DELAYS)))
+    )
     retry_count = 0
     while True:
         started = time.perf_counter()
@@ -726,7 +736,7 @@ def _responses_create_with_retry(openai_client: Any, **create_args: Any) -> Any:
                 pass
             return response
         except Exception as exc:
-            if retry_count >= len(_LLM_RETRY_DELAYS) or not _is_transient_llm_error(exc):
+            if retry_count >= effective_retry_limit or not _is_transient_llm_error(exc):
                 raise
             time.sleep(_llm_retry_delay(retry_count))
             retry_count += 1
@@ -1228,6 +1238,8 @@ def run_agent(
     *,
     response_schema: dict[str, Any] | None = None,
     max_output_tokens: int = 3200,
+    request_timeout_seconds: float | None = None,
+    retry_limit: int | None = None,
 ) -> dict[str, Any]:
     prompt_file = PROMPT_FILES.get(agent_name)
     if not prompt_file:
@@ -1262,16 +1274,26 @@ def run_agent(
         "input": input_text,
         "max_output_tokens": max_output_tokens,
     }
+    if request_timeout_seconds is not None:
+        create_args["timeout"] = max(1.0, min(float(request_timeout_seconds), 120.0))
     text_format = _schema_format(agent_name, response_schema)
     if text_format:
         create_args["text"] = text_format
     try:
-        response = _responses_create_with_retry(openai_client, **create_args)
+        response = _responses_create_with_retry(
+            openai_client,
+            retry_limit=retry_limit,
+            **create_args,
+        )
     except Exception as exc:
         if "text" not in create_args or not _can_retry_without_schema(exc):
             raise
         create_args.pop("text")
-        response = _responses_create_with_retry(openai_client, **create_args)
+        response = _responses_create_with_retry(
+            openai_client,
+            retry_limit=retry_limit,
+            **create_args,
+        )
     text = getattr(response, "output_text", "") or ""
     return {
         "text": text,

@@ -2244,6 +2244,16 @@ def _validate_container_contract(
     append_ok = append_value is protected_append
     legal_hold = container.get("legalHold", container.get("legal_hold"))
     legal_hold = legal_hold if isinstance(legal_hold, Mapping) else {}
+    append_history = legal_hold.get(
+        "protectedAppendWritesHistory",
+        legal_hold.get("protected_append_writes_history"),
+    )
+    append_history = append_history if isinstance(append_history, Mapping) else {}
+    protected_append_all = append_history.get(
+        "allowProtectedAppendWritesAll",
+        append_history.get("allow_protected_append_writes_all"),
+    )
+    legal_hold_append_ok = protected_append_all is protected_append
     hold_active = container.get("hasLegalHold", container.get("has_legal_hold")) is True and legal_hold.get(
         "hasLegalHold", legal_hold.get("has_legal_hold")
     ) is True
@@ -2256,6 +2266,7 @@ def _validate_container_contract(
         bool(expected_tag)
         and hold_active
         and expected_tag in active_tags
+        and legal_hold_append_ok
     )
     return locked and append_ok and legal_hold_ok
 

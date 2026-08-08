@@ -451,7 +451,7 @@ def test_remediation_production_contract_requires_all_blob_controls(monkeypatch)
             )
 
 
-def test_production_contract_uses_locked_policy_not_legal_hold_history_for_append_authorization() -> None:
+def test_production_contract_requires_legal_hold_protected_append_authorization() -> None:
     service = {
         "isVersioningEnabled": True,
         "deleteRetentionPolicy": {"enabled": True, "days": 30},
@@ -459,8 +459,6 @@ def test_production_contract_uses_locked_policy_not_legal_hold_history_for_appen
     }
     active_policy = {"state": "Locked", "allowProtectedAppendWrites": True}
     sealed_policy = {"state": "Locked", "allowProtectedAppendWrites": False}
-    # Azure exposes this as historical legal-hold metadata, not the locked
-    # retention policy's effective append authorization.
     active_container = {
         "hasLegalHold": True,
         "legalHold": {
@@ -478,14 +476,15 @@ def test_production_contract_uses_locked_policy_not_legal_hold_history_for_appen
         },
     }
 
-    audit_store._validate_production_contract(
-        service,
-        active_policy,
-        active_container,
-        "dataforgeaudit",
-        sealed_policy,
-        sealed_container,
-    )
+    with pytest.raises(audit_store.AuditPersistenceError, match="contract"):
+        audit_store._validate_production_contract(
+            service,
+            active_policy,
+            active_container,
+            "dataforgeaudit",
+            sealed_policy,
+            sealed_container,
+        )
 
 
 def _production_storage_env(monkeypatch, *, account: str = "writeaccount") -> str:

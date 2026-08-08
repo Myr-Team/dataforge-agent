@@ -27,6 +27,10 @@ AssistantPolicyType = Literal[
 ]
 
 
+class _AssistantSafetyError(ValueError):
+    """Model output crossed the authorized evidence boundary."""
+
+
 class AssistantWindow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -250,17 +254,28 @@ class FinOpsAssistantService:
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 response_schema=AssistantAnswerOutput.model_json_schema(),
                 max_output_tokens=650 if request.mode == "quick" else 1200,
+                request_timeout_seconds=6.0 if request.mode == "quick" else None,
+                retry_limit=0 if request.mode == "quick" else None,
             )
+        except Exception:
+            if request.mode == "quick":
+                return _grounded_quick_response(
+                    request=request,
+                    allowed_refs=allowed_refs,
+                    evidence_labels=evidence_labels,
+                )
+            return _unavailable_response()
+        try:
             structured = raw.get("structured")
             if not isinstance(structured, Mapping):
                 raise ValueError("assistant returned no structured output")
             output = AssistantAnswerOutput.model_validate(structured)
             cited = set(output.evidence_refs)
             if not cited.issubset(allowed_refs):
-                raise ValueError("assistant cited evidence outside the allowed scope")
+                raise _AssistantSafetyError("assistant cited evidence outside the allowed scope")
             prose_refs = _model_prose_request_refs(output)
             if not prose_refs.issubset(allowed_refs):
-                raise ValueError("assistant prose cited evidence outside the allowed scope")
+                raise _AssistantSafetyError("assistant prose cited evidence outside the allowed scope")
             public_labels = [
                 evidence_labels.get(ref) or f"运营证据 {index + 1}"
                 for index, ref in enumerate(output.evidence_refs)
@@ -286,7 +301,7 @@ class FinOpsAssistantService:
                     *suggested_questions,
                 ]
             ):
-                raise ValueError("assistant public prose contains a raw evidence reference")
+                raise _AssistantSafetyError("assistant public prose contains a raw evidence reference")
             return AssistantResponse(
                 status="ready",
                 answer=sections.conclusion,
@@ -296,14 +311,98 @@ class FinOpsAssistantService:
                 suggested_questions=suggested_questions,
                 sections=sections,
             )
+        except _AssistantSafetyError:
+            return _unavailable_response()
         except Exception:
-            return AssistantResponse(
-                status="unavailable",
-                answer="当前分析暂不可用，运营数据本身不受影响。",
-                evidence_refs=[],
-                evidence_state="unavailable",
-                suggested_questions=[],
-            )
+            if request.mode == "quick":
+                return _grounded_quick_response(
+                    request=request,
+                    allowed_refs=allowed_refs,
+                    evidence_labels=evidence_labels,
+                )
+            return _unavailable_response()
+
+
+def _unavailable_response() -> AssistantResponse:
+    return AssistantResponse(
+        status="unavailable",
+        answer="当前分析暂不可用，运营数据本身不受影响。",
+        evidence_refs=[],
+        evidence_state="unavailable",
+        suggested_questions=[],
+    )
+
+
+def _grounded_quick_response(
+    *,
+    request: AssistantRequest,
+    allowed_refs: set[str],
+    evidence_labels: Mapping[str, str],
+) -> AssistantResponse:
+    context = request.metric_context
+    refs = sorted(allowed_refs)[:3]
+    public_labels = [
+        evidence_labels.get(ref) or f"运营证据 {index + 1}"
+        for index, ref in enumerate(refs)
+    ]
+    value = context.value
+    if value is None or value == "":
+        value_text = "当前值未记录"
+    else:
+        value_text = f"当前值为 {value}{context.unit}"
+    data_status = {
+        "complete": "完整",
+        "partial": "部分",
+        "unavailable": "不可用",
+        "insufficient_data": "样本不足",
+    }.get(context.data_status, context.data_status)
+    evidence_state = {
+        "observed": "已观测",
+        "estimated": "估算",
+        "partial": "部分",
+        "unavailable": "不可用",
+    }.get(context.evidence_state, context.evidence_state)
+    recommendation = {
+        "apim_coverage": "先定位未纳入统一入口或来源待确认的调用链，按工作区与路由复核影响范围，再保存整改草案。",
+        "cache_hit_rate": "先复核可缓存请求、未命中与绕过原因，再按工作区和模型比较可避免 Token。",
+        "unpriced_requests": "先补齐模型与有效价目修订的映射，无法可靠匹配的请求继续保持未计价。",
+        "daily_cost_budget": "先核对估算成本口径与预算周期，再由管理员评审提醒阈值。",
+        "error_rate": "先按错误类别、模型和路由定位集中失败来源，再复核代表请求。",
+        "p95_latency": "先按模型、路由与缓存状态拆分慢请求，再确认是否为持续性问题。",
+        "token_spike": "先与相同时段基线对比输入、输出和推理 Token，再定位贡献最大的调用。",
+    }.get(
+        context.policy_type,
+        "先复核代表证据与筛选范围，再把建议保存为可审阅草案。",
+    )
+    sections = AssistantAnswerSections(
+        conclusion=(
+            f"“{context.label}”{value_text}。当前有 {len(refs)} 条授权证据可复核，"
+            "可以作为本窗口的运营判断，但不应脱离证据范围直接执行变更。"
+        ),
+        basis=(
+            f"数据完整性为{data_status}，证据状态为{evidence_state}。"
+            f"代表证据包括：{'、'.join(public_labels)}。"
+        ),
+        impact=(
+            "该指标会影响当前筛选范围内的成本、体验或治理优先级；具体影响量仍需结合阈值和对比周期复核。"
+        ),
+        recommendation=recommendation,
+        caveat=(
+            "这是基于当前时间窗口、筛选条件和授权证据生成的快速解释；不等同于实际账单、审批结论或生产变更。"
+        ),
+    )
+    return AssistantResponse(
+        status="ready",
+        answer=sections.conclusion,
+        evidence_refs=refs,
+        evidence_labels=public_labels,
+        evidence_state=context.evidence_state,
+        suggested_questions=[
+            f"{context.label}与上一周期相比发生了什么变化？",
+            f"哪些证据最能影响{context.label}的处置优先级？",
+        ],
+        sections=sections,
+    )
 
 
 def _evidence_labels(
