@@ -223,6 +223,22 @@ az containerapp show -g rg-dataforge-dev -n ca-dataforge-backend `
 If the deployment identity changes, rerun the role verification before making
 any production routing change.
 
+## 2026-08-09 DeepSeek routing and Entra identity production update
+
+- Current backend: `ca-dataforge-backend--dse9135641`, Healthy, Running, 100%
+  traffic.
+- Current web: `ca-dataforge-web--dse9135641`, Healthy, Running, 100% traffic.
+- Provider connectors and tenant-scoped external routing are enabled; direct
+  provider routing is active and `DF_FINOPS_ACTIONS_ENABLED` remains `0`.
+- The production health path verifies Foundry, Search, MCP, Speech, Blob, and
+  Content Safety. Anonymous users are still redirected through Easy Auth.
+- Python, Node, Vite, Playwright, focused pricing checks, log checks, and the
+  committed-code secret scan passed before and after cutover.
+- The signed-in browser identity, provider connection, and governed DeepSeek
+  selection remain the final tenant-specific human acceptance checks.
+- Full evidence:
+  `docs/validation/2026-08-09-deepseek-entra-production.md`.
+
 ## 2026-08-02 FinOps ROI / risk UI production update
 
 - Current web: `ca-dataforge-web--finui11c19f3`, Healthy, 100% traffic,

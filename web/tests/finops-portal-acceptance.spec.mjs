@@ -62,12 +62,12 @@ test("executive cost drilldown preserves the current filters and uses the compac
   await openOperations(page);
 
   const overview = page.getByRole("region", { name: "运营决策概览" });
-  await page.getByLabel("部门筛选", { exact: true }).selectOption("Commerce");
+  await page.getByLabel("部门筛选", { exact: true }).selectOption("Operations");
   await page.getByLabel("Agent 筛选", { exact: true }).selectOption("分析协调 Agent");
   await overview.getByRole("button", { name: /成本分析.*成本来自哪里/ }).click();
 
   await expect(page.getByRole("button", { name: "成本分析", exact: true })).toHaveClass(/active/);
-  await expect(page.getByLabel("部门筛选", { exact: true })).toHaveValue("Commerce");
+  await expect(page.getByLabel("部门筛选", { exact: true })).toHaveValue("Operations");
   await expect(page.getByLabel("Agent 筛选", { exact: true })).toHaveValue("分析协调 Agent");
   await expect(page.locator(".finops-cost-summary")).toBeVisible();
   await expect(page.locator(".finops-content > .finops-metrics")).toHaveCount(0);
@@ -85,7 +85,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
   const initialDecisionCalls = control.calls.roiDecision;
   await page.getByRole("button", { name: "调整测算参数" }).click();
   const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
-  await expect(dialog.getByText("当前模型成本 $0.0269 / 月")).toBeVisible();
+  await expect(dialog.getByText("当前模型成本 $450 / 月")).toBeVisible();
   await dialog.getByLabel("每月节省工时").fill("48");
   await dialog.getByRole("button", { name: "保存新版本" }).click();
 
@@ -103,7 +103,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
     avoided_loss_or_revenue: 1000,
     implementation_cost: 6000,
     monthly_fixed_cost: 200,
-    model_cost: 0.0269,
+    model_cost: 450,
     evaluation_months: 12,
     previous_id: "roi_scenario_demo0001",
     base_revision: 1,
@@ -123,8 +123,8 @@ test("overview hides infrastructure reconciliation and keeps pricing coverage in
   await expect(overview.locator(".finops-metric")).toHaveCount(4);
 
   await page.getByRole("button", { name: "成本分析", exact: true }).click();
-  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖 96.7%");
-  await expect(page.locator(".finops-cost-summary")).toContainText("2 次未计价");
+  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖 93.5%");
+  await expect(page.locator(".finops-cost-summary")).toContainText("156 次未计价");
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });
@@ -176,7 +176,7 @@ test("detail refresh failure preserves the last successful page", async ({ page 
   await expect(page.getByText("成本趋势")).toBeVisible();
 
   control.failDetail = true;
-  await page.locator(".finops-live").getByRole("button", { name: "刷新" }).click();
+  await page.locator(".finops-live").getByRole("button", { name: "刷新运营数据" }).click();
 
   await expect(page.getByText("成本趋势")).toBeVisible();
   await expect(page.locator(".finops-inline-error")).toContainText(
@@ -195,7 +195,7 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   const evidenceChain = page.locator(".finops-decision-risk-chain");
   const evidenceCard = evidenceChain.locator(".finops-decision-risk-evidence-card");
   await priorities.getByRole("button", { name: /响应时延优化/ }).click();
-  await expect(evidenceCard).toContainText("6,200 ms");
+  await expect(evidenceCard).toContainText("6,200 毫秒");
   await expect(evidenceCard).toContainText("分析已完成，但模型响应阶段耗时偏高。");
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await expect(evidenceCard).toContainText("缓存未命中");
@@ -203,7 +203,8 @@ test("risk evidence is distinct and remediation 409 requires reload and a second
   await priorities.getByRole("button", { name: /计价覆盖补齐/ }).click();
   await expect(evidenceCard).toContainText("评审已完成，当前模型尚未关联价目。");
   await priorities.getByRole("button", { name: /调用成功率改善/ }).click();
-  await expect(evidenceCard).toContainText("provider_5xx");
+  await expect(evidenceCard).toContainText("模型服务异常");
+  await expect(evidenceCard).not.toContainText("provider_5xx");
 
   await priorities.getByRole("button", { name: /缓存效率优化/ }).click();
   await page.getByRole("button", { name: "查看整改方案" }).click();

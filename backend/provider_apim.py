@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .provider_endpoint import ProviderEndpointError, validate_provider_endpoint
+from .model_providers import deepseek_api_endpoint
 
 
 _OPAQUE_ID = re.compile(r"^[a-z][a-z0-9-]{0,79}$")
@@ -41,8 +41,8 @@ class ApimProviderCandidate(BaseModel):
     @classmethod
     def _base_url(cls, value: str) -> str:
         try:
-            return validate_provider_endpoint("deepseek", value)
-        except ProviderEndpointError as exc:
+            return deepseek_api_endpoint(value)
+        except ValueError as exc:
             raise ValueError("provider endpoint is not allowed") from exc
 
     @field_validator("model_ids")
@@ -70,6 +70,23 @@ class ApimCandidateVerification(BaseModel):
     observed_etag: str = Field(min_length=1, max_length=160)
     correlation_preserved: bool
     usage_preserved: bool
+
+
+def validate_deepseek_candidate(
+    *,
+    connection_state: str,
+    governance_state: str,
+    support_state: str,
+    price_key: str | None,
+) -> None:
+    """Reject any external candidate that is not ready for zero-traffic validation."""
+    if (
+        str(connection_state or "").strip() != "connected"
+        or str(governance_state or "").strip() != "governed"
+        or str(support_state or "").strip() != "supported"
+        or not str(price_key or "").strip()
+    ):
+        raise ProviderApimError("provider_candidate_ineligible")
 
 
 def build_candidate_contract(candidate: ApimProviderCandidate) -> dict[str, Any]:
@@ -120,4 +137,5 @@ __all__ = [
     "ProviderApimError",
     "build_candidate_contract",
     "candidate_is_activatable",
+    "validate_deepseek_candidate",
 ]

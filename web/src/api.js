@@ -119,6 +119,14 @@ async function request(path, options = {}) {
 
 export const apiFetch = request;
 
+export async function loadAuthSession(endpoint = "/api/auth/session") {
+  return request(endpoint, {
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+    timeoutMs: 8000,
+  });
+}
+
 
 async function probeEasyAuthSession() {
   if (typeof window === "undefined") return { authenticated: null };
@@ -289,6 +297,14 @@ export function queryFinOpsAssistant(payload, options = {}) {
   });
 }
 
+export function loadFinOpsAssistantBootstrap(workspaceId, options = {}) {
+  return loadFinOpsResource(
+    "assistant/bootstrap",
+    { workspaceId },
+    options,
+  );
+}
+
 export function loadFinOpsAssistantConversations(workspaceId, options = {}) {
   return loadFinOpsResource(
     "assistant/conversations",
@@ -343,6 +359,27 @@ export function loadFinOpsRiskDecision(filters = {}, options = {}) {
 
 export function loadLatestFinOpsRiskScan(filters = {}, options = {}) {
   return loadFinOpsResource("risk/scans/latest", filters, options);
+}
+
+export function loadFinOpsRiskScans(workspaceId, limit = 5, options = {}) {
+  const params = new URLSearchParams({
+    workspace_id: String(workspaceId || ""),
+    limit: String(Math.max(1, Math.min(Number(limit) || 5, 50))),
+  });
+  return request(`/api/finops/risk/scans?${params}`, options);
+}
+
+export function loadFinOpsRiskScan(scanRef, workspaceId, options = {}) {
+  const params = new URLSearchParams({ workspace_id: String(workspaceId || "") });
+  return request(
+    `/api/finops/risk/scans/${encodeURIComponent(scanRef)}?${params}`,
+    options,
+  );
+}
+
+export function loadServiceReadiness(workspaceId, options = {}) {
+  const params = new URLSearchParams({ workspace_id: String(workspaceId || "") });
+  return request(`/api/service-readiness?${params}`, options);
 }
 
 export function runFinOpsRiskScan(payload = {}, options = {}) {
@@ -773,6 +810,20 @@ export async function testModelProvider(providerId) {
   });
 }
 
+export async function governModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/govern`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
+export async function suspendModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
 export async function rotateModelProviderSecret(providerId, credentials, baseRevision) {
   const body = typeof credentials === "string"
     ? { api_key: credentials, base_revision: Number(baseRevision || 0) }
@@ -870,9 +921,13 @@ export async function loadFinOpsOfficialPriceMappings() {
 
 export async function updateFinOpsOfficialPriceMapping(
   deployment,
-  { officialPriceKey, baseRevision = 0 },
+  { workspaceId, officialPriceKey, baseRevision = 0 },
 ) {
-  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+  const query = new URLSearchParams({
+    workspace_id: String(workspaceId || "").trim(),
+  });
+  if (!query.get("workspace_id")) throw new Error("workspaceId is required");
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}?${query.toString()}`, {
     method: "PUT",
     body: JSON.stringify({
       official_price_key: String(officialPriceKey || ""),
@@ -881,8 +936,16 @@ export async function updateFinOpsOfficialPriceMapping(
   });
 }
 
-export async function deleteFinOpsOfficialPriceMapping(deployment) {
-  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+export async function deleteFinOpsOfficialPriceMapping(
+  deployment,
+  { workspaceId, baseRevision },
+) {
+  const query = new URLSearchParams({
+    workspace_id: String(workspaceId || "").trim(),
+    base_revision: String(Number.isInteger(baseRevision) ? baseRevision : 0),
+  });
+  if (!query.get("workspace_id")) throw new Error("workspaceId is required");
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}?${query.toString()}`, {
     method: "DELETE",
   });
 }

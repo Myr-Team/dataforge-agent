@@ -75,6 +75,45 @@ def test_openai_client_prefers_configured_azure_openai_key(monkeypatch) -> None:
     ]
 
 
+def test_openai_client_uses_managed_identity_when_direct_endpoint_has_no_key(monkeypatch) -> None:
+    calls = []
+    provider_calls = []
+
+    class Credential:
+        pass
+
+    class AzureClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(foundry_client, "AzureOpenAI", AzureClient, raising=False)
+    monkeypatch.setattr(foundry_client, "DefaultAzureCredential", Credential)
+    monkeypatch.setattr(
+        foundry_client,
+        "get_bearer_token_provider",
+        lambda credential, scope: provider_calls.append((credential, scope)) or "provider",
+    )
+    monkeypatch.setenv("OPENAI_ENDPOINT", "https://example.openai.azure.com/")
+    monkeypatch.delenv("AZURE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setenv("AZURE_OPENAI_API_VERSION", "2025-04-01-preview")
+
+    client = foundry_client._configured_azure_openai_client()
+
+    assert isinstance(client, AzureClient)
+    assert len(provider_calls) == 1
+    assert isinstance(provider_calls[0][0], Credential)
+    assert provider_calls[0][1] == "https://cognitiveservices.azure.com/.default"
+    assert calls == [
+        {
+            "azure_endpoint": "https://example.openai.azure.com/",
+            "azure_ad_token_provider": "provider",
+            "api_version": "2025-04-01-preview",
+            "max_retries": 0,
+        }
+    ]
+
+
 def test_project_client_adapter_uses_direct_openai_client_when_key_is_available(monkeypatch) -> None:
     direct = object()
 

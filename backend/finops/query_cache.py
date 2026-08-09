@@ -17,6 +17,7 @@ STALE_SECONDS = 1800
 LOCK_SECONDS = 30
 WAIT_TIMEOUT_SECONDS = 2.0
 WAIT_POLL_SECONDS = 0.02
+QUERY_CACHE_SCHEMA_VERSION = "v4"
 
 
 class FinOpsCacheBusy(RuntimeError):
@@ -378,7 +379,7 @@ def _cache_key(
         sort_keys=True,
     )
     digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-    return f"finops:query:v2:{digest}"
+    return f"finops:query:{QUERY_CACHE_SCHEMA_VERSION}:{digest}"
 
 
 def _envelope(payload: dict[str, Any], now: datetime) -> dict[str, Any]:

@@ -25,6 +25,8 @@ AGENT_IDS = (
     "df-feasibility-analyst",
     "df-auditor",
     "df-producer",
+    "df-finops-analyst",
+    "df-roi-analyst",
 )
 
 _ROUTE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")

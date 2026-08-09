@@ -3,8 +3,8 @@ const NOW = new Date().toISOString();
 export const bootstrapPayload = {
   scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
   window: {
-    from: "2026-06-24T00:00:00Z",
-    to: "2026-07-24T23:59:59Z",
+    from: "2026-07-09T00:00:00Z",
+    to: "2026-08-07T23:59:59Z",
     timezone: "UTC",
   },
   freshness: {
@@ -13,9 +13,9 @@ export const bootstrapPayload = {
     refresh_after_seconds: 300,
   },
   coverage: {
-    observed_requests: 60,
-    apim_governed_requests: 58,
-    apim_coverage_pct: 96.67,
+    observed_requests: 2404,
+    apim_governed_requests: 2214,
+    apim_coverage_pct: 92.1,
   },
   currency: "USD",
   data_status: "partial",
@@ -24,178 +24,184 @@ export const bootstrapPayload = {
     data_status: "partial",
     trust: {
       pricing: {
-        priced_requests: 58,
-        unpriced_requests: 2,
-        coverage_pct: 96.67,
+        priced_requests: 2248,
+        unpriced_requests: 156,
+        coverage_pct: 93.51,
         state: "partial",
       },
       tokens: {
-        known_requests: 60,
+        known_requests: 2404,
         unknown_requests: 0,
         coverage_pct: 100,
         state: "complete",
       },
       apim: {
-        app_observed_requests: 60,
-        apim_governed_requests: 58,
-        unmatched_metric_records: 4,
-        coverage_pct: 96.67,
+        app_observed_requests: 2404,
+        apim_governed_requests: 2214,
+        unmatched_metric_records: 11,
+        coverage_pct: 92.1,
         state: "reconciliation_pending",
         gateway_unmatched: {
           scope: "unattributed",
-          window: { from: "2026-06-24T00:00:00Z", to: "2026-07-24T23:59:59Z" },
-          linked_requests: 58,
+          window: { from: "2026-07-09T00:00:00Z", to: "2026-08-07T23:59:59Z" },
+          linked_requests: 2214,
           unmatched_gateway_errors: {
-            total: 4,
-            client_error_4xx: 3,
-            server_error_5xx: 1,
+            total: 11,
+            client_error_4xx: 7,
+            server_error_5xx: 4,
           },
           data_source: "apim_gateway_logs",
-          updated_at: "2026-07-24T05:58:00Z",
+          updated_at: "2026-08-07T07:58:00Z",
           note: "网关侧未关联到任何应用运行的 4xx/5xx 聚合证据；无法可靠归属租户或工作区，按 unattributed/system 范围统计，不计入请求账本、错误率或成本。",
         },
       },
     },
     metrics: {
-      requests: 60,
+      requests: 2404,
       tokens: {
-        input: 1750,
-        output: 430,
-        cached_input: 232,
-        reasoning: 75,
-        total: 2487,
-        known_requests: 60,
+        input: 138810535,
+        output: 23738799,
+        cached_input: 13785603,
+        reasoning: 3113752,
+        total: 165664006,
+        known_requests: 2404,
         unknown_requests: 0,
       },
       estimated_cost: {
-        amount: 0.0269,
-        priced_requests: 58,
-        unpriced_requests: 2,
+        amount: 493.88,
+        priced_requests: 2248,
+        unpriced_requests: 156,
         status: "partial",
       },
       budget: {
-        amount: 0.1,
-        used_amount: 0.0269,
-        usage_pct: 26.9,
+        amount: 600,
+        used_amount: 493.88,
+        usage_pct: 82.31,
         status: "partial",
         source: "daily_cost_budget",
       },
-      latency: { p50_ms: 1200, p95_ms: 2100, known_requests: 60 },
-      error_rate_pct: 6.7,
-      success_rate_pct: 93.3,
-      cache_hit_rate_pct: 42,
+      latency: { p50_ms: 2133, p95_ms: 3478, known_requests: 2404 },
+      error_rate_pct: 3.54,
+      success_rate_pct: 96.46,
+      cache_hit_rate_pct: 18.64,
       cache: {
-        eligible_requests: 50,
-        hit: 21,
-        miss: 29,
-        bypassed: 8,
-        unavailable: 2,
-        avoided_tokens: 1840,
-        estimated_savings: 0.0118,
+        eligible_requests: 1921,
+        hit: 358,
+        miss: 1563,
+        bypassed: 361,
+        unavailable: 122,
+        avoided_tokens: 13785603,
+        estimated_savings: 35.74,
         data_status: "partial",
       },
-      apim_coverage_pct: 96.67,
+      apim_coverage_pct: 92.1,
     },
   },
   trend: {
     bucket: "day",
     items: [
       {
-        bucket: "2026-07-22T00:00:00Z",
-        requests: 18,
+        bucket: "2026-08-01T00:00:00Z",
+        requests: 72,
         tokens: {
-          input: 500,
-          output: 120,
-          cached_input: 80,
-          reasoning: 30,
-          total: 650,
+          input: 3993600,
+          output: 686917,
+          cached_input: 378116,
+          reasoning: 83564,
+          total: 4764081,
         },
-        estimated_cost: 0.007,
-        p95_latency_ms: 1800,
+        estimated_cost: 11.98,
+        p95_latency_ms: 3180,
         cache: {
-          eligible_requests: 14,
-          hit: 5,
-          miss: 9,
-          bypassed: 4,
-          unavailable: 0,
-          avoided_tokens: 420,
-          estimated_savings: 0.0021,
+          eligible_requests: 55,
+          hit: 10,
+          miss: 45,
+          bypassed: 13,
+          unavailable: 4,
+          avoided_tokens: 378116,
+          estimated_savings: 1.04,
           data_status: "available",
         },
         data_status: "available",
       },
       {
-        bucket: "2026-07-23T00:00:00Z",
-        requests: 22,
+        bucket: "2026-08-02T00:00:00Z",
+        requests: 84,
         tokens: {
-          input: 690,
-          output: 170,
-          cached_input: 100,
-          reasoning: 45,
-          total: 905,
+          input: 4905396,
+          output: 842246,
+          cached_input: 437782,
+          reasoning: 113758,
+          total: 5861400,
         },
-        estimated_cost: 0.0102,
-        p95_latency_ms: 2300,
+        estimated_cost: 17.75,
+        p95_latency_ms: 3610,
         cache: {
-          eligible_requests: 19,
-          hit: 8,
-          miss: 11,
-          bypassed: 2,
-          unavailable: 1,
-          avoided_tokens: 760,
-          estimated_savings: 0.0054,
+          eligible_requests: 67,
+          hit: 12,
+          miss: 55,
+          bypassed: 13,
+          unavailable: 4,
+          avoided_tokens: 437782,
+          estimated_savings: 1.28,
           data_status: "partial",
         },
         data_status: "partial",
       },
       {
-        bucket: "2026-07-24T00:00:00Z",
-        requests: 20,
+        bucket: "2026-08-03T00:00:00Z",
+        requests: 75,
         tokens: {
-          input: 560,
-          output: 140,
-          cached_input: 52,
-          reasoning: null,
-          total: 752,
+          input: 4189455,
+          output: 734618,
+          cached_input: 468504,
+          reasoning: 91964,
+          total: 5016037,
         },
-        estimated_cost: 0.0097,
-        p95_latency_ms: 2100,
+        estimated_cost: 16.69,
+        p95_latency_ms: 3520,
         cache: {
-          eligible_requests: 17,
-          hit: 8,
-          miss: 9,
-          bypassed: 2,
-          unavailable: 1,
-          avoided_tokens: 660,
-          estimated_savings: 0.0043,
+          eligible_requests: 59,
+          hit: 11,
+          miss: 48,
+          bypassed: 13,
+          unavailable: 3,
+          avoided_tokens: 468504,
+          estimated_savings: 1.31,
           data_status: "partial",
         },
         data_status: "partial",
       },
+      { bucket: "2026-08-04T00:00:00Z", requests: 87, tokens: { input: 5112939, output: 866698, cached_input: 551036, reasoning: 111520, total: 6091157 }, estimated_cost: 18.29, p95_latency_ms: 3740, cache: { eligible_requests: 69, hit: 13, miss: 56, bypassed: 13, unavailable: 5, avoided_tokens: 551036, estimated_savings: 1.52, data_status: "partial" }, data_status: "partial" },
+      { bucket: "2026-08-05T00:00:00Z", requests: 68, tokens: { input: 3771868, output: 664943, cached_input: 442463, reasoning: 89417, total: 4526228 }, estimated_cost: 11.26, p95_latency_ms: 3360, cache: { eligible_requests: 55, hit: 11, miss: 44, bypassed: 10, unavailable: 3, avoided_tokens: 442463, estimated_savings: 1.16, data_status: "partial" }, data_status: "partial" },
+      { bucket: "2026-08-06T00:00:00Z", requests: 80, tokens: { input: 4607940, output: 780624, cached_input: 475138, reasoning: 102908, total: 5491472 }, estimated_cost: 16.66, p95_latency_ms: 3650, cache: { eligible_requests: 63, hit: 12, miss: 51, bypassed: 13, unavailable: 4, avoided_tokens: 475138, estimated_savings: 1.34, data_status: "partial" }, data_status: "partial" },
+      { bucket: "2026-08-07T00:00:00Z", requests: 86, tokens: { input: 3974310, output: 639000, cached_input: 386847, reasoning: 98550, total: 4712780 }, estimated_cost: 14.4, p95_latency_ms: 4120, cache: { eligible_requests: 70, hit: 10, miss: 60, bypassed: 9, unavailable: 7, avoided_tokens: 386847, estimated_savings: 1.08, data_status: "partial" }, data_status: "partial" },
     ],
   },
   departments: {
     items: [
       {
-        key: "Commerce",
-        requests: 32,
-        tokens: 1240,
-        estimated_cost: 0.014,
-        error_rate_pct: 3.1,
-        p95_latency_ms: 1800,
-        cache_hit_rate_pct: 48.28,
+        key: "Operations",
+        requests: 618,
+        tokens: 42100098,
+        estimated_cost: 125.71,
+        error_rate_pct: 3.4,
+        p95_latency_ms: 3520,
+        cache_hit_rate_pct: 18.8,
         data_status: "available",
       },
       {
-        key: "Finance",
-        requests: 28,
-        tokens: 1067,
-        estimated_cost: 0.0129,
-        error_rate_pct: 10.7,
-        p95_latency_ms: 2400,
-        cache_hit_rate_pct: 34.62,
+        key: "AI Platform",
+        requests: 604,
+        tokens: 41809703,
+        estimated_cost: 124.49,
+        error_rate_pct: 3.6,
+        p95_latency_ms: 3470,
+        cache_hit_rate_pct: 18.5,
         data_status: "partial",
       },
+      { key: "Delivery", requests: 582, tokens: 40368054, estimated_cost: 122.47, error_rate_pct: 3.8, p95_latency_ms: 3610, cache_hit_rate_pct: 18.2, data_status: "available" },
+      { key: "Finance", requests: 600, tokens: 41386151, estimated_cost: 121.2, error_rate_pct: 3.3, p95_latency_ms: 3340, cache_hit_rate_pct: 19.1, data_status: "available" },
     ],
   },
   anomalies: {
@@ -232,7 +238,7 @@ export const bootstrapPayload = {
       evidence_refs: ["req_slow_000001"],
       evidence_state: "estimated",
       confidence: 0.82,
-      generated_at: "2026-07-24T05:55:00Z",
+      generated_at: "2026-08-07T07:55:00Z",
       evidence_gaps: [],
       draft_suggestions: [
         {
@@ -257,12 +263,12 @@ export const bootstrapPayload = {
       evidence_gaps: ["已验证结果事件不足"],
       evidence_state: "unavailable",
       confidence: null,
-      generated_at: "2026-07-24T05:50:00Z",
+      generated_at: "2026-08-07T07:50:00Z",
       draft_suggestions: [],
     },
   },
   filters: {
-    departments: ["Commerce", "Finance"],
+    departments: ["Operations", "AI Platform", "Delivery", "Finance"],
     workspaces: ["Commerce Insights", "Finance Forecast", "IT Governance"],
     agents: ["分析协调 Agent", "财务洞察 Agent", "风险审阅 Agent"],
     models: ["gpt-5.6-terra", "gpt-5.1", "deepseek-chat"],
@@ -279,8 +285,8 @@ function demoCompletenessBootstrapPayload() {
         ...bootstrapPayload.overview.trust,
         apim: {
           ...bootstrapPayload.overview.trust.apim,
-          apim_governed_requests: 56,
-          coverage_pct: 93.33,
+          apim_governed_requests: 2214,
+          coverage_pct: 92.1,
         },
       },
     },
@@ -295,13 +301,7 @@ function demoCompletenessBootstrapPayload() {
       })),
     },
     departments: {
-      items: [
-        { key: "Commerce", requests: 24, tokens: 920, estimated_cost: 0.0108, error_rate_pct: 3.1, p95_latency_ms: 1800, cache_hit_rate_pct: 48.28, data_status: "available" },
-        { key: "Finance", requests: 16, tokens: 610, estimated_cost: 0.0074, error_rate_pct: 5.2, p95_latency_ms: 2200, cache_hit_rate_pct: 41.18, data_status: "available" },
-        { key: "IT", requests: 10, tokens: 410, estimated_cost: 0.0041, error_rate_pct: 2.5, p95_latency_ms: 1500, cache_hit_rate_pct: 55.56, data_status: "available" },
-        { key: "未归属", requests: 6, tokens: 290, estimated_cost: 0.0029, error_rate_pct: 8.1, p95_latency_ms: 2600, cache_hit_rate_pct: 25, data_status: "partial" },
-        { key: "Support", requests: 4, tokens: 257, estimated_cost: 0.0017, error_rate_pct: 4.4, p95_latency_ms: 1700, cache_hit_rate_pct: 50, data_status: "available" },
-      ],
+      items: bootstrapPayload.departments.items,
     },
     anomalies: {
       count: 4,
@@ -313,7 +313,7 @@ function demoCompletenessBootstrapPayload() {
           status: "open",
           observed_value: 2100,
           threshold_value: 2000,
-          sample_count: 60,
+          sample_count: 2404,
           observed_at: NOW,
           evidence_refs: ["req_slow_000001"],
           evidence_state: "observed",
@@ -323,9 +323,9 @@ function demoCompletenessBootstrapPayload() {
           title: "缓存命中率偏低",
           severity: "warning",
           status: "open",
-          observed_value: 42,
-          threshold_value: 60,
-          sample_count: 50,
+          observed_value: 18.64,
+          threshold_value: 20,
+          sample_count: 1921,
           observed_at: NOW,
           evidence_refs: ["req_cache_000001"],
           evidence_state: "observed",
@@ -337,7 +337,7 @@ function demoCompletenessBootstrapPayload() {
           status: "acknowledged",
           observed_value: 6.2,
           threshold_value: 5,
-          sample_count: 30,
+          sample_count: 2404,
           observed_at: NOW,
           evidence_refs: ["req_unpriced_001"],
           evidence_state: "partial",
@@ -377,34 +377,34 @@ const roiDecisionPayload = {
   },
   metrics: [
     { id: "monthly_benefit", label: "月度收益", value: 3000, unit: "USD", status: "estimated", explanation: "来自情景测算，非已验证业务结果。" },
-    { id: "monthly_total_cost", label: "月度总成本", value: 700.0269, unit: "USD", status: "estimated", explanation: "包含实施摊销、固定成本与当前模型估算成本。" },
-    { id: "monthly_net_benefit", label: "月度净收益", value: 2299.9731, unit: "USD", status: "estimated", explanation: "月度收益减去同一情景口径下的月度总成本。" },
-    { id: "roi_ratio", label: "ROI 比率", value: 3.285549, unit: "ratio", status: "estimated", explanation: "情景测算比率，不能替代已验证业务结果。" },
+    { id: "monthly_total_cost", label: "月度总成本", value: 1150, unit: "USD", status: "estimated", explanation: "包含实施摊销、固定成本与当前模型估算成本。" },
+    { id: "monthly_net_benefit", label: "月度净收益", value: 1850, unit: "USD", status: "estimated", explanation: "月度收益减去同一情景口径下的月度总成本。" },
+    { id: "roi_ratio", label: "ROI 比率", value: 1.6087, unit: "ratio", status: "estimated", explanation: "情景测算比率，不能替代已验证业务结果。" },
   ],
   value_bridge: {
     formula_revision: "dataforge-roi-v1",
     scenario_id: "roi_scenario_demo0001",
-    payback_months: 2.142878,
+    payback_months: 2.6,
     items: [
-      { id: "monthly_benefit", label: "月度收益", value: 3000, unit: "USD", status: "estimated", explanation: "工时价值与避免损失的情景合计。" },
-      { id: "monthly_total_cost", label: "月度总成本", value: -700.0269, unit: "USD", status: "estimated", explanation: "作为价值桥的成本扣减项展示。" },
-      { id: "monthly_net_benefit", label: "月度净收益", value: 2299.9731, unit: "USD", status: "estimated", explanation: "同一测算周期内的净效益。" },
+      { id: "monthly_benefit", label: "月度收益", value: 3000, unit: "USD", status: "estimated", explanation: "情景测算中的月度收益。" },
+      { id: "monthly_total_cost", label: "AI 运营总投入", value: -1150, unit: "USD", status: "estimated", explanation: "价值桥中的成本扣减项。" },
+      { id: "monthly_net_benefit", label: "月度净收益", value: 1850, unit: "USD", status: "estimated", explanation: "月度收益减去 AI 运营总投入。" },
     ],
   },
   evidence_maturity: {
     score_pct: 75,
     formula_revision: "roi-evidence-maturity-v1",
     stages: [
-      { id: "investment", label: "投入", value: 700.0269, unit: "USD", status: "estimated", evidence_count: 58, evidence_refs: ["req_unpriced_001"], complete: true },
-      { id: "usage", label: "使用", value: 60, unit: "次调用", status: "observed", evidence_count: 60, evidence_refs: ["req_cache_000001"], complete: true },
-      { id: "output", label: "产出", value: 12, unit: "个产物", status: "observed", evidence_count: 12, evidence_refs: ["req_slow_000001"], complete: true },
-      { id: "outcome", label: "业务结果", value: 2, unit: "项结果", status: "partial", evidence_count: 2, evidence_refs: ["outcome_demo_001", "outcome_demo_002"], evidence_gap: "业务结果仍需独立复核后才能计入已验证 ROI。", complete: false },
+      { id: "investment", label: "投入", value: 1150, unit: "USD", status: "estimated", evidence_count: 2248, evidence_refs: ["req_priced_000001"], complete: true },
+      { id: "usage", label: "使用", value: 2404, unit: "次调用", status: "observed", evidence_count: 2404, evidence_refs: ["req_cache_000001"], complete: true },
+      { id: "output", label: "产出", value: 186, unit: "个产物", status: "observed", evidence_count: 186, evidence_refs: ["req_slow_000001"], complete: true },
+      { id: "outcome", label: "业务结果", value: 2, unit: "项结果", status: "partial", evidence_count: 2, evidence_refs: ["req_outcome_000001"], evidence_gap: "业务结果仍需独立复核后才能计入已验证 ROI。", complete: false },
     ],
   },
   unit_economics_trend: [
-    { id: "cost-per-call", period: "7月22日", label: "每次成功调用成本", value: 0.00039, unit: "USD", status: "estimated" },
-    { id: "cost-per-call", period: "7月23日", label: "每次成功调用成本", value: 0.00046, unit: "USD", status: "estimated" },
-    { id: "cost-per-call", period: "7月24日", label: "每次成功调用成本", value: 0.00048, unit: "USD", status: "estimated" },
+    { id: "cost-per-call", period: "8月5日", label: "每次成功调用成本", value: 0.1706, unit: "USD", status: "estimated" },
+    { id: "cost-per-call", period: "8月6日", label: "每次成功调用成本", value: 0.2143, unit: "USD", status: "estimated" },
+    { id: "cost-per-call", period: "8月7日", label: "每次成功调用成本", value: 0.1735, unit: "USD", status: "estimated" },
   ],
   verified_roi: { status: "not_recorded", value: null, currency: "USD" },
   capability_explanation: {
@@ -417,10 +417,10 @@ const roiDecisionPayload = {
     status: "estimated",
     result: {
       monthly_benefit: 3000,
-      monthly_total_cost: 700.0269,
-      monthly_net_benefit: 2299.9731,
-      roi_ratio: 3.285549,
-      payback_months: 2.142878,
+      monthly_total_cost: 1150,
+      monthly_net_benefit: 1850,
+      roi_ratio: 1.6087,
+      payback_months: 2.6,
       formula_revision: "dataforge-roi-v1",
     },
   }],
@@ -433,7 +433,7 @@ const riskEvidence = [
     request_ref: "req_slow_000001",
     request_name: "Commerce · 批量分析 · 慢响应",
     operation: "批量分析",
-    signal: { metric: "响应时延", value: 6200, unit: "ms" },
+    signal: { metric: "latency_ms", value: 6200, unit: "ms" },
     latency_ms: 6200,
     cache_state: "miss",
     status: "succeeded",
@@ -445,7 +445,7 @@ const riskEvidence = [
     request_ref: "req_cache_000001",
     request_name: "Commerce · 重复分析 · 缓存未命中",
     operation: "重复分析",
-    signal: { metric: "缓存命中率", value: 18.5, unit: "percent" },
+    signal: { metric: "cache_state", value: "miss", unit: "state" },
     latency_ms: 1850,
     cache_state: "miss",
     status: "succeeded",
@@ -457,7 +457,7 @@ const riskEvidence = [
     request_ref: "req_unpriced_001",
     request_name: "Finance · 模型评审 · 尚未计价",
     operation: "模型评审",
-    signal: { metric: "未计价请求", value: 6.2, unit: "percent" },
+    signal: { metric: "pricing_status", value: "unpriced", unit: "status" },
     latency_ms: 1700,
     cache_state: "bypassed",
     status: "succeeded",
@@ -469,7 +469,7 @@ const riskEvidence = [
     request_ref: "req_error_000001",
     request_name: "Commerce · 机会提取 · 调用失败",
     operation: "机会提取",
-    signal: { metric: "调用失败率", value: 8.3, unit: "percent" },
+    signal: { metric: "request_status", value: "failed", unit: "status" },
     latency_ms: 980,
     cache_state: "bypassed",
     status: "failed",
@@ -493,7 +493,7 @@ const riskEvidence = [
     request_ref: "req_token_000001",
     request_name: "AI Platform · 深度分析 · Token 突增",
     operation: "深度分析",
-    signal: { metric: "Token 基线倍数", value: 2.36, unit: "ratio" },
+    signal: { metric: "tokens_total", value: 31580, unit: "token" },
     latency_ms: 3380,
     cache_state: "miss",
     status: "succeeded",
@@ -505,7 +505,7 @@ const riskEvidence = [
     request_ref: "req_coverage_000001",
     request_name: "Operations · 调用入口 · 覆盖复核",
     operation: "统一入口覆盖复核",
-    signal: { metric: "统一入口覆盖率", value: 92.8, unit: "percent" },
+    signal: { metric: "gateway_coverage", value: "unmanaged", unit: "state" },
     latency_ms: 1120,
     cache_state: "bypassed",
     status: "succeeded",
@@ -516,26 +516,32 @@ const riskEvidence = [
 ];
 
 
-function riskDecisionPayload(baseVersion = "cache-policy-v1") {
-  const opportunities = [
+function riskDecisionPayload(baseVersion = "cache-policy-v1", { postScan = false } = {}) {
+  const initialOpportunities = [
     { opportunity_id: "opp-latency", anomaly_id: "anom-latency", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "p95_latency", risk_domain: "experience", title: "响应时延优化", recommendation: "拆分大批量分析并复核高时延模型路由。", impact: "high", confidence: "high", effort: "high", sample_count: 60, evidence_refs: ["req_slow_000001"], expected_impact: { status: "estimated", value: 1.4, currency: "USD" }, base_version: "remediation-template-v1" },
     { opportunity_id: "opp-cache", anomaly_id: "anom-cache", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "cache_hit_rate", risk_domain: "efficiency", title: "缓存效率优化", recommendation: "统一重复分析的缓存键并复核有效期。", impact: "medium", confidence: "high", effort: "low", sample_count: 54, evidence_refs: ["req_cache_000001"], expected_impact: { status: "estimated", value: 0.0048, currency: "USD" }, base_version: baseVersion },
     { opportunity_id: "opp-unpriced", anomaly_id: "anom-unpriced", anomaly_status: "acknowledged", applicable_actions: ["suppress"], policy_type: "unpriced_requests", risk_domain: "cost", title: "计价覆盖补齐", recommendation: "为新接入模型补齐官方价目映射。", impact: "medium", confidence: "medium", effort: "medium", sample_count: 30, evidence_refs: ["req_unpriced_001"], expected_impact: { status: "estimated", value: 0.0026, currency: "USD" }, base_version: "remediation-template-v1" },
     { opportunity_id: "opp-error", anomaly_id: "anom-error", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "error_rate", risk_domain: "governance", title: "调用成功率改善", recommendation: "按失败类别和调用来源修复错误。", impact: "high", confidence: "medium", effort: "medium", sample_count: 24, evidence_refs: ["req_error_000001"], expected_impact: { status: "estimated", value: 0.0031, currency: "USD" }, base_version: "remediation-template-v1" },
   ];
+  const postScanOpportunities = [
+    ...initialOpportunities.filter((item) => item.opportunity_id !== "opp-error"),
+    { opportunity_id: "opp-budget", anomaly_id: "anom-budget", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "daily_cost_budget", risk_domain: "cost", title: "预算消耗复核", recommendation: "复核主要成本贡献来源和模型路由。", impact: "high", confidence: "high", effort: "medium", sample_count: 34, evidence_refs: ["req_budget_000001"], expected_impact: { status: "estimated", value: 0.0038, currency: "USD" }, base_version: "remediation-template-v1" },
+    { opportunity_id: "opp-token", anomaly_id: "anom-token", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "token_spike", risk_domain: "efficiency", title: "Token 用量复核", recommendation: "检查大上下文和重复分析调用。", impact: "medium", confidence: "high", effort: "low", sample_count: 18, evidence_refs: ["req_token_000001"], expected_impact: { status: "estimated", value: 0.0022, currency: "USD" }, base_version: "remediation-template-v1" },
+    { opportunity_id: "opp-coverage", anomaly_id: "anom-coverage", anomaly_status: "open", applicable_actions: ["acknowledge", "suppress"], policy_type: "apim_coverage", risk_domain: "governance", title: "统一入口覆盖复核", recommendation: "核对未纳管调用来源并补齐入口治理。", impact: "medium", confidence: "high", effort: "medium", sample_count: 146, evidence_refs: ["req_coverage_000001"], expected_impact: { status: "estimated", value: 0.0019, currency: "USD" }, base_version: "remediation-template-v1" },
+  ];
+  const opportunities = postScan ? postScanOpportunities : initialOpportunities;
   const levels = { low: 1, medium: 2, high: 3 };
+  const riskDomains = ["cost", "experience", "efficiency", "governance"].map((id) => ({
+    id,
+    count: opportunities.filter((item) => item.risk_domain === id).length,
+  }));
   return {
     scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
     window: bootstrapPayload.window,
     freshness: { generated_at: NOW, query_cache: { provider: "redis", status: "miss" } },
     data_status: "partial",
-    decision: { state: "prioritized", title: "已按影响与证据确定优化优先级", summary: "风险以影响、置信度、影响范围和可追溯证据展示，不使用复合风险分数。", evidence_state: "observed" },
-    risk_domains: [
-      { id: "cost", count: 1 },
-      { id: "experience", count: 1 },
-      { id: "efficiency", count: 1 },
-      { id: "governance", count: 1 },
-    ],
+    decision: { state: "prioritized", title: "已按影响与证据确定优化优先级", summary: "风险以运营严重度、证据置信度、评估样本量和可追溯证据展示，不使用复合风险分数。", evidence_state: "observed" },
+    risk_domains: riskDomains,
     risk_matrix: opportunities.map((item) => ({
       ...item,
       x_confidence: levels[item.confidence],
@@ -553,7 +559,7 @@ function riskDecisionPayload(baseVersion = "cache-policy-v1") {
       y_value_impact_state: "observed",
       bubble_size: item.sample_count,
     })),
-    portfolio_metadata: { x_axis: "effort", y_axis: "value_impact", size: "affected_scope", color: "risk_domain" },
+    portfolio_metadata: { x_axis: "effort", y_axis: "value_impact", size: "sample_count", color: "risk_domain" },
     selected_evidence_summaries: riskEvidence,
     insight: { title: "优先处理慢响应并验证缓存策略", summary: "高时延影响范围最大；缓存未命中具有可量化的成本改善空间。", status: "observed" },
     drafts: [],
@@ -627,8 +633,8 @@ function remediationDraft(revision = 1, status = "draft") {
     base_version: "cache-policy-v1",
     status,
     revision,
-    created_at: "2026-07-31T08:00:00Z",
-    updated_at: "2026-07-31T08:05:00Z",
+    created_at: "2026-08-07T07:30:00Z",
+    updated_at: "2026-08-07T07:35:00Z",
   };
 }
 
@@ -655,6 +661,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     roiScenarioConflictOnce: Boolean(options.roiScenarioConflictOnce),
     remediationReviewConflictOnce: Boolean(options.remediationReviewConflictOnce),
     failRoiRefresh: Boolean(options.failRoiRefresh),
+    riskDecisionRefreshFailuresRemaining: Math.max(0, Number(options.riskDecisionRefreshFailures || 0)),
     decisionDelayMs: Number(options.decisionDelayMs || 0),
     capabilityDelayMs: Number(options.capabilityDelayMs || 0),
     dashboardDelayMs: Number(options.dashboardDelayMs || 0),
@@ -664,6 +671,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     failDashboardFallback: false,
     delayNextRoiRefreshMs: 0,
     riskBaseVersion: "cache-policy-v1",
+    riskScanRuns: 0,
     remediation: null,
     calls: {
       bootstrap: 0,
@@ -687,7 +695,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         avoided_loss_or_revenue: 1000,
         implementation_cost: 6000,
         monthly_fixed_cost: 200,
-        model_cost: 0.0269,
+        model_cost: 450,
         evaluation_months: 12,
         evidence_revision: 1,
       },
@@ -696,10 +704,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         currency: "USD",
         monthly_benefit: 3000,
         implementation_amortization: 500,
-        monthly_total_cost: 700.0269,
-        monthly_net_benefit: 2299.9731,
-        roi_ratio: 3.285549,
-        payback_months: 2.142878,
+        monthly_total_cost: 1150,
+        monthly_net_benefit: 1850,
+        roi_ratio: 1.6087,
+        payback_months: 2.6,
         formula_revision: "dataforge-roi-v1",
       },
       formula_revision: "dataforge-roi-v1",
@@ -709,7 +717,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     const request = route.request();
     const url = new URL(request.url());
     const path = url.pathname;
-    calls.push({ method: request.method(), path, body: request.postData() || "" });
+    calls.push({ method: request.method(), path, search: url.search, body: request.postData() || "" });
     if (path === "/api/finops/bootstrap") control.calls.bootstrap += 1;
     if (path === "/api/workspaces/demo-corpus/dashboard") control.calls.dashboard += 1;
     if (path === "/api/finops/roi/decision") control.calls.roiDecision += 1;
@@ -740,6 +748,20 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         status: 503,
         contentType: "application/json",
         body: JSON.stringify({ detail: "ROI decision refresh is temporarily unavailable" }),
+      });
+      return;
+    }
+
+    if (
+      path === "/api/finops/risk/decision"
+      && url.searchParams.get("refresh") === "1"
+      && control.riskDecisionRefreshFailuresRemaining > 0
+    ) {
+      control.riskDecisionRefreshFailuresRemaining -= 1;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ detail: "优先事项更新失败，请重试" }),
       });
       return;
     }
@@ -1135,7 +1157,67 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         existing.revision += 1;
       }
       body = { provider_id: "provider_bedrock" };
+    } else if (/^\/api\/model-providers\/[^/]+\/rotate-secret$/.test(path)) {
+      const providerId = decodeURIComponent(path.split("/")[3]);
+      const existing = control.providerItems.find((item) => item.provider_id === providerId);
+      if (existing) {
+        existing.secret_status = "stored";
+        existing.connection_state = "connected";
+        existing.connection_stage = "completed";
+        existing.stage_durations_ms = {
+          secret_read: 2,
+          endpoint_resolution: 4,
+          tls_connect: 7,
+          provider_auth: 12,
+          minimal_inference: 90,
+          model_discovery: 16,
+        };
+        existing.safe_error_category = null;
+        existing.last_tested_at = NOW;
+        existing.revision += 1;
+      }
+      body = { provider_id: providerId };
+    } else if (/^\/api\/model-providers\/[^/]+\/(govern|suspend)$/.test(path)) {
+      const [, , , encodedProviderId, action] = path.split("/");
+      const providerId = decodeURIComponent(encodedProviderId);
+      const existing = control.providerItems.find((item) => item.provider_id === providerId);
+      if (!existing) {
+        status = 404;
+        body = { detail: "provider not found" };
+      } else {
+        const governed = action === "govern";
+        existing.governance_state = governed ? "governed" : "pending";
+        existing.revision += 1;
+        existing.route_eligibility = {
+          state: governed ? "selectable" : "governance_required",
+          selectable: governed,
+          can_govern: !governed,
+          reason: governed ? null : "governance_required",
+          eligible_model_count: existing.available_models.filter((model) => model.support_state === "supported" && model.price_key).length,
+        };
+        body = { provider_id: providerId, revision: existing.revision };
+      }
     } else if (path === "/api/workspaces/demo-corpus/governance/model-routing") {
+      const providerRoutes = control.providerItems
+        .filter((item) => item.provider_type === "deepseek")
+        .flatMap((item) => item.available_models
+          .filter((model) => ["supported", "unpriced"].includes(model.support_state))
+          .map((model) => ({
+            id: `ds_${item.provider_id}_${model.model_id}`,
+            deployment: model.model_id,
+            model_id: model.model_id,
+            provider_id: item.provider_id,
+            provider_type: "deepseek",
+            provider_label: item.display_name,
+            label: model.display_name,
+            capabilities: model.capabilities,
+            official_price_key: model.price_key,
+            pricing_state: model.price_key ? "priced" : "unpriced",
+            health_state: item.connection_state,
+            governance_state: item.governance_state,
+            selectable: item.route_eligibility?.selectable === true && Boolean(model.price_key),
+            unavailable_reason: model.price_key ? item.route_eligibility?.reason : "official_pricing_required",
+          })));
       body = {
         workspace_id: "demo-corpus",
         default_route: "analysis",
@@ -1152,6 +1234,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             label: "GPT-5.6 Terra",
             capabilities: ["analysis", "chat"],
           },
+          ...providerRoutes,
         ],
         policy: {
           revision: 3,
@@ -1159,6 +1242,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           assignments: {},
           agent_assignments: {
             "df-auditor": {
+              primary_route_id: "terra",
+              fallback_route_id: "analysis",
+            },
+            "df-finops-analyst": {
+              primary_route_id: "terra",
+              fallback_route_id: "analysis",
+            },
+            "df-roi-analyst": {
               primary_route_id: "terra",
               fallback_route_id: "analysis",
             },
@@ -1207,6 +1298,18 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             cached_input_per_million: 0.1,
             source_url: "https://prices.azure.com/api/retail/prices",
           },
+          {
+            price_key: "deepseek:deepseek-v4-flash:official",
+            provider: "deepseek",
+            official_model: "deepseek-v4-flash",
+            display_name: "DeepSeek V4 Flash",
+            currency: "USD",
+            input_per_million: 0.14,
+            output_per_million: 0.28,
+            cached_input_per_million: 0.0028,
+            revision: "deepseek-2026-07-28-v1",
+            source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
+          },
         ],
         count: 4,
       };
@@ -1218,6 +1321,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           mapping_revision: 1,
         }],
         count: 1,
+        scope: "tenant",
+        can_manage: true,
+        authorization_source: "entra_tenant_pricing_admin",
       };
     } else if (path === "/api/finops/requests") {
       body = {
@@ -1225,7 +1331,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         items: [
           {
             request_ref: "req_aaaaaaaaaaaa",
-            occurred_at: "2026-07-24T02:42:00Z",
+            occurred_at: "2026-08-07T02:42:00Z",
             workspace_id: "demo-corpus",
           },
         ],
@@ -1238,7 +1344,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         display: {
           name: "Commerce · 分析运行 · 7月24日 10:42",
           operation: "分析运行",
-          occurred_at: "2026-07-24T02:42:00Z",
+          occurred_at: "2026-08-07T02:42:00Z",
         },
         status: "succeeded",
         metrics: {
@@ -1270,11 +1376,13 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (
       path === "/api/finops/requests/req_slow_000001"
       || path === "/api/finops/requests/req_cache_000001"
+      || path === "/api/finops/requests/req_priced_000001"
       || path === "/api/finops/requests/req_unpriced_001"
       || path === "/api/finops/requests/req_error_000001"
       || path === "/api/finops/requests/req_budget_000001"
       || path === "/api/finops/requests/req_token_000001"
       || path === "/api/finops/requests/req_coverage_000001"
+      || path === "/api/finops/requests/req_outcome_000001"
     ) {
       const requestRef = path.split("/").at(-1);
       const profiles = {
@@ -1296,6 +1404,16 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           latency: 1850,
           cache: "miss",
           cost: 0.0084,
+          error: null,
+        },
+        req_priced_000001: {
+          operation: "成本归因",
+          request: "使用已配置价目的模型执行客户机会分析",
+          response: "分析已完成，本次 Token 用量已按生效价目表完成估算成本归因。",
+          status: "succeeded",
+          latency: 1480,
+          cache: "miss",
+          cost: 0.0128,
           error: null,
         },
         req_unpriced_001: {
@@ -1348,14 +1466,24 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           cost: 0.0034,
           error: null,
         },
+        req_outcome_000001: {
+          operation: "业务结果复核",
+          request: "复核本期分析建议是否形成可验证的业务结果",
+          response: "已记录业务结果证据，仍需独立审核后计入已验证 ROI。",
+          status: "succeeded",
+          latency: 1460,
+          cache: "bypassed",
+          cost: 0.0041,
+          error: null,
+        },
       };
       const profile = profiles[requestRef];
       body = {
         ...bootstrapPayload,
         display: {
-          name: `Commerce · ${profile.operation} · 7月24日 14:10`,
+          name: `AI Platform · ${profile.operation} · 8月7日 14:10`,
           operation: profile.operation,
-          occurred_at: "2026-07-24T06:10:00Z",
+          occurred_at: "2026-08-07T06:10:00Z",
         },
         status: profile.status,
         metrics: {
@@ -1390,9 +1518,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/finops/breakdowns") {
       const isWorkspace = url.searchParams.get("group_by") === "workspace";
       const workspaceItems = [
-        { key: "Commerce Insights", requests: 32, tokens: 1240, estimated_cost: 0.014, error_rate_pct: 3.1, p95_latency_ms: 1800, cache_hit_rate_pct: 48.3, data_status: "available" },
-        { key: "Finance Forecast", requests: 18, tokens: 700, estimated_cost: 0.0081, error_rate_pct: 5.6, p95_latency_ms: 2600, cache_hit_rate_pct: 33.3, data_status: "partial" },
-        { key: "IT Governance", requests: 10, tokens: 547, estimated_cost: 0.0048, error_rate_pct: 10, p95_latency_ms: 1400, cache_hit_rate_pct: 60, data_status: "partial" },
+        { key: "demo-corpus", requests: 2404, tokens: 165664006, estimated_cost: 493.88, error_rate_pct: 3.54, p95_latency_ms: 3478, cache_hit_rate_pct: 18.64, data_status: "partial" },
       ];
       body = {
         ...bootstrapPayload,
@@ -1403,14 +1529,18 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = {
         ...bootstrapPayload,
         agents: [
-          { key: "分析协调 Agent", requests: 30, tokens: 1240, estimated_cost: 0.0142, error_rate_pct: 3.3, success_rate_pct: 96.7, p95_latency_ms: 1800, cache_hit_rate_pct: 53.3, data_status: "available" },
-          { key: "财务洞察 Agent", requests: 18, tokens: 720, estimated_cost: 0.0081, error_rate_pct: 5.6, success_rate_pct: 94.4, p95_latency_ms: 2400, cache_hit_rate_pct: 38.9, data_status: "partial" },
-          { key: "风险审阅 Agent", requests: 12, tokens: 527, estimated_cost: 0.0046, error_rate_pct: 16.7, success_rate_pct: 83.3, p95_latency_ms: 1100, cache_hit_rate_pct: 25, data_status: "partial" },
+          { key: "Product Architect", requests: 402, tokens: 28264062, estimated_cost: 85.94, error_rate_pct: 3.2, success_rate_pct: 96.8, p95_latency_ms: 3610, cache_hit_rate_pct: 18.9, data_status: "available" },
+          { key: "Support Triage", requests: 407, tokens: 27438560, estimated_cost: 83.32, error_rate_pct: 3.7, success_rate_pct: 96.3, p95_latency_ms: 3440, cache_hit_rate_pct: 18.2, data_status: "partial" },
+          { key: "Delivery Engineer", requests: 401, tokens: 27313712, estimated_cost: 82.8, error_rate_pct: 3.5, success_rate_pct: 96.5, p95_latency_ms: 3520, cache_hit_rate_pct: 19.1, data_status: "available" },
+          { key: "Close Analyst", requests: 396, tokens: 27682606, estimated_cost: 81.39, error_rate_pct: 3.8, success_rate_pct: 96.2, p95_latency_ms: 3690, cache_hit_rate_pct: 18.4, data_status: "partial" },
+          { key: "Compliance Reviewer", requests: 398, tokens: 27775009, estimated_cost: 80.92, error_rate_pct: 3.4, success_rate_pct: 96.6, p95_latency_ms: 3410, cache_hit_rate_pct: 18.6, data_status: "available" },
+          { key: "Checkout Copilot", requests: 400, tokens: 27190057, estimated_cost: 79.5, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 3560, cache_hit_rate_pct: 18.7, data_status: "available" },
         ],
         models: [
-          { key: "gpt-5.6-terra", requests: 28, tokens: 1300, estimated_cost: 0.0151, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 2500, cache_hit_rate_pct: 46.4, data_status: "estimated" },
-          { key: "gpt-5.1", requests: 20, tokens: 720, estimated_cost: 0.0073, error_rate_pct: 5, success_rate_pct: 95, p95_latency_ms: 1700, cache_hit_rate_pct: 40, data_status: "estimated" },
-          { key: "deepseek-chat", requests: 12, tokens: 467, estimated_cost: 0.0045, error_rate_pct: 16.7, success_rate_pct: 83.3, p95_latency_ms: 1200, cache_hit_rate_pct: 33.3, data_status: "estimated" },
+          { key: "gpt-5.1", requests: 611, tokens: 42284821, estimated_cost: 272.2, error_rate_pct: 3.4, success_rate_pct: 96.6, p95_latency_ms: 3580, cache_hit_rate_pct: 18.5, data_status: "estimated" },
+          { key: "gpt-5.6-terra", requests: 590, tokens: 40696870, estimated_cost: 109.7, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 3710, cache_hit_rate_pct: 18.8, data_status: "estimated" },
+          { key: "deepseek-chat", requests: 599, tokens: 41343442, estimated_cost: 72.01, error_rate_pct: 3.7, success_rate_pct: 96.3, p95_latency_ms: 3460, cache_hit_rate_pct: 18.6, data_status: "estimated" },
+          { key: "gpt-4.1-mini", requests: 604, tokens: 41338873, estimated_cost: 39.97, error_rate_pct: 3.5, success_rate_pct: 96.5, p95_latency_ms: 3370, cache_hit_rate_pct: 18.7, data_status: "estimated" },
         ],
       };
     } else if (path === "/api/finops/budgets") {
@@ -1420,12 +1550,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           name: "Commerce 月度预算",
           scope_type: "workspace",
           scope_id: "demo-corpus",
-          amount: 0.1,
+          amount: 600,
           currency: "USD",
           progress: {
-            spent_amount: 0.0269,
-            usage_pct: 26.9,
-            forecast_amount: 0.041,
+            spent_amount: 493.88,
+            usage_pct: 82.31,
+            forecast_amount: 612.4,
             forecast_status: "estimated",
             confidence: "partial",
             threshold_state: "normal",
@@ -1609,6 +1739,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         agent_kind: "finops",
         trigger_fingerprint: "f".repeat(64),
       };
+    } else if (path === "/api/finops/assistant/bootstrap" && request.method() === "GET") {
+      body = {
+        conversation: { conversation_ref: "conversation-demo", updated_at: "2026-08-02T08:00:00Z" },
+        messages: [{ role: "assistant", content: "上次分析已保留，可继续针对当前指标提问。" }],
+        cache_status: "hit",
+      };
     } else if (path === "/api/finops/assistant/conversations" && request.method() === "GET") {
       body = { items: [{ conversation_ref: "conversation-demo", updated_at: "2026-08-02T08:00:00Z" }], count: 1 };
     } else if (path === "/api/finops/assistant/conversations/conversation-demo/messages" && request.method() === "GET") {
@@ -1636,31 +1772,149 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       }
       const submitted = request.postDataJSON();
       const metricLabel = String(submitted?.metric_context?.label || "当前指标");
+      const submittedRefs = Array.isArray(submitted?.metric_context?.evidence_refs)
+        ? submitted.metric_context.evidence_refs.slice(0, 3)
+        : [];
+      const policyEvidence = {
+        p95_latency: "req_slow_000001",
+        cache_hit_rate: "req_cache_000001",
+        unpriced_requests: "req_unpriced_001",
+        error_rate: "req_error_000001",
+        daily_cost_budget: "req_budget_000001",
+        token_spike: "req_token_000001",
+        apim_coverage: "req_coverage_000001",
+      }[submitted?.metric_context?.policy_type];
+      const metricId = String(submitted?.metric_context?.metric_id || "");
+      const isCostQuestion = ["estimated_cost", "cost", "operations_cost"].includes(metricId);
+      const metricEvidence = metricId.includes("error")
+        ? "req_error_000001"
+        : metricId.includes("latency") || metricId.includes("p95")
+          ? "req_slow_000001"
+          : metricId.includes("cost") || metricId.includes("price")
+            ? "req_unpriced_001"
+            : "req_cache_000001";
+      const serviceSelectedRef = policyEvidence || metricEvidence;
+      const assistantEvidenceRefs = submittedRefs.length
+        ? (submittedRefs.includes(serviceSelectedRef) ? [serviceSelectedRef] : [])
+        : [serviceSelectedRef];
+      const assistantReady = assistantEvidenceRefs.length > 0;
       body = {
+        status: assistantReady ? "ready" : "insufficient_data",
         conversation_ref: "conversation-demo",
-        answer: `${metricLabel}当前需要关注。`,
-        sections: {
-          conclusion: `${metricLabel}当前需要关注。`,
-          basis: "当前筛选范围内已有请求级运行证据和规则阈值。",
-          impact: "该信号会影响成本、体验或治理判断，应先复核影响范围。",
-          recommendation: "先查看关联证据，再在候选范围验证优化建议。",
-          caveat: "这是基于当前运行证据的分析，不会自动执行生产变更。",
+        answer: assistantReady
+          ? (isCostQuestion ? "本月估算成本为 $493.88，主要由 gpt-5.1 与高用量分析请求贡献。" : `${metricLabel}当前需要关注。`)
+          : "当前指标缺少可复核证据，暂不能生成分析结论。",
+        sections: assistantReady ? {
+          conclusion: isCostQuestion
+            ? "本月估算成本为 $493.88，gpt-5.1 贡献约 $272.20，是首要成本来源。"
+            : `${metricLabel}当前需要关注。`,
+          basis: isCostQuestion
+            ? "30 天内记录 2,404 次调用，其中 2,248 次已匹配价目；成本和模型归因均来自请求级运行证据。"
+            : "当前筛选范围内已有请求级运行证据和规则阈值。",
+          impact: isCostQuestion
+            ? "价目覆盖率为 93.51%，未计价请求会使总成本仍有低估可能；缓存命中率 18.64% 也限制了节省空间。"
+            : "该信号会影响成本、体验或治理判断，应先复核影响范围。",
+          recommendation: isCostQuestion
+            ? "先下钻 gpt-5.1 的高成本请求，再验证重复分析的缓存键和有效期。"
+            : "先查看关联证据，再在候选范围验证优化建议。",
+          caveat: isCostQuestion
+            ? "该金额按 DataForge 价目修订版估算，不等于云平台实际账单；未计价请求不按零成本处理。"
+            : "这是基于当前运行证据的分析，不会自动执行生产变更。",
+        } : null,
+        evidence_state: assistantReady ? "observed" : "unavailable",
+        evidence_refs: assistantEvidenceRefs,
+        evidence_labels: assistantEvidenceRefs.map((_, index) => `${metricLabel}证据 ${index + 1}`),
+        suggested_questions: assistantReady
+          ? (isCostQuestion ? ["价目覆盖率如何影响成本可信度？", "哪些模型最适合优先优化？"] : ["与上一周期相比如何？"])
+          : [],
+      };
+    } else if (path === "/api/service-readiness") {
+      body = {
+        workspace_id: "demo-corpus",
+        generated_at: "2026-08-09T02:00:00Z",
+        groups: {
+          identity: { label: "身份与权限", items: [
+            { key: "signed_in_identity", label: "登录身份", status: "ready", details: { role: "owner", source: "entra" } },
+            { key: "group_governance", label: "群组权限解析", status: "ready", details: { state: "resolved" } },
+          ] },
+          data: { label: "数据服务", items: [
+            { key: "blob", label: "工作区文件", status: "ready", details: { state: "ok", latency_ms: 12 } },
+            { key: "search", label: "知识检索", status: "ready", details: { state: "ok", latency_ms: 18 } },
+            { key: "cache", label: "查询缓存", status: "ready", details: { status: "ok", elapsed_ms: 3 } },
+          ] },
+          ai: { label: "AI 服务", items: [
+            { key: "foundry", label: "主模型服务", status: "ready", details: { state: "ok", latency_ms: 42 } },
+            { key: "external_models", label: "外部模型", status: "degraded", details: { configured: 1, connected: 0, governed: 0 } },
+          ] },
+          finops: { label: "成本与治理", items: [
+            { key: "ledger", label: "运营账本", status: "ready", details: { persistence: "durable" } },
+            { key: "pricing", label: "模型计价", status: "ready", details: { catalog_entries: 12, mapping_count: 5 } },
+            { key: "risk_scan", label: "风险扫描", status: "ready", details: { rules_evaluated: 7, rules_triggered: 7, evidence_coverage_pct: 100 } },
+          ] },
+          background_jobs: { label: "后台任务", items: [
+            { key: "finops_apim_reconciliation", label: "入口调用对账", status: "ready", last_completed_at: "2026-08-09T01:58:00Z", details: { rows_observed: 146, rows_written: 12, age_seconds: 120 } },
+            { key: "finops_rollup", label: "运营指标聚合", status: "ready", last_completed_at: "2026-08-09T01:55:00Z", details: { rows_observed: 146, rows_written: 48, age_seconds: 300 } },
+            { key: "finops_retention", label: "数据保留清理", status: "not_run", last_completed_at: null, details: {} },
+          ] },
         },
-        evidence_state: "observed",
-        evidence_refs: submitted?.metric_context?.metric_id?.includes("error")
-          ? ["req_error_000001"]
-          : ["req_cache_000001"],
-        suggested_questions: ["与上一周期相比如何？"],
       };
     } else if (path === "/api/finops/risk/scans/latest") {
       body = riskScanPayload();
+    } else if (path === "/api/finops/risk/scans" && request.method() === "GET") {
+      const latest = riskScanPayload();
+      body = {
+        items: [
+          {
+            scan_ref: latest.scan_ref,
+            status: latest.status,
+            policy_revision: latest.policy_revision,
+            ledger_revision: latest.ledger_revision,
+            rule_count: latest.rules_evaluated,
+            rules_triggered: latest.rules_triggered,
+            rules_clear: latest.rules_clear,
+            rules_insufficient: latest.rules_insufficient,
+            rules_unavailable: 0,
+            request_sample_count: latest.request_sample_count,
+            evidence_bound_findings: 7,
+            evidence_coverage_pct: latest.evidence_coverage_pct,
+            started_at: latest.started_at,
+            finished_at: latest.finished_at,
+          },
+          {
+            scan_ref: "rscan_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status: "completed",
+            rule_count: 7,
+            rules_triggered: 4,
+            rules_clear: 3,
+            rules_insufficient: 0,
+            rules_unavailable: 0,
+            request_sample_count: 132,
+            evidence_bound_findings: 7,
+            evidence_coverage_pct: 100,
+            started_at: "2026-08-02T02:30:00Z",
+            finished_at: "2026-08-02T02:30:01Z",
+          },
+        ],
+        count: 2,
+        workspace_id: "demo-corpus",
+      };
     } else if (path === "/api/finops/risk/scans" && request.method() === "POST") {
       status = 201;
+      control.riskScanRuns += 1;
       body = riskScanPayload();
+    } else if (/^\/api\/finops\/risk\/scans\/rscan_[a-f0-9]+$/.test(path)) {
+      body = {
+        ...riskScanPayload(),
+        scan_ref: path.split("/").at(-1),
+        started_at: "2026-08-02T02:30:00Z",
+        finished_at: "2026-08-02T02:30:01Z",
+      };
     } else if (path === "/api/finops/roi/decision") {
       body = roiDecisionPayload;
     } else if (path === "/api/finops/risk/decision") {
-      body = riskDecisionPayload(control.riskBaseVersion);
+      body = riskDecisionPayload(control.riskBaseVersion, {
+        postScan: control.riskScanRuns > 0 && url.searchParams.get("refresh") === "1",
+      });
     } else if (path === "/api/finops/remediation-drafts" && request.method() === "GET") {
       body = {
         items: control.remediation ? [control.remediation] : [],
@@ -1692,14 +1946,14 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       body = {
         workspace_id: "demo-corpus",
         funnel: [
-          { id: "investment", label: "投入", value: 0.0269, unit: "USD", status: "estimated" },
-          { id: "usage", label: "使用", value: 60, unit: "次调用", status: "observed" },
-          { id: "output", label: "产出", value: 60, unit: "次分析", status: "observed" },
+          { id: "investment", label: "投入", value: 493.88, unit: "USD", status: "estimated" },
+          { id: "usage", label: "使用", value: 2404, unit: "次调用", status: "observed" },
+          { id: "output", label: "产出", value: 186, unit: "次分析", status: "observed" },
           { id: "outcome", label: "业务结果", value: null, unit: "项已验证结果", status: "not_recorded" },
         ],
         unit_economics: {
-          cost_per_successful_request: { label: "每次成功调用成本", value: 0.00048, currency: "USD", status: "estimated" },
-          cost_per_analysis: { label: "每次分析成本", value: 0.0269, currency: "USD", status: "estimated" },
+          cost_per_successful_request: { label: "每次成功调用成本", value: 0.21297, currency: "USD", status: "estimated" },
+          cost_per_analysis: { label: "每次分析成本", value: 2.65527, currency: "USD", status: "estimated" },
           cost_per_artifact: { label: "每个产物成本", value: null, currency: null, status: "unavailable" },
           cost_per_verified_outcome: { label: "每个已验证结果成本", value: null, currency: null, status: "unavailable" },
         },
@@ -1769,7 +2023,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         workspace_id: "demo-corpus",
         status: "estimated",
         business_value: null,
-        cost: { total: 0.0269, currency: "USD", status: "complete" },
+        cost: { total: 493.88, currency: "USD", status: "partial" },
         outcome_evidence: {
           status: "not_recorded",
           verified_outcome_event_ids: [],
@@ -1779,7 +2033,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/workspaces/demo-corpus/governance/cost-value") {
       body = {
         workspace_id: "demo-corpus",
-        cost_evidence: { total: 0.0269, currency: "USD", status: "complete" },
+        cost_evidence: { total: 493.88, currency: "USD", status: "partial" },
         outcome_evidence: { status: "not_recorded", verified_outcome_event_ids: [] },
         realized_roi: { status: "not_recorded", roi_ratio: null },
         scenarios: control.roiScenarios,

@@ -46,6 +46,8 @@ def test_finops_schema_allows_bedrock_and_adds_region() -> None:
     assert "DROP CONSTRAINT CK_finops_model_provider_type" in sql
     assert "definition" in sql
     assert "IF NOT EXISTS" in sql
+    assert "connection_stage NVARCHAR(64) NULL" in sql
+    assert "stage_durations_json NVARCHAR(MAX)" in sql
 
 
 @pytest.mark.parametrize(
@@ -116,6 +118,14 @@ def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> No
     assert "parent_object_id = object_id(n'df_finops.budget_alert')" in upgrade
     assert "alter table df_finops.budget_alert" in upgrade
     assert "add constraint ck_finops_budget_alert_period" in upgrade
+
+
+def test_job_run_status_schema_is_additive() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+
+    assert "if object_id(n'df_finops.job_run_status', n'u') is null" in schema
+    assert "create table df_finops.job_run_status" in schema
+    assert "drop table df_finops.job_run_status" not in schema
 
 
 def test_finops_schema_contains_remediation_tables() -> None:

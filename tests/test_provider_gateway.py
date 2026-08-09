@@ -60,6 +60,8 @@ def test_gateway_records_failed_primary_and_successful_fallback() -> None:
     assert result.result.text == "ok"
     assert [item["state"] for item in attempts] == ["failed", "succeeded"]
     assert attempts[0]["safe_error_category"] == "rate_limited"
+    assert attempts[1]["selection"] == "fallback"
+    assert attempts[1]["fallback_reason"] == "rate_limited"
     assert "request_ref" not in attempts[0]
     assert "correlation_ref" not in attempts[0]
 

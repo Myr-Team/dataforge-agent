@@ -11,17 +11,15 @@ import {
 
 test("assistant history prefetch is workspace-scoped, cached, and request-deduplicated", async () => {
   clearFinOpsAssistantHistoryCache("ws-prefetch");
-  let conversationLoads = 0;
-  let messageLoads = 0;
+  let bootstrapLoads = 0;
   const loaders = {
-    loadConversations: async () => {
-      conversationLoads += 1;
+    loadBootstrap: async () => {
+      bootstrapLoads += 1;
       await Promise.resolve();
-      return { items: [{ conversation_ref: "conversation-1" }] };
-    },
-    loadMessages: async () => {
-      messageLoads += 1;
-      return { items: [{ role: "assistant", content: "cached answer" }] };
+      return {
+        conversation: { conversation_ref: "conversation-1" },
+        messages: [{ role: "assistant", content: "cached answer" }],
+      };
     },
   };
 
@@ -31,22 +29,20 @@ test("assistant history prefetch is workspace-scoped, cached, and request-dedupl
   ]);
 
   assert.deepEqual(first, second);
-  assert.equal(conversationLoads, 1);
-  assert.equal(messageLoads, 1);
+  assert.equal(bootstrapLoads, 1);
   assert.equal(peekFinOpsAssistantHistory("ws-prefetch").messages[0].content, "cached answer");
 
   await prefetchFinOpsAssistantHistory("ws-prefetch", loaders);
-  assert.equal(conversationLoads, 1);
-  assert.equal(messageLoads, 1);
+  assert.equal(bootstrapLoads, 1);
 });
 
 
 test("cross-device history restores structured assistant sections and evidence labels", async () => {
   clearFinOpsAssistantHistoryCache("ws-structured");
   const history = await prefetchFinOpsAssistantHistory("ws-structured", {
-    loadConversations: async () => ({ items: [{ conversation_ref: "conversation-structured" }] }),
-    loadMessages: async () => ({
-      items: [{
+    loadBootstrap: async () => ({
+      conversation: { conversation_ref: "conversation-structured" },
+      messages: [{
         role: "assistant",
         content: "结论正文",
         metric_context_payload: {
@@ -102,13 +98,12 @@ test("clearing history invalidates an older prefetch response", async () => {
   let resolveConversations;
   const conversations = new Promise((resolve) => { resolveConversations = resolve; });
   const pending = prefetchFinOpsAssistantHistory("ws-clear-race", {
-    loadConversations: () => conversations,
-    loadMessages: async () => ({ items: [] }),
+    loadBootstrap: () => conversations,
   });
   await Promise.resolve();
 
   clearFinOpsAssistantHistoryCache("ws-clear-race");
-  resolveConversations({ items: [] });
+  resolveConversations({ conversation: null, messages: [] });
   await pending;
 
   assert.equal(peekFinOpsAssistantHistory("ws-clear-race"), null);

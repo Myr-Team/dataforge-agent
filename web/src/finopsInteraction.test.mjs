@@ -113,6 +113,38 @@ test("metric context keeps only bounded safe fields", () => {
 });
 
 
+test("metric context carries only an allowlisted policy and three safe request refs", () => {
+  const context = metricContext({
+    id: "risk_p95_latency",
+    label: "响应时延优化",
+    value: 6200,
+    unit: "ms",
+    dataStatus: "complete",
+    evidenceState: "observed",
+    policyType: "p95_latency",
+    evidenceRefs: [
+      "req_latency_001",
+      "provider-response-id",
+      "req_latency_002",
+      "req_latency_003",
+      "req_latency_004",
+    ],
+  });
+
+  assert.equal(context.policy_type, "p95_latency");
+  assert.deepEqual(context.evidence_refs, [
+    "req_latency_001",
+    "req_latency_002",
+    "req_latency_003",
+  ]);
+  assert.equal(metricContext({
+    id: "risk_unknown",
+    label: "未知规则",
+    policyType: "arbitrary_policy",
+  }).policy_type, undefined);
+});
+
+
 test("estimated business metrics use the assistant contract without losing evidence state", () => {
   const context = metricContext({
     id: "roi_ratio",
@@ -295,6 +327,32 @@ test("model setting callbacks run only after a successful write", async () => {
       /save failed/,
     );
     assert.equal(changes, 1);
+  } finally {
+    await server.close();
+  }
+});
+
+
+test("price mapping failures are translated without exposing backend payloads", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { priceMappingErrorMessage } = await server.ssrLoadModule("/src/ModelRoutingPage.jsx");
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("raw denied"), { status: 403 })),
+      "当前账号可查看价目，但没有组织级管理权限。",
+    );
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("raw conflict"), { status: 409 })),
+      "价目已被其他管理员更新，已重新加载最新版本。",
+    );
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("Audit persistence is required"), { status: 503 })),
+      "审计记录暂时无法保存，请稍后重试。",
+    );
   } finally {
     await server.close();
   }

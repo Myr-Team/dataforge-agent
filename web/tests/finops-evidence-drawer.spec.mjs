@@ -25,6 +25,9 @@ test("owner drills from operations metric into friendly request evidence", async
   expect(dialogBounds.y).toBeGreaterThanOrEqual(topbarBounds.y + topbarBounds.height - 1);
   await expect(dialog.getByText("分析本月销售异常")).toBeVisible();
   await expect(dialog.getByText("已定位主要变化来自华东区域。")).toBeVisible();
+  await expect(dialog).toContainText("调用成功");
+  await expect(dialog).toContainText("已记录");
+  await expect(dialog).not.toContainText(/\bsucceeded\b|\brecorded\b/);
   await expect(dialog.getByRole("heading", { name: /req_/ })).toHaveCount(0);
 
   const technical = dialog.locator("details");

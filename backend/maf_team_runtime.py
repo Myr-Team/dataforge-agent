@@ -304,6 +304,11 @@ class MafRuntimeEvent(BaseModel):
     retry_count: int | None = Field(default=None, ge=0, le=100)
     tool_names: tuple[str, ...] | None = Field(default=None, max_length=12)
     cache_hit: bool | None = None
+    model_route: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
+    provider_type: str | None = Field(default=None, max_length=48, pattern=r"^[A-Za-z0-9_.:-]+$")
+    provider_id: str | None = Field(default=None, max_length=80, pattern=r"^[A-Za-z0-9_.:-]+$")
+    model_id: str | None = Field(default=None, max_length=160, pattern=r"^[A-Za-z0-9_.:-]+$")
+    fallback_reason: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_.:-]+$")
     started_ns: int | None = Field(default=None, ge=0)
     completed_ns: int | None = Field(default=None, ge=0)
 
@@ -677,6 +682,16 @@ def _safe_agent_telemetry(response: Any) -> dict[str, Any]:
             cache_hit = candidate
             break
 
+    def bounded_name(name: str, *, limit: int) -> str | None:
+        return next(
+            (
+                safe
+                for source in sources
+                if (safe := _safe_telemetry_name(source.get(name), limit=limit)) is not None
+            ),
+            None,
+        )
+
     metadata = {
         "response_id": response_id,
         "input_tokens": token_value("input_tokens", "input_token_count"),
@@ -685,6 +700,11 @@ def _safe_agent_telemetry(response: Any) -> dict[str, Any]:
         "retry_count": retry_count,
         "tool_names": tuple(tool_names),
         "cache_hit": cache_hit,
+        "model_route": bounded_name("model_route", limit=64),
+        "provider_type": bounded_name("provider_type", limit=48),
+        "provider_id": bounded_name("provider_id", limit=80),
+        "model_id": bounded_name("model_id", limit=160),
+        "fallback_reason": bounded_name("fallback_reason", limit=64),
     }
     return {key: value for key, value in metadata.items() if value is not None and value != ()}
 
@@ -718,6 +738,16 @@ def _aggregate_agent_telemetry(
         cache_hit = attempts[-1].get("cache_hit")
         if isinstance(cache_hit, bool):
             metadata["cache_hit"] = cache_hit
+        for key in (
+            "model_route",
+            "provider_type",
+            "provider_id",
+            "model_id",
+            "fallback_reason",
+        ):
+            value = attempts[-1].get(key)
+            if value is not None:
+                metadata[key] = value
 
     provider_retries = sum(int(attempt.get("retry_count") or 0) for attempt in attempts)
     retry_count = provider_retries + contract_retries

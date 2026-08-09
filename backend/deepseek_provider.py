@@ -26,6 +26,16 @@ class ProviderTransport(Protocol):
         timeout_seconds: float,
     ) -> ProviderHttpResponse: ...
 
+    def get_json(
+        self,
+        *,
+        provider_type: str,
+        base_url: str,
+        path: str,
+        api_key: str,
+        timeout_seconds: float,
+    ) -> ProviderHttpResponse: ...
+
 
 class ProviderFailure(RuntimeError):
     def __init__(
@@ -161,6 +171,8 @@ def _request_payload(invocation: ProviderInvocation) -> dict[str, Any]:
         payload["temperature"] = invocation.temperature
     if invocation.max_tokens is not None:
         payload["max_tokens"] = invocation.max_tokens
+    if invocation.thinking is not None:
+        payload["thinking"] = {"type": invocation.thinking}
     return payload
 
 

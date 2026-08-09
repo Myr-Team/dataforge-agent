@@ -12,7 +12,7 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { riskDecisionView, riskScanView } from "../finopsDecisionViewModel.js";
+import { riskDecisionView, riskScanHistoryView, riskScanView } from "../finopsDecisionViewModel.js";
 import { OpportunityPortfolio, RiskMatrix } from "./DecisionCharts.jsx";
 
 
@@ -159,8 +159,9 @@ function scanTimeLabel(value) {
 }
 
 
-function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAsk }) {
+function RiskScanWorkbench({ scan, history, loading, busy, error, onRun, onSelectScan, onEvidence, onAsk }) {
   const view = riskScanView(scan);
+  const historyItems = riskScanHistoryView({ items: history });
   const summaryItems = [
     ["检查规则", view.summary.evaluated, "条"],
     ["需关注", view.summary.triggered, "项"],
@@ -185,6 +186,27 @@ function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAs
         </div>
       </header>
       {error ? <div className="finops-risk-scan-error" role="alert"><AlertTriangle size={14} />{error}</div> : null}
+      {historyItems.length ? (
+        <div className="finops-risk-scan-history">
+          <header><span>最近扫描</span><small>每次结果独立保存，可回看当时的样本与证据覆盖</small></header>
+          <ol>
+            {historyItems.map((item) => (
+              <li key={item.scanRef}>
+                <button
+                  type="button"
+                  className={item.scanRef === view.scanRef ? "active" : ""}
+                  aria-pressed={item.scanRef === view.scanRef}
+                  disabled={item.status === "running" || loading}
+                  onClick={() => onSelectScan?.(item.scanRef)}
+                >
+                  <span><b>{scanTimeLabel(item.finishedAt || item.startedAt)}</b><small>{item.summary}</small></span>
+                  <StatusBadge status={item.status === "completed" ? "observed" : item.status}>{item.statusLabel}</StatusBadge>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
       {view.isAvailable ? (
         <>
           <div className="finops-risk-scan-summary" aria-label="扫描摘要">
@@ -231,6 +253,8 @@ function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAs
                         unit: finding.unit,
                         dataStatus: finding.status === "unavailable" ? "unavailable" : "complete",
                         evidenceState: finding.evidenceRefs.length ? "observed" : "partial",
+                        policyType: finding.policy,
+                        evidenceRefs: finding.evidenceRefs,
                       })}>问 AI</button>
                     ) : null}
                   </div>
@@ -258,10 +282,10 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
   const canAcknowledge = priority.applicableActions.includes("acknowledge");
   const canSuppress = priority.applicableActions.includes("suppress");
   const stages = [
-    ["信号", "已识别", `${priority.policyLabel} · ${priority.domainLabel}`],
-    ["影响范围", priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, `业务影响 ${priority.impactLevelLabel}`],
-    ["代表证据", selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", "仅请求证据可打开详情"],
-    ["改善验证", "待验证", "保存整改草案后复核"],
+    { id: "signal", label: "信号", value: "已识别", note: `${priority.policyLabel} · ${priority.domainLabel}`, state: "observed" },
+    { id: "impact", label: "评估样本量", value: priority.sampleCount === null ? "未记录" : `${priority.sampleCount} 次请求`, note: `运营严重度 ${priority.impactLevelLabel}`, state: priority.sampleCount === null ? "partial" : "observed" },
+    { id: "evidence", label: "代表证据", value: selectedEvidence.length ? `${selectedEvidence.length} 条请求证据` : "暂无可下钻请求", note: "仅请求证据可打开详情", state: selectedEvidence.length ? "observed" : "partial" },
+    { id: "verification", label: "改善验证", value: "待验证", note: "保存整改草案后复核", state: "pending" },
   ];
   return (
     <section className="finops-decision-risk-chain" aria-labelledby="finops-risk-chain-title">
@@ -276,14 +300,16 @@ function EvidenceChain({ priority, evidence, onEvidence, onAsk, onCreateDraft, o
               unit: " 次请求",
               dataStatus: priority.evidenceRefs.length ? "complete" : "partial",
               evidenceState: priority.evidenceRefs.length ? "observed" : "partial",
+              policyType: priority.policy,
+              evidenceRefs: priority.evidenceRefs,
             })}>问 AI</button>
           ) : null}
           <button type="button" className="quiet" data-finops-remediation-trigger onClick={() => onCreateDraft?.(priority)} disabled={!draftEnabled}>查看整改方案</button>
         </div>
       </header>
-      <ol className="finops-decision-risk-chain-stages">
-        {stages.map(([label, value, note], index) => (
-          <li key={label}><span>{index + 1}</span><div><small>{label}</small><b>{value}</b><p>{note}</p></div></li>
+      <ol className="finops-decision-risk-chain-stages" aria-label="治理判断阶段">
+        {stages.map((stage, index) => (
+          <li key={stage.id} data-state={stage.state}><span aria-hidden="true">{index + 1}</span><div><small>{stage.label}</small><b>{stage.value}</b><p>{stage.note}</p></div></li>
         ))}
       </ol>
       <div className="finops-decision-risk-assessment">
@@ -339,6 +365,8 @@ export function RiskDecisionPage({
   scanBusy = false,
   scanError = "",
   onRunScan = null,
+  scanHistory = [],
+  onSelectScan = null,
 }) {
   if (loading && !payload) return <RiskLoadingShell />;
   if (error && !payload) {
@@ -386,16 +414,18 @@ export function RiskDecisionPage({
             <span className="finops-decision-risk-updating" aria-live="polite">{updating ? <><RefreshCw className="spin" size={12} />后台更新中</> : null}</span>
           </div>
           <p>{view.decision.description}</p>
-          <small>风险按证据置信度、业务影响与真实影响范围展示，不生成无法解释的复合分数。</small>
+          <small>风险按证据置信度、运营严重度与评估样本量展示，不生成无法解释的复合分数。</small>
         </div>
       </section>
 
       <RiskScanWorkbench
         scan={scan}
+        history={scanHistory}
         loading={scanLoading}
         busy={scanBusy}
         error={scanError}
         onRun={onRunScan}
+        onSelectScan={onSelectScan}
         onEvidence={onEvidence}
         onAsk={onAsk}
       />
@@ -409,7 +439,7 @@ export function RiskDecisionPage({
 
       <section className="finops-decision-risk-columns">
         <article className="finops-decision-risk-panel">
-          <header className="finops-decision-risk-section-head"><div><span>业务影响 × 证据置信度</span><h2>风险矩阵</h2></div><small>气泡大小代表服务端返回的影响范围</small></header>
+          <header className="finops-decision-risk-section-head"><div><span>运营严重度 × 证据置信度</span><h2>风险矩阵</h2></div><small>气泡大小代表评估样本量</small></header>
           <RiskMatrix points={view.matrix} selectedId={selectedId} onSelect={onSelectRisk} />
         </article>
         <article className="finops-decision-risk-panel">
@@ -431,26 +461,36 @@ export function RiskDecisionPage({
       />
 
       <section className="finops-decision-risk-wide">
-        <header className="finops-decision-risk-section-head"><div><span>价值、难度与影响范围</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
+        <header className="finops-decision-risk-section-head"><div><span>价值、难度与评估样本量</span><h2>优化组合</h2></div><small>用于排序，不代表自动执行顺序</small></header>
         <OpportunityPortfolio data={view.portfolio} selectedId={selectedId} onSelect={onSelectRisk} />
       </section>
 
-      {view.insight ? (
-        <section className="finops-decision-risk-insight" aria-labelledby="finops-risk-insight-title">
-          <span><Bot size={17} aria-hidden="true" /></span>
-          <div><small>最新 AI 解读 · 已保存证据</small><h2 id="finops-risk-insight-title">{view.insight.title || "运营分析说明"}</h2><p>{view.insight.summary || "当前没有可展示的分析说明。"}</p></div>
-          <StatusBadge status={view.insight.status}>{view.insight.badge}</StatusBadge>
-        </section>
-      ) : null}
+      <div className="finops-decision-risk-footer-grid">
+        {view.insight ? (
+          <section className="finops-decision-risk-insight" aria-labelledby="finops-risk-insight-title">
+            <span><Bot size={17} aria-hidden="true" /></span>
+            <div>
+              <small>最新 AI 解读 · 已保存证据</small>
+              <h2 id="finops-risk-insight-title">{view.insight.title || "运营分析说明"}</h2>
+              <p>{view.insight.summary || "当前没有可展示的分析说明。"}</p>
+              <div className="finops-decision-risk-card-meta"><StatusBadge status={view.insight.status}>{view.insight.badge}</StatusBadge></div>
+            </div>
+          </section>
+        ) : null}
 
-      <section className="finops-decision-risk-governance" aria-label="治理边界">
-        <span><ShieldCheck size={17} aria-hidden="true" /></span>
-        <div><small>治理边界</small><h2>建议、草案与生产变更保持分离</h2><p>AI 只解释现有证据；整改入口保存结构化草案，不批准、不执行生产变更。</p></div>
-        <div className="finops-decision-risk-governance-state">
-          <span><CheckCircle2 size={13} />只读判断</span>
-          <span><Wrench size={13} />{view.governance.draftEnabled ? "草案可保存" : "草案未开放"}</span>
-        </div>
-      </section>
+        <section className="finops-decision-risk-governance" aria-label="治理边界">
+          <span><ShieldCheck size={17} aria-hidden="true" /></span>
+          <div>
+            <small>治理边界</small>
+            <h2>建议、草案与生产变更保持分离</h2>
+            <p>AI 只解释现有证据；整改入口保存结构化草案，不批准、不执行生产变更。</p>
+            <div className="finops-decision-risk-governance-state">
+              <span><CheckCircle2 size={13} />只读判断</span>
+              <span><Wrench size={13} />{view.governance.draftEnabled ? "草案可保存" : "草案未开放"}</span>
+            </div>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }

@@ -130,6 +130,45 @@ def test_missing_model_price_is_partial_and_never_zero_cost() -> None:
     assert roi_outcome_evidence(snapshot)["status"] == "not_recorded"
 
 
+def test_cost_evidence_tracks_only_runs_with_a_real_price_contribution() -> None:
+    priced = _run()
+    unpriced = {**_run(model="unknown-model"), "run_id": "run-unpriced"}
+
+    snapshot = build_roi_snapshot(
+        "ws-roi",
+        _window(),
+        runs=[priced, unpriced],
+        outcomes=[],
+        prices=PRICES,
+    )
+    evidence = roi_cost_evidence(snapshot)
+
+    assert snapshot["observed_run_ids"] == ["run-1", "run-unpriced"]
+    assert snapshot["priced_run_ids"] == ["run-1"]
+    assert evidence["priced_run_ids"] == ["run-1"]
+    assert evidence["observed_run_ids"] == ["run-1"]
+    assert "run-unpriced" not in evidence["priced_run_ids"]
+
+
+def test_old_snapshot_without_priced_lineage_does_not_claim_observed_runs_are_priced() -> None:
+    evidence = roi_cost_evidence(
+        {
+            "observed_run_ids": ["run-observed-only"],
+            "lineage_complete": True,
+            "cost": {
+                "status": "complete",
+                "total": 0.01,
+                "currency": "USD",
+                "by_currency": {"USD": 0.01},
+            },
+        }
+    )
+
+    assert evidence["priced_run_ids"] == []
+    assert evidence["observed_run_ids"] == []
+    assert evidence["lineage_complete"] is False
+
+
 def test_malformed_token_usage_degrades_roi_snapshot_to_partial_evidence() -> None:
     malformed = _run()
     malformed["models"] = [{"model": "gpt-5", "usage": {"input_tokens": float("nan"), "output_tokens": 500}}]

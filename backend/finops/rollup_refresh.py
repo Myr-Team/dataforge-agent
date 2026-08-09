@@ -8,6 +8,7 @@ from typing import Any, Mapping
 from .rollups import aggregate_rollups
 from .sql_repository import SqlFinOpsRepository
 from .sql_rollups import SqlFinOpsRollupRepository
+from .job_status import JobRunService, SqlJobRunRepository
 
 
 def refresh_rollups(
@@ -56,7 +57,11 @@ def refresh_rollups(
 
 
 def main() -> int:
+    status_service: JobRunService | None = None
+    status_record = None
     try:
+        status_service = JobRunService(_job_status_repository())
+        status_record = status_service.start("finops_rollup")
         event_repository, rollup_repository = _repositories()
         now = datetime.now(timezone.utc).replace(microsecond=0)
         hours = _bounded_int(
@@ -79,7 +84,19 @@ def main() -> int:
             from_value=from_value,
             to_value=to_value,
         )
+        status_service.succeed(
+            status_record,
+            rows_observed=int(result.get("event_count") or 0),
+            rows_written=int(result.get("hourly_rows") or 0)
+            + int(result.get("daily_rows") or 0),
+            source_freshness_at=to_value,
+        )
     except Exception as exc:
+        if status_service is not None and status_record is not None:
+            try:
+                status_service.fail(status_record, error=exc)
+            except Exception:
+                pass
         print(json.dumps({"status": "failed", "category": type(exc).__name__}, separators=(",", ":")))
         return 1
     print(json.dumps({"status": "completed", **result}, separators=(",", ":")))
@@ -95,6 +112,16 @@ def _repositories() -> tuple[SqlFinOpsRepository, SqlFinOpsRollupRepository]:
     return (
         SqlFinOpsRepository(connection_factory=factory),
         SqlFinOpsRollupRepository(connection_factory=factory),
+    )
+
+
+def _job_status_repository() -> SqlJobRunRepository:
+    try:
+        from ..lineage_sql import build_lineage_sql_connection_factory
+    except ImportError:
+        from lineage_sql import build_lineage_sql_connection_factory
+    return SqlJobRunRepository(
+        connection_factory=build_lineage_sql_connection_factory()
     )
 
 

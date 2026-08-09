@@ -21,6 +21,7 @@ import {
   MODEL_AGENT_ROLES,
   MODEL_EXECUTION_KINDS,
   modelRoutingViewModel,
+  officialPricePresentation,
 } from "./modelRoutingViewModel.js";
 
 function routeOptions(routes, capability) {
@@ -28,7 +29,21 @@ function routeOptions(routes, capability) {
 }
 
 function routeOptionLabel(route) {
-  return `${route.label} · ${route.providerLabel || "Azure Foundry"}`;
+  return `${route.label} · ${route.providerLabel || "Azure Foundry"}${route.selectable ? "" : `（${route.unavailableLabel}）`}`;
+}
+
+function RouteOptions({ routes }) {
+  const groups = [
+    { key: "azure", label: "Azure 模型", items: routes.filter((route) => route.providerType !== "deepseek") },
+    { key: "deepseek", label: "DeepSeek 原厂", items: routes.filter((route) => route.providerType === "deepseek") },
+  ];
+  return groups.filter((group) => group.items.length).map((group) => (
+    <optgroup label={group.label} key={group.key}>
+      {group.items.map((route) => (
+        <option value={route.id} key={route.id} disabled={!route.selectable}>{routeOptionLabel(route)}</option>
+      ))}
+    </optgroup>
+  ));
 }
 
 function assignmentPayload(assignments, agentAssignments, defaultRouteId) {
@@ -69,11 +84,6 @@ function mappingByDeployment(items = []) {
   );
 }
 
-function officialPriceLabel(item) {
-  if (!item) return "未计价";
-  return `${item.display_name} · 输入 $${item.input_per_million} / 输出 $${item.output_per_million}`;
-}
-
 function StateMessage({ state, onRetry }) {
   if (state.loading) {
     return (
@@ -102,6 +112,23 @@ export async function persistModelSetting(write, onSettingsChanged, kind) {
 }
 
 
+export function priceMappingErrorMessage(error) {
+  if (error?.status === 403) {
+    return "当前账号可查看价目，但没有组织级管理权限。";
+  }
+  if (error?.status === 409) {
+    return "价目已被其他管理员更新，已重新加载最新版本。";
+  }
+  if (error?.status === 503 || String(error?.message || "").includes("Audit persistence")) {
+    return "审计记录暂时无法保存，请稍后重试。";
+  }
+  if (error?.status === 422) {
+    return "所选官方价格与该模型的已观测调用类型不兼容。";
+  }
+  return "官方价格关联暂时失败，请稍后重试。";
+}
+
+
 export function ModelRoutingPage({
   workspaceId = "",
   embedded = false,
@@ -114,6 +141,8 @@ export function ModelRoutingPage({
     catalog: [],
     catalogRevision: "",
     mappings: [],
+    canManagePricing: false,
+    pricingAuthorizationSource: "read_only",
   });
   const [assignments, setAssignments] = useState({});
   const [agentAssignments, setAgentAssignments] = useState({});
@@ -143,7 +172,7 @@ export function ModelRoutingPage({
       setMappingDraft(Object.fromEntries(
         view.routes.map((route) => [
           route.deployment,
-          mappingByDeployment(mappings)[route.deployment]?.official_price_key || "",
+          mappingByDeployment(mappings)[route.deployment]?.official_price_key || route.officialPriceKey || "",
         ]),
       ));
       setState({
@@ -153,6 +182,8 @@ export function ModelRoutingPage({
         catalog: Array.isArray(catalogPayload?.items) ? catalogPayload.items : [],
         catalogRevision: String(catalogPayload?.revision || ""),
         mappings,
+        canManagePricing: mappingPayload?.can_manage === true,
+        pricingAuthorizationSource: String(mappingPayload?.authorization_source || "read_only"),
       });
     } catch (error) {
       setState((current) => ({
@@ -237,6 +268,7 @@ export function ModelRoutingPage({
       const current = mappings[deployment];
       const result = await persistModelSetting(
         () => updateFinOpsOfficialPriceMapping(deployment, {
+          workspaceId,
           officialPriceKey,
           baseRevision: Number(current?.mapping_revision || 0),
         }),
@@ -253,7 +285,8 @@ export function ModelRoutingPage({
       }));
       setNotice(`${deployment} 已关联官方价格记录，新请求将按该版本估算。`);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "官方价格关联失败");
+      setSaveError(priceMappingErrorMessage(error));
+      if (error?.status === 409) await load();
     } finally {
       setSaving("");
     }
@@ -265,7 +298,10 @@ export function ModelRoutingPage({
     setNotice("");
     try {
       await persistModelSetting(
-        () => deleteFinOpsOfficialPriceMapping(deployment),
+        () => deleteFinOpsOfficialPriceMapping(deployment, {
+          workspaceId,
+          baseRevision: Number(mappings[deployment]?.mapping_revision || 0),
+        }),
         onSettingsChanged,
         "price",
       );
@@ -276,7 +312,8 @@ export function ModelRoutingPage({
       setMappingDraft((current) => ({ ...current, [deployment]: "" }));
       setNotice(`${deployment} 已解除官方价格关联并恢复未计价，历史估算版本保持不变。`);
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : "解除官方价格关联失败");
+      setSaveError(priceMappingErrorMessage(error));
+      if (error?.status === 409) await load();
     } finally {
       setSaving("");
     }
@@ -318,9 +355,53 @@ export function ModelRoutingPage({
                 <span>默认模型</span>
                 <select value={defaultRouteId} onChange={(event) => setDefaultRouteId(event.target.value)}>
                   <option value="">使用服务端默认</option>
-                  {chatRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                  <RouteOptions routes={chatRoutes} />
                 </select>
               </label>
+            </section>
+
+            <section className="routing-section routing-assistant-models">
+              <header className="routing-section-head">
+                <div>
+                  <h2>运营 AI 模型</h2>
+                  <p>快速回答优先低等待；深入分析使用 FinOps Agent。两种模式分别统计模型、Token 与估算成本。</p>
+                </div>
+              </header>
+              <div className="routing-assignment-table">
+                <div className="routing-assignment-row routing-assignment-head"><span>模式</span><span>主要模型</span><span>备用模型</span></div>
+                {[
+                  {
+                    id: "quick",
+                    label: "快速回答",
+                    description: "解释单个指标和当前证据",
+                    value: assignments.direct_reply || {},
+                    routes: chatRoutes,
+                    update: updateAssignment,
+                    target: "direct_reply",
+                  },
+                  {
+                    id: "deep",
+                    label: "深入分析",
+                    description: "综合证据并形成结构化建议",
+                    value: agentAssignments["df-finops-analyst"] || {},
+                    routes: analysisRoutes,
+                    update: updateAgentAssignment,
+                    target: "df-finops-analyst",
+                  },
+                ].map((item) => (
+                  <div className="routing-assignment-row" key={item.id}>
+                    <div><b>{item.label}</b><small>{item.description}</small></div>
+                    <select aria-label={`${item.label}主要模型`} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
+                      <option value="">继承工作区默认</option>
+                      <RouteOptions routes={item.routes} />
+                    </select>
+                    <select aria-label={`${item.label}备用模型`} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
+                      <option value="">不设置备用</option>
+                      <RouteOptions routes={item.routes} />
+                    </select>
+                  </div>
+                ))}
+              </div>
             </section>
 
             <section className="routing-section">
@@ -333,7 +414,7 @@ export function ModelRoutingPage({
                   <span>一键应用到全部</span>
                   <select value="" onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
                     <option value="">选择模型</option>
-                    {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                    <RouteOptions routes={analysisRoutes} />
                   </select>
                 </label>
               </header>
@@ -346,11 +427,11 @@ export function ModelRoutingPage({
                       <div><b>{agent.label}</b><small>{agent.description}</small></div>
                       <select aria-label={`${agent.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
-                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                        <RouteOptions routes={analysisRoutes} />
                       </select>
                       <select aria-label={`${agent.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
-                        {analysisRoutes.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                        <RouteOptions routes={analysisRoutes} />
                       </select>
                     </div>
                   );
@@ -371,11 +452,11 @@ export function ModelRoutingPage({
                       <div><b>{kind.label}</b><small>{kind.description}</small></div>
                       <select aria-label={`${kind.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
-                        {eligible.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                        <RouteOptions routes={eligible} />
                       </select>
                       <select aria-label={`${kind.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
-                        {eligible.map((route) => <option value={route.id} key={route.id}>{routeOptionLabel(route)}</option>)}
+                        <RouteOptions routes={eligible} />
                       </select>
                     </div>
                   );
@@ -386,30 +467,45 @@ export function ModelRoutingPage({
             <section className="routing-section">
               <header className="routing-section-head">
                 <div>
-                  <h2>官方价格关联 <CircleHelp size={14} aria-label="价格说明" /></h2>
+                  <h2>组织级官方价格关联 <CircleHelp size={14} aria-label="价格说明" /></h2>
                   <p>价格仅用于请求级预估，不是 Azure 账单。无法可靠匹配时保持“未计价”，不会填入猜测价格。</p>
                 </div>
-                <small className="routing-catalog-revision">目录 {state.catalogRevision || "未记录"}</small>
+                <small className="routing-catalog-revision">
+                  {state.canManagePricing ? "可管理" : "只读"} · 目录 {state.catalogRevision || "未记录"}
+                </small>
               </header>
               <div className="routing-price-table">
                 <div className="routing-official-price-row routing-price-head"><span>模型 deployment</span><span>状态</span><span>官方价格记录</span><span aria-label="操作" /></div>
                 {view.routes.map((route) => {
                   const mapping = mappings[route.deployment];
                   const selected = state.catalog.find((item) => item.price_key === mappingDraft[route.deployment]);
+                  const selectedPrice = selected ? officialPricePresentation(selected) : null;
                   const busy = saving === `mapping:${route.deployment}`;
                   return (
                     <div className="routing-official-price-row" key={route.id}>
                       <div><b>{route.label}</b><small>{route.providerLabel || "Azure Foundry"} · {route.deployment || "deployment 未记录"}</small></div>
                       <span className={`routing-price-status ${mapping ? "mapped" : "unpriced"}`}>{mapping ? "已计价" : "未计价"}</span>
                       <div className="routing-price-picker">
-                        <select value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
+                        <select disabled={!state.canManagePricing || busy} value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
                           <option value="">保留未计价</option>
-                          {state.catalog.map((item) => <option key={item.price_key} value={item.price_key}>{officialPriceLabel(item)}</option>)}
+                          {state.catalog.map((item) => <option key={item.price_key} value={item.price_key}>{officialPricePresentation(item).label}</option>)}
                         </select>
-                        {selected?.source_url ? <a href={selected.source_url} target="_blank" rel="noreferrer" title="查看官方价格来源"><ExternalLink size={13} />官方来源</a> : null}
+                        {selectedPrice ? (
+                          <div className="routing-price-presentation" data-provider={selected?.provider || "unknown"}>
+                            <div className="routing-price-rate-grid">
+                              {selectedPrice.rates.map((rate) => (
+                                <span key={rate.label}><small>{rate.label}</small><b>{rate.value}</b><em>{rate.unit}</em></span>
+                              ))}
+                            </div>
+                            <div className="routing-price-source-line">
+                              <span>{selectedPrice.currency} · 目录版本 {selectedPrice.revision || state.catalogRevision || "未记录"}</span>
+                              {selectedPrice.sourceUrl ? <a href={selectedPrice.sourceUrl} target="_blank" rel="noreferrer" title="查看官方价格来源"><ExternalLink size={13} />官方来源</a> : null}
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                       <div className="routing-price-actions">
-                        <button className="routing-map-button" type="button" disabled={busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
+                        <button className="routing-map-button" type="button" disabled={!state.canManagePricing || busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
                           {busy ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
                           关联
                         </button>
@@ -417,7 +513,7 @@ export function ModelRoutingPage({
                           <button
                             className="ghost-button routing-unmap-button"
                             type="button"
-                            disabled={busy}
+                            disabled={!state.canManagePricing || busy}
                             onClick={() => removeMapping(route.deployment)}
                             aria-label={`解除${route.label}官方价格关联`}
                           >

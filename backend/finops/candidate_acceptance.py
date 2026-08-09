@@ -38,6 +38,17 @@ def _items(value: Any, label: str, *, minimum: int = 1) -> list[Mapping[str, Any
     return items
 
 
+def _request_refs(value: Any, label: str, *, minimum: int = 1) -> list[str]:
+    if not isinstance(value, list):
+        raise CandidateAcceptanceError(f"{label} is unavailable")
+    refs = [str(item or "").strip() for item in value]
+    if len(refs) < minimum or any(
+        not ref.startswith("req_") or len(ref) < 8 for ref in refs
+    ):
+        raise CandidateAcceptanceError(f"{label} is not request-level")
+    return list(dict.fromkeys(refs))
+
+
 def _distinct_numeric(
     items: list[Mapping[str, Any]],
     path: tuple[str, ...],
@@ -135,6 +146,65 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
     if not str(roi_bridge.get("formula_revision") or "").strip():
         raise CandidateAcceptanceError("ROI value bridge formula is unavailable")
     _number(roi_bridge.get("payback_months"), "ROI payback months", positive=True)
+    bridge_items = {
+        str(item.get("id") or ""): item
+        for item in _items(roi_bridge.get("items"), "ROI value bridge items", minimum=3)
+    }
+    try:
+        bridge_benefit = _number(
+            bridge_items["monthly_benefit"].get("value"),
+            "ROI bridge monthly benefit",
+            positive=True,
+        )
+        bridge_cost = _number(
+            bridge_items["monthly_total_cost"].get("value"),
+            "ROI bridge monthly total cost",
+        )
+        bridge_net = _number(
+            bridge_items["monthly_net_benefit"].get("value"),
+            "ROI bridge monthly net benefit",
+            positive=True,
+        )
+    except KeyError as exc:
+        raise CandidateAcceptanceError("ROI value bridge lacks formula terms") from exc
+    if bridge_cost >= 0 or abs((bridge_benefit + bridge_cost) - bridge_net) > 1e-6:
+        raise CandidateAcceptanceError("ROI value bridge must subtract cost")
+    roi_metric_by_id = {
+        str(item.get("id") or ""): item for item in roi_metrics
+    }
+    metric_cost = _number(
+        _mapping(
+            roi_metric_by_id.get("monthly_total_cost"),
+            "ROI monthly total cost metric",
+        ).get("value"),
+        "ROI monthly total cost metric",
+        positive=True,
+    )
+    if abs(metric_cost - abs(bridge_cost)) > 1e-6:
+        raise CandidateAcceptanceError("ROI bridge cost disagrees with metric card")
+
+    maturity = _mapping(roi.get("evidence_maturity"), "ROI evidence maturity")
+    maturity_stages = _items(maturity.get("stages"), "ROI evidence maturity stages", minimum=4)
+    roi_request_details = _mapping(
+        payloads.get("roi_request_details"),
+        "ROI request evidence details",
+    )
+    stage_refs: list[str] = []
+    for index, stage in enumerate(maturity_stages):
+        refs = _request_refs(
+            stage.get("evidence_refs"),
+            "ROI stage evidence",
+        )
+        stage_refs.extend(refs)
+        for request_ref in refs:
+            detail_payload = _mapping(
+                roi_request_details.get(request_ref),
+                f"ROI request detail {request_ref}",
+            )
+            if str(detail_payload.get("request_ref") or "") != request_ref:
+                raise CandidateAcceptanceError(
+                    f"ROI request detail {request_ref} is not openable"
+                )
     roi_trend = _items(roi.get("unit_economics_trend"), "ROI unit trend", minimum=3)
     _distinct_numeric(roi_trend, ("value",), "ROI unit trend")
     scenarios = _items(roi.get("scenarios"), "ROI scenarios")
@@ -144,10 +214,44 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
     matrix = _items(risk.get("risk_matrix"), "risk matrix", minimum=4)
     priorities = _items(risk.get("priorities"), "risk priorities", minimum=4)
     portfolio = _items(risk.get("optimization_portfolio"), "optimization portfolio", minimum=4)
-    evidence = _items(risk.get("selected_evidence_summaries"), "risk evidence", minimum=4)
+    evidence = _items(risk.get("selected_evidence_summaries"), "risk evidence", minimum=6)
     evidence_refs = {str(item.get("request_ref") or "") for item in evidence}
-    if "" in evidence_refs or len(evidence_refs) < 4:
+    if "" in evidence_refs or len(evidence_refs) < 6:
         raise CandidateAcceptanceError("risk evidence is not sufficiently distinct")
+    evidence_sets = _items(risk.get("evidence_sets"), "risk policy evidence")
+    if len(evidence_sets) < 6:
+        raise CandidateAcceptanceError("risk policy evidence lacks distinct coverage")
+    policy_types: set[str] = set()
+    distinct_ref_sets: set[tuple[str, ...]] = set()
+    string_signal_cases: set[tuple[str, str]] = set()
+    expected_string_signals = {
+        ("request_status", "failed"),
+        ("cache_state", "miss"),
+        ("pricing_status", "unpriced"),
+        ("gateway_coverage", "unmanaged"),
+    }
+    for index, evidence_set in enumerate(evidence_sets):
+        policy_type = str(evidence_set.get("policy_type") or "").strip()
+        set_items = _items(
+            evidence_set.get("items"),
+            f"risk policy evidence[{index}]",
+        )
+        refs = _request_refs(
+            [item.get("request_ref") for item in set_items],
+            f"risk policy evidence[{index}] refs",
+        )
+        policy_types.add(policy_type)
+        distinct_ref_sets.add(tuple(sorted(refs)))
+        for item in set_items:
+            signal = _mapping(item.get("signal"), f"risk policy signal[{index}]")
+            metric = str(signal.get("metric") or "").strip()
+            value = signal.get("value")
+            if isinstance(value, str) and value.strip():
+                string_signal_cases.add((metric, value.strip()))
+    if len(policy_types) < 6 or len(distinct_ref_sets) < 6:
+        raise CandidateAcceptanceError("risk policy evidence lacks distinct coverage")
+    if not expected_string_signals.issubset(string_signal_cases):
+        raise CandidateAcceptanceError("localized string evidence is incomplete")
     insight = _mapping(risk.get("insight"), "risk insight")
     if not str(insight.get("summary") or "").strip():
         raise CandidateAcceptanceError("risk insight summary is unavailable")
@@ -156,6 +260,53 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
         raise CandidateAcceptanceError("governance read or draft capability is unavailable")
     if governance.get("actions_enabled") is not False:
         raise CandidateAcceptanceError("production actions must remain disabled")
+
+    assistant_check = _mapping(payloads.get("assistant_check"), "assistant evidence check")
+    requested_assistant_refs = _request_refs(
+        assistant_check.get("requested_evidence_refs"),
+        "assistant selected evidence",
+    )
+    assistant_response = _mapping(
+        assistant_check.get("response"),
+        "assistant selected-evidence response",
+    )
+    assistant_response_refs = _request_refs(
+        assistant_response.get("evidence_refs"),
+        "assistant response evidence",
+    )
+    labels = assistant_response.get("evidence_labels")
+    if (
+        assistant_response.get("status") != "ready"
+        or assistant_response_refs != requested_assistant_refs
+        or not isinstance(labels, list)
+        or not all(str(label or "").strip() for label in labels)
+    ):
+        raise CandidateAcceptanceError("assistant evidence does not match selected item")
+
+    routing = _mapping(payloads.get("model_routing"), "model routing")
+    routes = {
+        str(item.get("id") or ""): str(item.get("deployment") or "")
+        for item in _items(routing.get("routes"), "model routes", minimum=2)
+    }
+    assignments = _mapping(
+        _mapping(routing.get("policy"), "model routing policy").get(
+            "agent_assignments"
+        ),
+        "model routing agent assignments",
+    )
+    for agent_id in ("df-finops-analyst", "df-roi-analyst"):
+        assignment = _mapping(assignments.get(agent_id), f"{agent_id} assignment")
+        fallback_route_id = str(assignment.get("fallback_route_id") or "").strip()
+        if (
+            assignment.get("primary_route_id") != "terra"
+            or routes.get("terra") != "gpt-5.6-terra"
+            or not fallback_route_id
+            or fallback_route_id == "terra"
+            or not routes.get(fallback_route_id)
+        ):
+            raise CandidateAcceptanceError(
+                "operations analyst routing is not Terra-first"
+            )
 
     detail = _mapping(payloads.get("request_detail"), "request detail")
     display = _mapping(detail.get("display"), "request display")
@@ -201,6 +352,9 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
         "roi": {
             "metric_count": len(roi_metrics),
             "value_bridge_ready": True,
+            "bridge_subtraction_verified": True,
+            "openable_stage_count": len(maturity_stages),
+            "openable_request_refs": len(set(stage_refs)),
             "trend_rows": len(roi_trend),
             "scenario_count": len(scenarios),
         },
@@ -210,10 +364,16 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
             "priority_count": len(priorities),
             "portfolio_points": len(portfolio),
             "distinct_evidence": len(evidence_refs),
+            "distinct_evidence_sets": len(distinct_ref_sets),
+            "localized_string_signal_cases": len(
+                expected_string_signals & string_signal_cases
+            ),
             "insight_ready": True,
             "actions_enabled": False,
         },
         "request_detail_complete": True,
+        "assistant": {"selected_item_evidence_verified": True},
+        "model_routing": {"operations_analysts_on_terra": True},
         "pricing": {
             "catalog_entries": len(price_items),
             "mapping_entries": len(mapping_items),
@@ -261,11 +421,22 @@ def collect_candidate_payloads(workspace_id: str) -> dict[str, Any]:
 
     request_index = 0
 
-    def get(path: str, **params: Any) -> dict[str, Any]:
+    def call(
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        body: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         nonlocal request_index
         request_index += 1
         print(f"candidate_acceptance:request:{request_index}:start", flush=True)
-        response = client.get(path, params={"workspace_id": workspace_id, **params})
+        response = client.request(
+            method,
+            path,
+            params=dict(params or {}),
+            json=dict(body) if body is not None else None,
+        )
         print(f"candidate_acceptance:request:{request_index}:done", flush=True)
         if response.status_code != 200:
             raise CandidateAcceptanceError(
@@ -276,19 +447,94 @@ def collect_candidate_payloads(workspace_id: str) -> dict[str, Any]:
             raise CandidateAcceptanceError(f"{path} returned an invalid payload")
         return payload
 
+    def get(path: str, **params: Any) -> dict[str, Any]:
+        return call(
+            "GET",
+            path,
+            params={"workspace_id": workspace_id, **params},
+        )
+
     bootstrap = get("/api/finops/bootstrap")
+    roi = get("/api/finops/roi/decision")
     risk = get("/api/finops/risk/decision")
     evidence = risk.get("selected_evidence_summaries") or []
     request_ref = str(evidence[0].get("request_ref") or "") if evidence else ""
     if not request_ref:
         raise CandidateAcceptanceError("risk decision did not provide request evidence")
+
+    maturity = _mapping(roi.get("evidence_maturity"), "ROI evidence maturity")
+    stages = _items(maturity.get("stages"), "ROI evidence maturity stages", minimum=4)
+    roi_refs = list(
+        dict.fromkeys(
+            ref
+            for stage in stages
+            for ref in _request_refs(
+                stage.get("evidence_refs"),
+                "ROI stage evidence",
+            )
+        )
+    )
+    roi_request_details = {
+        ref: get(f"/api/finops/requests/{ref}") for ref in roi_refs
+    }
+
+    evidence_sets = _items(risk.get("evidence_sets"), "risk policy evidence", minimum=6)
+    assistant_set = next(
+        (
+            item
+            for item in evidence_sets
+            if item.get("policy_type") == "p95_latency" and item.get("items")
+        ),
+        None,
+    )
+    if assistant_set is None:
+        raise CandidateAcceptanceError("risk decision lacks assistant evidence")
+    assistant_item = _items(
+        assistant_set.get("items"),
+        "assistant selected evidence",
+    )[0]
+    assistant_ref = _request_refs(
+        [assistant_item.get("request_ref")],
+        "assistant selected evidence",
+    )[0]
+    signal = _mapping(assistant_item.get("signal"), "assistant evidence signal")
+    window = _mapping(risk.get("window"), "risk window")
+    assistant_response = call(
+        "POST",
+        "/api/finops/assistant/query",
+        body={
+            "question": "请基于当前选中的代表证据解释风险、影响与下一步。",
+            "metric_context": {
+                "metric_id": f"risk_{assistant_set.get('policy_type')}",
+                "label": str(assistant_set.get("reason") or "风险代表证据"),
+                "value": signal.get("value"),
+                "unit": str(signal.get("unit") or ""),
+                "window": {"from": window.get("from"), "to": window.get("to")},
+                "filters": {"workspace_id": workspace_id},
+                "data_status": str(assistant_set.get("data_status") or "partial"),
+                "evidence_state": str(
+                    assistant_set.get("evidence_state") or "partial"
+                ),
+                "policy_type": assistant_set.get("policy_type"),
+                "evidence_refs": [assistant_ref],
+            },
+        },
+    )
     return {
         "bootstrap": bootstrap,
         "workspace_breakdown": get("/api/finops/breakdowns", group_by="workspace"),
         "agents": get("/api/finops/agents"),
         "budgets": get("/api/finops/budgets"),
-        "roi": get("/api/finops/roi/decision"),
+        "roi": roi,
         "risk": risk,
+        "roi_request_details": roi_request_details,
+        "assistant_check": {
+            "requested_evidence_refs": [assistant_ref],
+            "response": assistant_response,
+        },
+        "model_routing": get(
+            f"/api/workspaces/{workspace_id}/governance/model-routing"
+        ),
         "request_detail": get(f"/api/finops/requests/{request_ref}"),
         "pricing": get("/api/finops/pricing/catalog"),
         "price_mappings": get("/api/finops/pricing/mappings"),

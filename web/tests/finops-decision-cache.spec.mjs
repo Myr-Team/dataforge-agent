@@ -65,7 +65,7 @@ test("failed ROI revalidation keeps the prior decision and manual refresh stays 
   const riskCalls = control.calls.riskDecision;
   const roiCalls = control.calls.roiDecision;
   control.failRoiRefresh = true;
-  await page.locator(".finops-live").getByRole("button", { name: "刷新" }).click();
+  await page.locator(".finops-live").getByRole("button", { name: "刷新运营数据" }).click();
 
   await expect.poll(() => control.calls.roiDecision).toBe(roiCalls + 1);
   await expect(page.getByText("$3,000.00").first()).toBeVisible();

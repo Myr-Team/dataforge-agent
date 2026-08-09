@@ -1,6 +1,5 @@
 import {
-  loadFinOpsAssistantConversations,
-  loadFinOpsAssistantMessages,
+  loadFinOpsAssistantBootstrap,
 } from "./api.js";
 
 
@@ -76,8 +75,7 @@ export function prefetchFinOpsAssistantHistory(workspaceId, options = {}) {
   }
   if (historyRequests.has(key)) return historyRequests.get(key);
 
-  const loadConversations = options?.loadConversations || loadFinOpsAssistantConversations;
-  const loadMessages = options?.loadMessages || loadFinOpsAssistantMessages;
+  const loadBootstrap = options?.loadBootstrap || loadFinOpsAssistantBootstrap;
   const requestEpoch = historyEpoch;
   const requestGeneration = historyGenerations.get(key) || 0;
   const stillCurrent = () => (
@@ -85,21 +83,14 @@ export function prefetchFinOpsAssistantHistory(workspaceId, options = {}) {
     && (historyGenerations.get(key) || 0) === requestGeneration
   );
   const request = Promise.resolve()
-    .then(() => loadConversations(key))
-    .then(async (payload) => {
-      const latest = Array.isArray(payload?.items) ? payload.items[0] : null;
-      const conversationRef = String(latest?.conversation_ref || "");
-      if (!conversationRef) {
-        return stillCurrent()
-          ? writeFinOpsAssistantHistory(key, { conversationRef: "", messages: [] })
-          : peekFinOpsAssistantHistory(key);
-      }
-      const history = await loadMessages(conversationRef, key);
+    .then(() => loadBootstrap(key))
+    .then((payload) => {
+      const conversationRef = String(payload?.conversation?.conversation_ref || "");
       return stillCurrent()
         ? writeFinOpsAssistantHistory(key, {
           conversationRef,
-          messages: Array.isArray(history?.items)
-            ? history.items.map(normalizeHistoryMessage)
+          messages: Array.isArray(payload?.messages)
+            ? payload.messages.map(normalizeHistoryMessage)
             : [],
         })
         : peekFinOpsAssistantHistory(key);

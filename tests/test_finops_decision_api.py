@@ -8,6 +8,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.finops.router as finops_router
+import backend.control_plane as control_plane
+import backend.outcome_store as outcome_store
 from auth_fixtures import trusted_headers
 from backend.app import app
 from backend.finops.anomalies import DetectedAnomaly
@@ -106,6 +108,316 @@ def test_roi_decision_returns_one_composed_payload(client: TestClient, owner_hea
     assert "provider_response_id" not in response.text
 
 
+def test_roi_decision_maps_only_authorized_stage_runs_to_request_refs(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_usage_000001",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-usage",
+                    "status": "succeeded",
+                    "tokens": {"total": 12},
+                    "estimated_cost": {
+                        "amount": 0.001,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_output_000001",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-output",
+                    "status": "succeeded",
+                    "tokens": {"total": 18},
+                    "estimated_cost": {
+                        "amount": 0.002,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_other_workspace",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-b",
+                    "run_id": "run-output",
+                    "status": "succeeded",
+                    "tokens": {"total": 99},
+                    "estimated_cost": {
+                        "amount": 0.099,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_roi_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "usage": {"runs": 2},
+            "observed_run_ids": ["run-usage", "run-output"],
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-usage", "run-output"],
+                "priced_run_ids": ["run-usage"],
+            },
+        },
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_cost_value_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "cost_evidence": {
+                "status": "complete",
+                "observed_run_ids": ["run-usage", "run-output"],
+            },
+            "outcome_evidence": {
+                "status": "verified",
+                "outcome_event_ids": ["outcome-second"],
+                "verified_outcome_event_ids": ["outcome-second"],
+            },
+            "realized_roi": {
+                "status": "not_recorded",
+                "value": None,
+                "currency": None,
+                "net_value": None,
+            },
+            "artifact_count": 1,
+            "output_trend": [],
+            "scenarios": [],
+        },
+    )
+    monkeypatch.setattr(
+        control_plane,
+        "list_workspace_artifacts",
+        lambda workspace_id, run_limit=None: {
+            "workspace_id": workspace_id,
+            "artifacts": [
+                {
+                    "workspace_id": "ws-a",
+                    "run_id": "run-output",
+                    "created_at": "2026-07-24T04:05:00Z",
+                },
+                {
+                    "workspace_id": "ws-b",
+                    "run_id": "run-usage",
+                    "created_at": "2026-07-24T04:06:00Z",
+                },
+                {
+                    "run_id": "run-usage",
+                    "created_at": "2026-07-24T04:07:00Z",
+                },
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        outcome_store,
+        "list_outcome_events",
+        lambda workspace_id: [
+            {
+                "event_id": "outcome-second",
+                "workspace_id": workspace_id,
+                "source": {"run_id": "run-output"},
+            },
+            {
+                "event_id": "outcome-second",
+                "workspace_id": "ws-b",
+                "source": {"run_id": "run-usage"},
+            },
+        ],
+    )
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-08-01T00:00:00Z",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    stages = {
+        item["id"]: item for item in response.json()["evidence_maturity"]["stages"]
+    }
+    assert stages["usage"]["evidence_refs"] == [
+        "req_usage_000001",
+        "req_output_000001",
+    ]
+    assert stages["investment"]["evidence_refs"] == [
+        "req_usage_000001",
+        "req_output_000001",
+    ]
+    assert stages["output"]["evidence_refs"] == ["req_output_000001"]
+    assert stages["output"]["complete"] is True
+    assert stages["outcome"]["evidence_refs"] == ["req_output_000001"]
+    assert "req_other_workspace" not in response.text
+
+
+def test_request_ref_index_prioritizes_required_lineage_beyond_global_bound() -> None:
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_noise_{index:06d}",
+                "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "run_id": f"run-noise-{index:03d}",
+                "status": "succeeded",
+                "tokens": {"total": 10},
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(301)
+    ]
+    events.append(
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": "req_required_000001",
+                "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "run_id": "run-required",
+                "status": "succeeded",
+                "tokens": {"total": 10},
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+    )
+
+    index = finops_router._request_refs_by_run(
+        events,
+        run_limit=300,
+        preferred_run_ids=(
+            "run-required",
+            *(f"run-noise-{item:03d}" for item in range(301)),
+        ),
+    )
+
+    assert index["run-required"] == ["req_required_000001"]
+    assert len(index) == 300
+
+
+def test_roi_decision_uses_authorized_ledger_for_usage_and_priced_lineage(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_ledger_priced_001",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-ledger-priced",
+                    "status": "succeeded",
+                    "tokens": {"total": 12},
+                    "estimated_cost": {
+                        "amount": 0.001,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_ledger_unpriced_01",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-ledger-unpriced",
+                    "status": "succeeded",
+                    "tokens": {"total": 18},
+                    "estimated_cost": {
+                        "amount": None,
+                        "currency": "USD",
+                        "status": "unavailable",
+                    },
+                    "evidence_state": "partial",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_roi_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "usage": {"runs": 0},
+            "observed_run_ids": [],
+            "cost_evidence": {
+                "status": "not_configured",
+                "priced_run_ids": [],
+                "lineage_complete": False,
+            },
+        },
+    )
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-08-01T00:00:00Z",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    stages = {
+        item["id"]: item
+        for item in response.json()["evidence_maturity"]["stages"]
+    }
+    assert stages["usage"]["value"] == 3
+    assert "req_ledger_priced_001" in stages["usage"]["evidence_refs"]
+    assert "req_ledger_unpriced_01" in stages["usage"]["evidence_refs"]
+    assert stages["investment"]["evidence_refs"] == ["req_ledger_priced_001"]
+    assert "模型计价未完整覆盖" in stages["investment"]["evidence_gap"]
+
+
 def test_risk_decision_does_not_trigger_agent(
     client: TestClient, owner_headers: dict[str, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -168,6 +480,24 @@ def test_owner_can_run_and_reload_a_persisted_read_only_risk_scan(
     )
     assert latest.status_code == 200, latest.text
     assert latest.json()["scan_ref"] == body["scan_ref"]
+
+    history = client.get(
+        "/api/finops/risk/scans",
+        params={"workspace_id": "ws-a", "limit": 5},
+        headers=owner_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()["items"][0]["scan_ref"] == body["scan_ref"]
+    assert history.json()["items"][0]["rule_count"] == 7
+
+    detail = client.get(
+        f"/api/finops/risk/scans/{body['scan_ref']}",
+        params={"workspace_id": "ws-a"},
+        headers=owner_headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["scan_ref"] == body["scan_ref"]
+    assert len(detail.json()["findings"]) == 7
 
 
 def test_latest_risk_scan_keeps_persisted_evidence_until_it_expires(
@@ -319,9 +649,39 @@ def test_member_cannot_run_or_read_risk_scans(
         params=payload,
         headers=member_headers,
     )
+    history = client.get(
+        "/api/finops/risk/scans",
+        params={"workspace_id": "ws-a"},
+        headers=member_headers,
+    )
 
     assert created.status_code == 403
     assert latest.status_code == 403
+    assert history.status_code == 403
+
+
+def test_risk_scan_fails_closed_when_audit_persistence_is_unavailable(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(finops_router, "get_finops_risk_scan_service", lambda: scan_service)
+    monkeypatch.setattr(
+        finops_router,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+
+    response = client.post(
+        "/api/finops/risk/scans",
+        json={"workspace_id": "ws-a"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Audit persistence is required"
+    assert scan_service.list(tenant_ref="tenant-a", workspace_id="ws-a", limit=5) == []
 
 
 def test_metric_evidence_endpoint_returns_subject_specific_bounded_requests(
@@ -463,6 +823,58 @@ def test_risk_decision_returns_policy_specific_evidence_sets(
         item["signal"]["metric"] != "request"
         for item in response.json()["selected_evidence_summaries"]
     )
+
+
+def test_risk_evidence_sets_diversify_overlapping_policy_samples() -> None:
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_overlap_{index:012d}",
+                "occurred_at": datetime(2026, 7, 24, 2, index, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "status": "succeeded",
+                "latency_ms": 10_000 - index * 100,
+                "tokens": {"total": 10_000 - index * 100},
+                "gateway_coverage": "apim_governed",
+                "estimated_cost": {
+                    "amount": 1 - index / 100,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(8)
+    ]
+    shared_refs = [event.request_ref for event in events[:5]]
+    opportunities = [
+        {
+            "opportunity_id": f"opp-{policy_type}",
+            "policy_type": policy_type,
+            "title": policy_type,
+            "evidence_refs": shared_refs,
+        }
+        for policy_type in ("p95_latency", "token_spike", "daily_cost_budget")
+    ]
+
+    evidence_sets = finops_router._risk_evidence_sets(events, opportunities)
+
+    fingerprints = {
+        tuple(sorted(item.request_ref for item in evidence_set.items))
+        for evidence_set in evidence_sets
+    }
+    assert len(fingerprints) == len(opportunities)
+    assert all(evidence_set.items for evidence_set in evidence_sets)
+    assert {
+        evidence_set.policy_type: evidence_set.items[0].signal.metric
+        for evidence_set in evidence_sets
+    } == {
+        "p95_latency": "latency_ms",
+        "token_spike": "tokens_total",
+        "daily_cost_budget": "estimated_cost",
+    }
 
 
 def _managed_finding(

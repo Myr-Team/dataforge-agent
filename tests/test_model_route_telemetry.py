@@ -9,6 +9,7 @@ import backend.run_store as run_store
 from backend.maf_team_runtime import MafRuntimeEvent
 from backend.model_policy import (
     ModelRoute,
+    SelectedTextRoute,
     model_route_scope,
     select_text_route,
     select_text_route_record,
@@ -261,6 +262,57 @@ def test_maf_model_response_persists_scoped_route_and_price_card(tmp_path, monke
     assert model["execution_kind"] == "full_analysis"
     assert model["cost_estimate"]["status"] == "estimated"
     assert model["cost_estimate"]["amount"] == 0.006
+
+
+def test_maf_model_response_uses_observed_fallback_route_for_attribution() -> None:
+    selected = SelectedTextRoute(
+        route=ModelRoute(
+            "deepseek-primary",
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro",
+            frozenset({"analysis"}),
+            provider_id="provider-primary",
+            provider_type="deepseek",
+            model_id="deepseek-v4-pro",
+        ),
+        execution_kind="full_analysis",
+    )
+    event = MafRuntimeEvent(
+        sequence=1,
+        event="maf_agent_completed",
+        status="completed",
+        agent_id="df-feasibility-analyst",
+        model_route="azure-fallback",
+        provider_type="azure_foundry",
+        model_id="gpt-5.1",
+        fallback_reason="rate_limited",
+        input_tokens=100,
+        output_tokens=50,
+        total_tokens=150,
+    )
+
+    payload = orchestrator._maf_model_response_payload(
+        event,
+        "specialist_handoff",
+        selected_route=selected,
+        price_card={
+            "revision": 2,
+            "currency": "USD",
+            "entries": [
+                {
+                    "route_id": "azure-fallback",
+                    "input_per_million": 2,
+                    "output_per_million": 8,
+                }
+            ],
+        },
+    )
+
+    assert payload["route"] == "azure-fallback"
+    assert payload["deployment"] == "gpt-5.1"
+    assert payload["provider_type"] == "azure_foundry"
+    assert payload["fallback_reason"] == "rate_limited"
+    assert payload["cost_estimate"]["status"] == "estimated"
 
 
 def test_maf_gateway_client_uses_selected_analysis_route_header(monkeypatch) -> None:

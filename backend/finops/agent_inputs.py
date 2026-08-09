@@ -5,6 +5,99 @@ from typing import Any, Callable, Iterable, Mapping
 from .query import FinOpsQuery
 
 
+def build_finops_assistant_input(
+    query: FinOpsQuery,
+    query_service: Any,
+    *,
+    metric_context: Mapping[str, Any],
+    evidence_items: Iterable[Any] = (),
+    evidence_name_resolver: Callable[[Mapping[str, Any]], str] | None = None,
+    include_summary: bool = True,
+) -> dict[str, Any]:
+    """Build the small, cached context used by interactive Operations AI."""
+    bootstrap = query_service.bootstrap(query) if include_summary else {}
+    projected_evidence: list[dict[str, Any]] = []
+    for raw in list(evidence_items)[:3]:
+        item = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else raw
+        if not isinstance(item, Mapping):
+            continue
+        request_ref = str(item.get("request_ref") or "").strip()
+        if not request_ref:
+            continue
+        projected = {
+            "request_ref": request_ref,
+            **_pick(
+                item,
+                "occurred_at",
+                "call_class",
+                "workspace_id",
+                "agent_id",
+                "deployment",
+                "route",
+                "execution_kind",
+                "status",
+                "error_category",
+                "latency_ms",
+                "tokens",
+                "result_cache",
+                "provider_cache",
+                "gateway_coverage",
+                "estimated_cost",
+                "evidence_state",
+            ),
+        }
+        projected["display_name"] = _evidence_display_name(
+            item,
+            index=len(projected_evidence),
+            resolver=evidence_name_resolver,
+        )
+        projected_evidence.append(projected)
+    refs = [item["request_ref"] for item in projected_evidence]
+    catalog = [
+        {
+            "ref": item["request_ref"],
+            "display_name": str(item.get("display_name") or f"运营证据 {index + 1}"),
+        }
+        for index, item in enumerate(projected_evidence)
+    ]
+    overview = bootstrap.get("overview") if isinstance(bootstrap, Mapping) else {}
+    trust = bootstrap.get("trust") if isinstance(bootstrap, Mapping) else {}
+    return {
+        "status": "ready" if refs else "insufficient_data",
+        "agent_kind": "finops",
+        "scope": {"workspace_ids": list(_selected_workspace_ids(query))},
+        "window": {"from": query.from_value, "to": query.to_value},
+        "metric_context": _pick(
+            metric_context,
+            "metric_id",
+            "label",
+            "value",
+            "unit",
+            "dimension",
+            "dimension_value",
+            "data_status",
+            "evidence_state",
+            "cache_state",
+            "policy_type",
+        ),
+        "overview": {
+            "metrics": _copy_mapping(
+                overview.get("metrics") if isinstance(overview, Mapping) else {}
+            )
+        },
+        "trust": _pick(
+            trust if isinstance(trust, Mapping) else {},
+            "coverage",
+            "freshness",
+            "data_status",
+        ),
+        "selected_evidence_summaries": projected_evidence,
+        "evidence_refs": refs,
+        "evidence_catalog": catalog,
+        "evidence_gaps": [] if refs else ["当前指标缺少请求级证据"],
+    }
+
+
 def build_finops_agent_input(
     query: FinOpsQuery,
     query_service: Any,
@@ -12,18 +105,39 @@ def build_finops_agent_input(
     anomalies: Iterable[Mapping[str, Any]] = (),
     price_card_revision: str | None = None,
     evidence_name_resolver: Callable[[Mapping[str, Any]], str] | None = None,
+    evidence_refs: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     overview = query_service.overview(query)
     trends = query_service.trends(query, "day")
     departments = query_service.breakdowns(query, "department")
     workspaces = query_service.breakdowns(query, "workspace")
-    request_page = query_service.requests(query)
-    evidence_items = [
-        item
-        for item in request_page.get("items", [])[:50]
-        if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
-    ]
-    evidence_refs = [
+    requested_refs = (
+        None
+        if evidence_refs is None
+        else list(dict.fromkeys(
+            str(value or "").strip()
+            for value in evidence_refs
+            if str(value or "").strip()
+        ))[:3]
+    )
+    if requested_refs is None:
+        request_page = query_service.requests(query)
+        evidence_items = [
+            item
+            for item in request_page.get("items", [])[:50]
+            if isinstance(item, Mapping) and str(item.get("request_ref") or "").strip()
+        ]
+    else:
+        events_by_ref = {
+            event.request_ref: event
+            for event in query_service.events(query)
+        }
+        evidence_items = [
+            events_by_ref[request_ref].model_dump(mode="json")
+            for request_ref in requested_refs
+            if request_ref in events_by_ref
+        ]
+    selected_evidence_refs = [
         str(item.get("request_ref") or "").strip()
         for item in evidence_items
     ]
@@ -38,7 +152,7 @@ def build_finops_agent_input(
         }
         for index, item in enumerate(evidence_items)
     ]
-    if not evidence_refs:
+    if not selected_evidence_refs:
         return {
             "status": "insufficient_data",
             "agent_kind": "finops",
@@ -114,7 +228,7 @@ def build_finops_agent_input(
         "price_card_revision": (
             str(price_card_revision or "").strip()[:160] or None
         ),
-        "evidence_refs": list(dict.fromkeys(evidence_refs)),
+        "evidence_refs": list(dict.fromkeys(selected_evidence_refs)),
         "evidence_catalog": evidence_catalog,
         "evidence_gaps": [],
     }

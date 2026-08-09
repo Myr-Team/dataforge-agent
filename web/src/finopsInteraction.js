@@ -19,6 +19,16 @@ const DIMENSION_FIELDS = {
 const CACHE_STATES = new Set(["hit", "miss", "bypassed", "unavailable"]);
 const ASSISTANT_DATA_STATES = new Set(["complete", "partial", "unavailable", "insufficient_data"]);
 const ASSISTANT_EVIDENCE_STATES = new Set(["observed", "estimated", "partial", "unavailable"]);
+const ASSISTANT_POLICY_TYPES = new Set([
+  "error_rate",
+  "p95_latency",
+  "daily_cost_budget",
+  "token_spike",
+  "apim_coverage",
+  "unpriced_requests",
+  "cache_hit_rate",
+]);
+const SAFE_REQUEST_REF = /^req_[A-Za-z0-9_-]{4,123}$/;
 
 
 function finite(value) {
@@ -142,6 +152,15 @@ export function metricContext(metric = {}, scope = {}) {
   };
   const cacheState = bounded(metric.cacheState, 24);
   if (CACHE_STATES.has(cacheState)) result.cache_state = cacheState;
+  const policyType = bounded(metric.policyType ?? metric.policy_type, 64);
+  if (ASSISTANT_POLICY_TYPES.has(policyType)) result.policy_type = policyType;
+  const evidenceRefs = Array.isArray(metric.evidenceRefs ?? metric.evidence_refs)
+    ? [...new Set((metric.evidenceRefs ?? metric.evidence_refs)
+      .map((value) => bounded(value, 128))
+      .filter((value) => SAFE_REQUEST_REF.test(value)))]
+      .slice(0, 3)
+    : [];
+  if (evidenceRefs.length) result.evidence_refs = evidenceRefs;
   return result;
 }
 

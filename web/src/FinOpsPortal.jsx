@@ -35,6 +35,8 @@ import {
   loadFinOpsRequest,
   loadFinOpsRequests,
   loadFinOpsRiskDecision,
+  loadFinOpsRiskScan,
+  loadFinOpsRiskScans,
   loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsRoiEconomics,
@@ -64,6 +66,7 @@ import {
   useFinOpsTabResource,
 } from "./finopsPortalLifecycle.js";
 import { FinOpsAssistant } from "./FinOpsAssistant.jsx";
+import { prefetchFinOpsAssistantHistory } from "./finopsAssistantHistory.js";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { RemediationDraftPanel } from "./finops/RemediationDraftPanel.jsx";
 import { RiskDecisionPage } from "./finops/RiskDecisionPage.jsx";
@@ -118,6 +121,19 @@ const TAB_ICONS = {
 };
 
 
+const GENERAL_ASSISTANT_DESCRIPTORS = Object.freeze({
+  overview: Object.freeze({ id: "operations_overview", label: "运营总览", kind: "overview" }),
+  cost: Object.freeze({ id: "estimated_cost", label: "成本分析", kind: "cost" }),
+  roi: Object.freeze({ id: "roi_ratio", label: "效能与 ROI", kind: "roi" }),
+  risk: Object.freeze({ id: "risk_summary", label: "风险与优化", kind: "risk" }),
+});
+
+
+export function generalAssistantDescriptor(tab) {
+  return GENERAL_ASSISTANT_DESCRIPTORS[tab] || GENERAL_ASSISTANT_DESCRIPTORS.overview;
+}
+
+
 function dateValue(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -146,13 +162,15 @@ function EmptyState({ children = "当前范围没有可展示的记录。" }) {
 }
 
 
-function EvidenceBadge({ status }) {
+function evidenceStatusLabel(status) {
   const normalized = String(status || "unavailable").toLowerCase();
-  const label = {
+  return {
     available: "完整",
     complete: "完整",
+    completed: "已完成",
     observed: "已观测",
     measured: "已记录",
+    recorded: "已记录",
     verified: "已验证",
     estimated: "估算",
     partial: "部分",
@@ -169,9 +187,16 @@ function EvidenceBadge({ status }) {
     resolved: "已解决",
     stale: "已过期",
     failed: "失败",
+    succeeded: "调用成功",
     ready: "分析完成",
     insufficient_data: "证据不足",
-  }[normalized] || normalized;
+  }[normalized] || "未记录";
+}
+
+
+function EvidenceBadge({ status }) {
+  const normalized = String(status || "unavailable").toLowerCase();
+  const label = evidenceStatusLabel(normalized);
   return <span className={`finops-evidence ${normalized}`}>{label}</span>;
 }
 
@@ -1089,7 +1114,7 @@ function EvidenceRequestCard({ detail, index, total }) {
           {detail.timeline.map((item, timelineIndex) => (
             <li key={`${item.stage || "stage"}:${timelineIndex}`}>
               <i />
-              <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? item.status : formatFinOpsDuration(item.latency_ms)}</small></span>
+              <span><b>{item.label || "处理阶段"}</b><small>{item.latency_ms == null ? evidenceStatusLabel(item.status) : formatFinOpsDuration(item.latency_ms)}</small></span>
             </li>
           ))}
         </ol>
@@ -1266,6 +1291,7 @@ export function FinOpsPortal({
     busy: false,
     error: "",
     scan: null,
+    history: [],
   });
   const [assistantState, setAssistantState] = useState({
     context: null,
@@ -1342,6 +1368,10 @@ export function FinOpsPortal({
       model: filters.model,
     },
   }), [filters, query.from, query.to, workspaceId]);
+  useEffect(() => {
+    if (!workspaceId) return;
+    prefetchFinOpsAssistantHistory(workspaceId).catch(() => undefined);
+  }, [workspaceId]);
   const tabKeys = useMemo(() => Object.fromEntries(
     ["overview", "cost", "roi", "risk"].map((item) => [
       item,
@@ -1405,6 +1435,16 @@ export function FinOpsPortal({
       data: {},
     },
   });
+  useEffect(() => {
+    if (tab !== "risk" || detailState.dataScopeKey !== queryScopeKey) return;
+    const priorityIds = riskDecisionView(detailState.data).priorities
+      .map((item) => item?.id)
+      .filter(Boolean);
+    setSelectedRiskId((current) => {
+      if (current === undefined || current === null || priorityIds.includes(current)) return current;
+      return priorityIds[0];
+    });
+  }, [detailState.data, detailState.dataScopeKey, queryScopeKey, tab]);
   const comparisonWindow = useMemo(
     () => previousEqualWindow({ from: query.from, to: query.to }),
     [query.from, query.to],
@@ -1492,11 +1532,17 @@ export function FinOpsPortal({
     riskScanController.current?.abort();
     const controller = new AbortController();
     riskScanController.current = controller;
-    setRiskScanState({ loading: true, busy: false, error: "", scan: null });
+    setRiskScanState({ loading: true, busy: false, error: "", scan: null, history: [] });
     const load = async () => {
+      const historyPromise = loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal })
+        .catch((historyError) => {
+          if (historyError?.name === "AbortError") throw historyError;
+          return { items: [] };
+        });
       try {
         const scan = await loadLatestFinOpsRiskScan(query, { signal: controller.signal });
-        setRiskScanState({ loading: false, busy: false, error: "", scan });
+        const history = await historyPromise;
+        setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
       } catch (error) {
         if (error?.name === "AbortError") return;
         const initializeCurrentDemoScope = (
@@ -1509,7 +1555,8 @@ export function FinOpsPortal({
         if (initializeCurrentDemoScope) {
           try {
             const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
-            setRiskScanState({ loading: false, busy: false, error: "", scan });
+            const history = await loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal });
+            setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
             return;
           } catch (scanError) {
             if (scanError?.name === "AbortError") return;
@@ -1518,12 +1565,14 @@ export function FinOpsPortal({
               busy: false,
               error: scanError instanceof Error ? scanError.message : "风险扫描暂时无法执行",
               scan: null,
+              history: [],
             });
             return;
           }
         }
         if (error?.status === 404) {
-          setRiskScanState({ loading: false, busy: false, error: "", scan: null });
+          const history = await historyPromise;
+          setRiskScanState({ loading: false, busy: false, error: "", scan: null, history: history?.items || [] });
           return;
         }
         setRiskScanState({
@@ -1531,6 +1580,7 @@ export function FinOpsPortal({
           busy: false,
           error: error instanceof Error ? error.message : "最近扫描结果读取失败",
           scan: null,
+          history: [],
         });
       }
     };
@@ -1546,7 +1596,9 @@ export function FinOpsPortal({
     setRiskScanState((state) => ({ ...state, loading: false, busy: true, error: "" }));
     try {
       const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
-      setRiskScanState({ loading: false, busy: false, error: "", scan });
+      const history = await loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal });
+      setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
+      requestTabRefresh("risk", { force: true });
     } catch (error) {
       if (error?.name === "AbortError") return;
       setRiskScanState((state) => ({
@@ -1556,7 +1608,26 @@ export function FinOpsPortal({
         error: error instanceof Error ? error.message : "风险扫描暂时无法执行",
       }));
     }
-  }, [query, riskScanState.busy, workspaceId]);
+  }, [query, requestTabRefresh, riskScanState.busy, workspaceId]);
+
+  const selectRiskScan = useCallback(async (scanRef) => {
+    if (!workspaceId || !scanRef || riskScanState.loading || riskScanState.busy) return;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState((state) => ({ ...state, loading: true, error: "" }));
+    try {
+      const scan = await loadFinOpsRiskScan(scanRef, workspaceId, { signal: controller.signal });
+      setRiskScanState((state) => ({ ...state, loading: false, scan }));
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setRiskScanState((state) => ({
+        ...state,
+        loading: false,
+        error: error instanceof Error ? error.message : "历史扫描读取失败",
+      }));
+    }
+  }, [riskScanState.busy, riskScanState.loading, workspaceId]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();
@@ -2033,19 +2104,22 @@ export function FinOpsPortal({
 
   const generatedAt = overviewState.generatedAt || overviewState.data?.overview?.freshness?.generated_at;
   const overviewDataStatus = overviewState.data?.overview?.data_status || "unavailable";
-  const generalAssistantContext = useMemo(() => metricContext({
-    id: "operations_overview",
-    label: FINOPS_TABS.find((item) => item.id === tab)?.label || "运营总览",
+  const generalAssistantContext = useMemo(() => {
+    const descriptor = generalAssistantDescriptor(tab);
+    return metricContext({
+    id: descriptor.id,
+    label: descriptor.label,
     value: null,
     unit: "",
-    kind: "overview",
+    kind: descriptor.kind,
     dataStatus: overviewDataStatus,
     evidenceState: overviewDataStatus === "complete"
       ? "observed"
       : overviewDataStatus === "partial"
         ? "partial"
         : "unavailable",
-  }, assistantScope), [assistantScope, overviewDataStatus, tab]);
+  }, assistantScope);
+  }, [assistantScope, overviewDataStatus, tab]);
   const visibleTabs = (surface === "risk" ? [] : FINOPS_TABS).filter((item) => {
     if (item.id === "risk") return false;
     if (item.id === "cost") return permissions["finops.cost.read"] !== false;
@@ -2089,11 +2163,17 @@ export function FinOpsPortal({
           <span>{pageDescription}</span>
         </div>
         <div className="finops-live">
-          <span>
-            {formatRelativeUpdateTime(pageGeneratedAt)}
-            {pageUpdating ? " · 正在更新" : ""}
-          </span>
-          <button type="button" onClick={refresh} title="刷新"><RefreshCw size={15} /></button>
+          <span>{formatRelativeUpdateTime(pageGeneratedAt)}</span>
+          <button
+            type="button"
+            onClick={refresh}
+            disabled={pageUpdating}
+            aria-label={pageUpdating ? "数据更新中" : "刷新运营数据"}
+            title={pageUpdating ? "数据更新中" : "刷新运营数据"}
+          >
+            {pageUpdating ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+            <span>{pageUpdating ? "更新中" : "刷新"}</span>
+          </button>
         </div>
       </header>
 
@@ -2216,6 +2296,8 @@ export function FinOpsPortal({
             scanBusy={riskScanState.busy}
             scanError={riskScanState.error}
             onRunScan={runRiskScan}
+            scanHistory={riskScanState.history}
+            onSelectScan={selectRiskScan}
           />
         ) : null}
       </section>

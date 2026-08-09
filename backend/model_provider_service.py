@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Callable
@@ -11,20 +12,22 @@ from .aws_bedrock_provider import (
     Boto3BedrockControlPlane,
     bedrock_control_endpoint,
 )
-from .deepseek_provider import DeepSeekProvider, ProviderFailure, ProviderTransport
+from .deepseek_provider import ProviderFailure, ProviderTransport
 from .model_provider_repository import ModelProviderRepository
-from .model_provider_secrets import ModelProviderSecretStore
+from .model_provider_secrets import ModelProviderSecretError, ModelProviderSecretStore
 from .model_providers import (
     ModelProviderRecord,
-    ProviderModel,
     ProviderPatch,
     deepseek_api_endpoint,
+    provider_route_eligibility,
 )
-from .provider_client import ProviderInvocation, ProviderMessage
+from .provider_connection_probe import DeepSeekConnectionProbe
 
 
 class ProviderConfigurationError(ValueError):
-    code = "provider_configuration_invalid"
+    def __init__(self, code: str = "provider_configuration_invalid") -> None:
+        self.code = str(code or "provider_configuration_invalid")
+        super().__init__(self.code)
 
 
 _SERVER_OWNED_PATCH_FIELDS = frozenset({
@@ -34,6 +37,8 @@ _SERVER_OWNED_PATCH_FIELDS = frozenset({
     "last_tested_at",
     "last_success_at",
     "safe_error_category",
+    "connection_stage",
+    "stage_durations_ms",
 })
 
 
@@ -46,15 +51,21 @@ class ModelProviderService:
         transport: ProviderTransport,
         bedrock_control_plane: AwsBedrockControlPlane | None = None,
         clock: Callable[[], datetime] | None = None,
+        duration_clock: Callable[[], float] | None = None,
     ) -> None:
         self._repository = repository
         self._secret_store = secret_store
         self._transport = transport
         self._bedrock = bedrock_control_plane or Boto3BedrockControlPlane()
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._duration_clock = duration_clock or time.monotonic
+        self._deepseek_probe = DeepSeekConnectionProbe(transport=transport)
 
     def list(self, tenant_ref: str) -> list[dict[str, object]]:
-        return [item.public_payload() for item in self._repository.list(tenant_ref)]
+        return [
+            item.public_payload(secret_status=self._secret_status(item))
+            for item in self._repository.list(tenant_ref)
+        ]
 
     def create(
         self,
@@ -100,6 +111,7 @@ class ModelProviderService:
             value,
             secret_value=secret_value,
             actor_ref=actor_ref,
+            secret_read_ms=0,
         )
 
     def update(
@@ -112,12 +124,13 @@ class ModelProviderService:
     ) -> dict[str, object]:
         value = self._repository.get(tenant_ref, provider_id)
         prepared = self.prepare_configuration_patch(value, patch)
-        return self._repository.update(
+        updated = self._repository.update(
             tenant_ref,
             provider_id,
             prepared,
             actor_ref=actor_ref,
-        ).public_payload()
+        )
+        return updated.public_payload(secret_status=self._secret_status(updated))
 
     def prepare_configuration_patch(
         self,
@@ -164,15 +177,43 @@ class ModelProviderService:
         actor_ref: str,
     ) -> dict[str, object]:
         value = self._repository.get(tenant_ref, provider_id)
-        secret_value = self._secret_store.get(
-            tenant_ref,
-            provider_id,
-            value.secret_ref,
+        secret_started = self._duration_clock()
+        try:
+            secret_value = self._secret_store.get(
+                tenant_ref,
+                provider_id,
+                value.secret_ref,
+            )
+        except ModelProviderSecretError as exc:
+            secret_read_ms = max(
+                0,
+                int((self._duration_clock() - secret_started) * 1000),
+            )
+            updated = self._repository.update(
+                tenant_ref,
+                provider_id,
+                ProviderPatch(
+                    base_revision=value.revision,
+                    connection_state="invalid",
+                    connection_stage="secret_read",
+                    stage_durations_ms={"secret_read": secret_read_ms},
+                    last_tested_at=self._clock(),
+                    safe_error_category=exc.code,
+                ),
+                actor_ref=actor_ref,
+            )
+            return updated.public_payload(
+                secret_status=self._secret_status(updated)
+            )
+        secret_read_ms = max(
+            0,
+            int((self._duration_clock() - secret_started) * 1000),
         )
         return self._test_record(
             value,
             secret_value=secret_value,
             actor_ref=actor_ref,
+            secret_read_ms=secret_read_ms,
         )
 
     def rotate(
@@ -196,7 +237,7 @@ class ModelProviderService:
                     connection_state=value.connection_state,
                 ),
                 actor_ref=actor_ref,
-            ).public_payload()
+            ).public_payload(secret_status=self._secret_status(value))
         secret_ref = self._secret_store.rotate(
             tenant_ref,
             provider_id,
@@ -218,6 +259,7 @@ class ModelProviderService:
             updated,
             secret_value=secret_value,
             actor_ref=actor_ref,
+            secret_read_ms=0,
         )
 
     def disable(
@@ -228,7 +270,7 @@ class ModelProviderService:
         base_revision: int,
         actor_ref: str,
     ) -> dict[str, object]:
-        return self._repository.update(
+        updated = self._repository.update(
             tenant_ref,
             provider_id,
             ProviderPatch(
@@ -236,7 +278,32 @@ class ModelProviderService:
                 connection_state="disabled",
             ),
             actor_ref=actor_ref,
-        ).public_payload()
+        )
+        return updated.public_payload(secret_status=self._secret_status(updated))
+
+    def prepare_governance_patch(
+        self,
+        value: ModelProviderRecord,
+        *,
+        target_state: str,
+    ) -> ProviderPatch:
+        if target_state not in {"governed", "pending"}:
+            raise ProviderConfigurationError()
+        secret_status = self._secret_status(value)
+        if target_state == "governed":
+            eligibility = provider_route_eligibility(
+                value,
+                secret_status=secret_status,
+            )
+            if not eligibility["can_govern"] and not eligibility["selectable"]:
+                raise ProviderConfigurationError(str(eligibility["reason"]))
+        return ProviderPatch(
+            base_revision=value.revision,
+            governance_state=target_state,
+        )
+
+    def public_payload(self, value: ModelProviderRecord) -> dict[str, object]:
+        return value.public_payload(secret_status=self._secret_status(value))
 
     def _test_record(
         self,
@@ -244,6 +311,7 @@ class ModelProviderService:
         *,
         secret_value: str,
         actor_ref: str,
+        secret_read_ms: int = 0,
     ) -> dict[str, object]:
         tested_at = self._clock()
         try:
@@ -262,23 +330,22 @@ class ModelProviderService:
                         "configuration_conflict",
                         retryable=False,
                     ) from None
-                DeepSeekProvider(transport=self._transport).invoke(
-                    ProviderInvocation(
-                        request_ref=f"test_{uuid.uuid4().hex[:24]}",
-                        correlation_ref=f"test_{uuid.uuid4().hex[:24]}",
-                        workspace_id="provider-connection-test",
-                        agent_id=None,
-                        execution_kind="connection_test",
-                        model_id="deepseek-v4-flash",
-                        messages=[
-                            ProviderMessage(role="user", content="Reply with OK.")
-                        ],
-                        max_tokens=1,
-                    ),
+                result = self._deepseek_probe.run(
                     api_key=secret_value,
                     base_url=base_url,
+                    secret_read_ms=secret_read_ms,
                 )
-                models = _deepseek_models()
+                if result.safe_error_category:
+                    raise ProviderFailure(
+                        result.safe_error_category,
+                        retryable=result.safe_error_category
+                        in {
+                            "provider_timeout",
+                            "provider_unavailable",
+                            "rate_limited",
+                        },
+                    )
+                models = result.models
                 governance_state = value.governance_state
             else:
                 raise BedrockConnectionFailure("configuration_conflict")
@@ -290,6 +357,16 @@ class ModelProviderService:
                 last_tested_at=tested_at,
                 last_success_at=tested_at,
                 safe_error_category=None,
+                connection_stage=(
+                    result.connection_stage
+                    if value.provider_type == "deepseek"
+                    else "completed"
+                ),
+                stage_durations_ms=(
+                    result.stage_durations_ms
+                    if value.provider_type == "deepseek"
+                    else {}
+                ),
             )
         except (BedrockConnectionFailure, ProviderFailure) as exc:
             state = (
@@ -310,6 +387,16 @@ class ModelProviderService:
                 connection_state=state,
                 last_tested_at=tested_at,
                 safe_error_category=exc.category,
+                connection_stage=(
+                    result.connection_stage
+                    if value.provider_type == "deepseek" and "result" in locals()
+                    else "secret_read"
+                ),
+                stage_durations_ms=(
+                    result.stage_durations_ms
+                    if value.provider_type == "deepseek" and "result" in locals()
+                    else {"secret_read": max(0, secret_read_ms)}
+                ),
             )
         updated = self._repository.update(
             value.tenant_ref,
@@ -317,27 +404,21 @@ class ModelProviderService:
             patch,
             actor_ref=actor_ref,
         )
-        return updated.public_payload()
+        return updated.public_payload(secret_status="stored")
 
-
-def _deepseek_models() -> list[ProviderModel]:
-    capabilities = ["chat", "analysis", "tools", "json", "thinking"]
-    return [
-        ProviderModel(
-            model_id="deepseek-v4-flash",
-            display_name="DeepSeek V4 Flash",
-            capabilities=capabilities,
-            support_state="supported",
-            price_key="deepseek:deepseek-v4-flash:official",
-        ),
-        ProviderModel(
-            model_id="deepseek-v4-pro",
-            display_name="DeepSeek V4 Pro",
-            capabilities=capabilities,
-            support_state="supported",
-            price_key="deepseek:deepseek-v4-pro:official",
-        ),
-    ]
+    def _secret_status(self, value: ModelProviderRecord) -> str:
+        status = getattr(self._secret_store, "status", None)
+        if not callable(status):
+            return "unavailable"
+        try:
+            observed = status(
+                value.tenant_ref,
+                value.provider_id,
+                value.secret_ref,
+            )
+        except Exception:
+            return "unavailable"
+        return observed if observed in {"stored", "missing", "unavailable"} else "unavailable"
 
 
 def _secret_value(secret_value: str | None, api_key: str | None) -> str:

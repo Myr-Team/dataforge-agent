@@ -48,6 +48,62 @@ test("degraded provider remains visible but cannot be assigned", () => {
   assert.equal(view.summary.actionRequired, 1);
 });
 
+test("missing DeepSeek credential asks for re-entry and disables test", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_missing",
+      provider_type: "deepseek",
+      display_name: "DeepSeek",
+      connection_state: "invalid",
+      governance_state: "pending",
+      secret_status: "missing",
+      connection_stage: "secret_read",
+      stage_durations_ms: { secret_read: 3 },
+      safe_error_category: "provider_secret_missing",
+      revision: 1,
+      available_models: [],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.credentialLabel, "需要重新录入 Key");
+  assert.equal(item.canTest, false);
+  assert.equal(item.primaryAction, "rotate_secret");
+  assert.equal(item.stageLabel, "读取安全凭据");
+  assert.equal(item.safeErrorLabel, "需要重新录入 Key。保存后将重新检测连接。");
+});
+
+test("connected DeepSeek exposes staged connection facts without raw errors", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_ready",
+      provider_type: "deepseek",
+      display_name: "DeepSeek",
+      connection_state: "connected",
+      governance_state: "governed",
+      secret_status: "stored",
+      connection_stage: "completed",
+      stage_durations_ms: {
+        secret_read: 2,
+        endpoint_resolution: 4,
+        tls_connect: 7,
+        provider_auth: 12,
+        minimal_inference: 90,
+        model_discovery: 16,
+      },
+      revision: 2,
+      available_models: [],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.credentialLabel, "已安全保存");
+  assert.equal(item.canTest, true);
+  assert.equal(item.primaryAction, "test");
+  assert.equal(item.stageLabel, "全部检测完成");
+  assert.equal(item.totalDurationLabel, "131 ms");
+});
+
 test("Bedrock discovery is connected but never assignable", () => {
   const view = providerConnectionsViewModel({
     items: [{
@@ -96,4 +152,38 @@ test("Bedrock remains outside Agent assignment and never exposes unknown error c
   assert.equal(view.items[0].canAssign, false);
   assert.equal(view.items[0].safeErrorLabel, "连接状态异常，请检查配置后重试。");
   assert.equal(JSON.stringify(view).includes("untrusted-marker-category"), false);
+});
+
+test("verified pending DeepSeek exposes an explicit audited governance action", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_pending",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      connection_state: "connected",
+      governance_state: "pending",
+      secret_status: "stored",
+      revision: 4,
+      route_eligibility: {
+        state: "governance_required",
+        selectable: false,
+        can_govern: true,
+        reason: "governance_required",
+        eligible_model_count: 2,
+      },
+      available_models: [{
+        model_id: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        support_state: "supported",
+        price_key: "deepseek:deepseek-v4-flash:official",
+      }],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.routeSelectable, false);
+  assert.equal(item.canGovern, true);
+  assert.equal(item.governanceAction, "govern");
+  assert.equal(item.routeReasonLabel, "连接与计价已就绪，可纳入 Agent 模型路由。");
+  assert.deepEqual(item.lifecycle.map((step) => step.state), ["complete", "complete", "complete", "current"]);
 });

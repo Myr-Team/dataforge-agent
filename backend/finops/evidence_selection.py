@@ -86,8 +86,40 @@ def select_policy_evidence(
 ) -> EvidenceSet:
     policy = str(policy_type or "").strip()
     bounded_limit = _limit(limit)
-    candidates: list[FinOpsRequestEvent]
-    signal: Any
+    candidates, signal = _policy_evidence_candidates(events, policy)
+    if signal is None:
+        return _empty_set(
+            "risk",
+            policy or "unknown",
+            _POLICY_REASON.get(policy, "风险证据"),
+            policy_type=policy or None,
+        )
+    return _evidence_set(
+        subject_type="risk",
+        subject_id=policy,
+        reason=_POLICY_REASON.get(policy, "风险代表证据"),
+        events=candidates[:bounded_limit],
+        signal=signal,
+        policy_type=policy,
+    )
+
+
+def policy_evidence_candidates(
+    events: Sequence[FinOpsRequestEvent],
+    policy_type: str,
+) -> list[FinOpsRequestEvent]:
+    """Return all semantically relevant events in policy ranking order."""
+    candidates, _signal = _policy_evidence_candidates(
+        events,
+        str(policy_type or "").strip(),
+    )
+    return candidates
+
+
+def _policy_evidence_candidates(
+    events: Sequence[FinOpsRequestEvent],
+    policy: str,
+) -> tuple[list[FinOpsRequestEvent], Any | None]:
     if policy == "p95_latency":
         candidates = sorted(
             (event for event in events if event.latency_ms is not None),
@@ -110,7 +142,7 @@ def select_policy_evidence(
         )
         signal = lambda event: EvidenceSignal(
             metric="pricing_status",
-            value=event.estimated_cost.status,
+            value="unpriced",
             unit="status",
         )
     elif policy == "cache_hit_rate":
@@ -151,15 +183,8 @@ def select_policy_evidence(
         candidates = _cost_events(events)
         signal = _cost_signal
     else:
-        return _empty_set("risk", policy or "unknown", _POLICY_REASON.get(policy, "风险证据"), policy_type=policy or None)
-    return _evidence_set(
-        subject_type="risk",
-        subject_id=policy,
-        reason=_POLICY_REASON.get(policy, "风险代表证据"),
-        events=candidates[:bounded_limit],
-        signal=signal,
-        policy_type=policy,
-    )
+        return [], None
+    return candidates, signal
 
 
 def select_metric_evidence(
@@ -327,6 +352,7 @@ __all__ = [
     "EvidenceItem",
     "EvidenceSet",
     "EvidenceSignal",
+    "policy_evidence_candidates",
     "public_evidence_summary",
     "select_metric_evidence",
     "select_policy_evidence",

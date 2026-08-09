@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import backend.finops.retention as retention
+from backend.finops.job_status import InMemoryJobRunRepository
 
 
 class _Repository:
@@ -20,6 +21,7 @@ def test_retention_job_defaults_to_ninety_days_and_emits_bounded_status(
     repository = _Repository()
     monkeypatch.delenv("DF_FINOPS_RETENTION_DAYS", raising=False)
     monkeypatch.setattr(retention, "_repository", lambda: repository)
+    monkeypatch.setattr(retention, "_job_status_repository", InMemoryJobRunRepository)
 
     assert retention.main() == 0
 
@@ -40,6 +42,7 @@ def test_retention_job_bounds_configuration_without_leaking_error_detail(
 
     monkeypatch.setenv("DF_FINOPS_RETENTION_DAYS", "9999")
     monkeypatch.setattr(retention, "_repository", FailingRepository)
+    monkeypatch.setattr(retention, "_job_status_repository", InMemoryJobRunRepository)
 
     assert retention.main() == 1
 

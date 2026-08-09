@@ -40,6 +40,8 @@ try:
     from .identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
     from .invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from .model_policy import list_allowed_model_routes, public_model_route_snapshot
+    from .model_provider_router import get_model_provider_repository, get_model_provider_secret_store
+    from .model_provider_routes import ProviderRouteCandidate, provider_route_candidates
     from .monitoring_dashboard import build_monitor_dashboard
     from .monitoring_service import build_monitoring_snapshot
     from .observability import observability_snapshot
@@ -71,6 +73,8 @@ except ImportError:
     from identity import actor_from_request, canonical_actor_identity, default_actor, email_domain, is_trusted_tenant_identity, member_from_actor, normalized_email_domains, public_actor
     from invitation_store import InvitationPersistenceError, accept_provider_invitation, accepted_invitation_identity, canonical_member_identity_key, create_pending_invitation, invitation_reference, list_invitation_history, member_pseudonym_salt, member_subject_label, revoke_effective_invitations, transition_invitation, update_invited_member_role, workspace_invitation_lock
     from model_policy import list_allowed_model_routes, public_model_route_snapshot
+    from model_provider_router import get_model_provider_repository, get_model_provider_secret_store
+    from model_provider_routes import ProviderRouteCandidate, provider_route_candidates
     from monitoring_dashboard import build_monitor_dashboard
     from monitoring_service import build_monitoring_snapshot
     from observability import observability_snapshot
@@ -1391,7 +1395,7 @@ def workspace_model_routing(workspace_id: str, request: Request | None = None) -
     _require_workspace_owner(workspace_id, request, "model_routing.read")
     meta = _load_workspace_meta(workspace_id)
     policy, price_card = public_workspace_model_config(meta)
-    snapshot = _available_model_route_snapshot()
+    snapshot = _available_model_route_snapshot(request)
     return {
         "workspace_id": workspace_id,
         "routes": snapshot["routes"],
@@ -1411,7 +1415,7 @@ def update_workspace_model_routing(
     existing_policy, price_card = public_workspace_model_config(meta)
     raw_body = body if isinstance(body, dict) else {}
     _require_matching_config_revision(existing_policy, raw_body, "model routing policy")
-    routes = _available_model_routes()
+    routes = _available_model_routes(request)
     policy = validate_workspace_routing_policy(
         {key: value for key, value in raw_body.items() if key != "base_revision"},
         routes,
@@ -1451,7 +1455,7 @@ def update_workspace_model_price_card(
     _require_matching_config_revision(existing_price_card, raw_body, "model price card")
     price_card = normalize_workspace_price_card(
         {key: value for key, value in raw_body.items() if key != "base_revision"},
-        _available_model_routes(),
+        _available_model_routes(request),
         revision=_next_model_config_revision(existing_price_card),
         updated_at=_model_config_timestamp(),
     )
@@ -1469,22 +1473,80 @@ def update_workspace_model_price_card(
     }
 
 
-def _available_model_route_snapshot() -> dict[str, Any]:
+def _available_model_route_snapshot(request: Request | None = None) -> dict[str, Any]:
+    snapshot, dynamic = _model_route_components(request)
+    routes = snapshot["routes"]
+    return {
+        "default_route": snapshot["default_route"],
+        "routes": [
+            *[dict(item) for item in routes if isinstance(item, dict)],
+            *[dict(candidate.public) for candidate in dynamic],
+        ],
+    }
+
+
+def _available_model_routes(request: Request | None = None) -> list[Any]:
+    _snapshot, dynamic = _model_route_components(request)
+    return [
+        *list_allowed_model_routes(),
+        *[
+            candidate.route
+            for candidate in dynamic
+            if candidate.public.get("selectable") is True
+        ],
+    ]
+
+
+def _model_route_components(
+    request: Request | None,
+) -> tuple[dict[str, Any], list[ProviderRouteCandidate]]:
     snapshot = public_model_route_snapshot()
     if str(snapshot.get("state") or "").strip().lower() != "available":
         raise ValueError("Model routing is not available")
     routes = snapshot.get("routes")
     if not isinstance(routes, list) or not routes:
         raise ValueError("Model routing is not available")
-    return {
+    return ({
         "default_route": str(snapshot.get("default_route") or "").strip() or None,
         "routes": [dict(item) for item in routes if isinstance(item, dict)],
-    }
+    }, _dynamic_model_route_candidates(request))
 
 
-def _available_model_routes() -> list[Any]:
-    _available_model_route_snapshot()
-    return list_allowed_model_routes()
+def _dynamic_model_route_candidates(
+    request: Request | None,
+) -> list[ProviderRouteCandidate]:
+    if request is None:
+        return []
+    enabled = str(os.environ.get("DF_PROVIDER_CONNECTORS_ENABLED") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return []
+    actor = actor_from_request(request, fallback=False, resolve_groups=False)
+    if not is_trusted_tenant_identity(actor):
+        return []
+    secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
+    tenant_id = str(actor.get("tenant_id") or "").strip()
+    if not secret or not tenant_id:
+        raise HTTPException(status_code=503, detail="Model provider scope is unavailable")
+    tenant_ref = canonical_tenant_ref(tenant_id, secret=secret)
+    try:
+        repository = get_model_provider_repository()
+        secret_store = get_model_provider_secret_store()
+        records = repository.list(tenant_ref)
+        return provider_route_candidates(
+            records,
+            secret_status=lambda item: secret_store.status(
+                item.tenant_ref,
+                item.provider_id,
+                item.secret_ref,
+            ),
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Model provider routing is unavailable",
+        ) from None
 
 
 def _current_model_config_revision(config: dict[str, Any]) -> int:
@@ -3925,6 +3987,7 @@ def _artifact_item(
     )
     return {
         "name": name,
+        "workspace_id": str(record.get("workspace_id") or ""),
         "type": _artifact_type(kind, name),
         "bytes": record.get("bytes"),
         "created_at": created_at,

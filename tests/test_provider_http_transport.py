@@ -65,6 +65,29 @@ def test_transport_sends_key_only_to_validated_official_origin() -> None:
     assert call["headers"]["Authorization"] == "Bearer secret-marker"
 
 
+def test_transport_get_reuses_official_origin_and_redirect_guards() -> None:
+    session = _Session(_Response(200, {"data": []}))
+    transport = RequestsProviderTransport(
+        session=session,
+        resolver=_public_resolver,
+    )
+
+    response = transport.get_json(
+        provider_type="deepseek",
+        base_url="https://api.deepseek.com",
+        path="/models",
+        api_key="secret-marker",
+        timeout_seconds=5,
+    )
+
+    assert response.status_code == 200
+    call = session.calls[0]
+    assert call["method"] == "GET"
+    assert call["url"] == "https://api.deepseek.com/models"
+    assert call["allow_redirects"] is False
+    assert call["headers"]["Authorization"] == "Bearer secret-marker"
+
+
 def test_transport_rejects_redirects_without_forwarding_credentials() -> None:
     session = _Session(
         _Response(

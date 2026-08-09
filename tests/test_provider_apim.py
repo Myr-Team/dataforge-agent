@@ -8,6 +8,7 @@ from backend.provider_apim import (
     ProviderApimError,
     build_candidate_contract,
     candidate_is_activatable,
+    validate_deepseek_candidate,
 )
 
 
@@ -74,4 +75,37 @@ def test_activation_requires_full_candidate_verification_and_enabled_flag(
 
     assert not candidate_is_activatable(
         verification.model_copy(update={"anonymous_status": 200})
+    )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"connection_state": "degraded"},
+        {"governance_state": "pending"},
+        {"support_state": "unsupported"},
+        {"price_key": None},
+    ],
+)
+def test_candidate_rejects_ineligible_deepseek_provider(
+    overrides: dict[str, object],
+) -> None:
+    facts: dict[str, object] = {
+        "connection_state": "connected",
+        "governance_state": "governed",
+        "support_state": "supported",
+        "price_key": "deepseek:deepseek-v4-pro:official",
+    }
+    facts.update(overrides)
+
+    with pytest.raises(ProviderApimError, match="provider_candidate_ineligible"):
+        validate_deepseek_candidate(**facts)
+
+
+def test_candidate_accepts_connected_governed_supported_priced_model() -> None:
+    validate_deepseek_candidate(
+        connection_state="connected",
+        governance_state="governed",
+        support_state="supported",
+        price_key="deepseek:deepseek-v4-pro:official",
     )

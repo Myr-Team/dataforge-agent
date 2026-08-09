@@ -71,6 +71,7 @@ class FinOpsRequestDetailService:
         }
         payload.update(
             {
+                "request_ref": event.request_ref,
                 "display": {
                     "name": alias.display_name,
                     "operation": operation_label(alias.operation_code),

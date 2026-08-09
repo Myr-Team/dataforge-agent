@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .aws_bedrock_provider import bedrock_control_endpoint
+from .model_provider_secrets import SecretStatus
 
 
 ProviderType = Literal["deepseek", "aws_bedrock"]
@@ -19,6 +20,16 @@ ConnectionState = Literal[
 ]
 GovernanceState = Literal["pending", "governed", "degraded", "unmanaged"]
 ProviderSupportState = Literal["supported", "unsupported", "unpriced"]
+ConnectionStage = Literal[
+    "secret_read",
+    "endpoint_resolution",
+    "tls_connect",
+    "provider_auth",
+    "minimal_inference",
+    "model_discovery",
+    "completed",
+]
+PROVIDER_CONNECTION_STAGES = frozenset(ConnectionStage.__args__)
 DEEPSEEK_API_ENDPOINT = "https://api.deepseek.com"
 
 
@@ -60,6 +71,8 @@ class ModelProviderRecord(BaseModel):
     last_tested_at: datetime | None = None
     last_success_at: datetime | None = None
     safe_error_category: str | None = Field(default=None, max_length=64)
+    connection_stage: ConnectionStage | None = None
+    stage_durations_ms: dict[str, int] = Field(default_factory=dict)
     revision: int = Field(ge=1)
     created_by_ref: str = Field(min_length=1, max_length=160, exclude=True, repr=False)
     updated_by_ref: str = Field(min_length=1, max_length=160, exclude=True, repr=False)
@@ -70,6 +83,15 @@ class ModelProviderRecord(BaseModel):
     @classmethod
     def _base_url(cls, value: str) -> str:
         return _https_endpoint(value)
+
+    @field_validator("stage_durations_ms")
+    @classmethod
+    def _stage_durations(cls, value: dict[str, int]) -> dict[str, int]:
+        if any(key not in PROVIDER_CONNECTION_STAGES for key in value):
+            raise ValueError("unknown provider connection stage")
+        if any(not isinstance(duration, int) or duration < 0 for duration in value.values()):
+            raise ValueError("invalid provider stage duration")
+        return value
 
     @model_validator(mode="after")
     def _bedrock_control_endpoint(self) -> "ModelProviderRecord":
@@ -84,7 +106,11 @@ class ModelProviderRecord(BaseModel):
         self.region = str(self.region or "").strip().lower()
         return self
 
-    def public_payload(self) -> dict[str, Any]:
+    def public_payload(
+        self,
+        *,
+        secret_status: SecretStatus = "unavailable",
+    ) -> dict[str, Any]:
         payload = self.model_dump(
             mode="json",
             exclude={
@@ -94,7 +120,11 @@ class ModelProviderRecord(BaseModel):
                 "updated_by_ref",
             },
         )
-        payload["secret_status"] = "stored"
+        payload["secret_status"] = secret_status
+        payload["route_eligibility"] = provider_route_eligibility(
+            self,
+            secret_status=secret_status,
+        )
         return payload
 
 
@@ -117,6 +147,19 @@ class ProviderPatch(BaseModel):
     last_tested_at: datetime | None = None
     last_success_at: datetime | None = None
     safe_error_category: str | None = Field(default=None, max_length=64)
+    connection_stage: ConnectionStage | None = None
+    stage_durations_ms: dict[str, int] | None = None
+
+    @field_validator("stage_durations_ms")
+    @classmethod
+    def _stage_durations(cls, value: dict[str, int] | None) -> dict[str, int] | None:
+        if value is None:
+            return None
+        if any(key not in PROVIDER_CONNECTION_STAGES for key in value):
+            raise ValueError("unknown provider connection stage")
+        if any(not isinstance(duration, int) or duration < 0 for duration in value.values()):
+            raise ValueError("invalid provider stage duration")
+        return value
 
     @field_validator("base_url")
     @classmethod
@@ -158,6 +201,49 @@ def deepseek_api_endpoint(value: str) -> str:
     return DEEPSEEK_API_ENDPOINT
 
 
+def provider_route_eligibility(
+    value: ModelProviderRecord,
+    *,
+    secret_status: SecretStatus,
+) -> dict[str, Any]:
+    supported_models = [
+        model
+        for model in value.available_models
+        if model.support_state == "supported"
+    ]
+    eligible_model_count = sum(bool(model.price_key) for model in supported_models)
+    reason: str | None = None
+    can_govern = False
+    selectable = False
+    state = "unavailable"
+    if secret_status != "stored":
+        reason = "provider_secret_unavailable"
+    elif value.provider_type != "deepseek":
+        reason = "provider_type_not_routable"
+    elif value.last_success_at is None:
+        reason = "connection_verification_required"
+    elif value.connection_state != "connected":
+        reason = "provider_connection_unavailable"
+    elif not supported_models:
+        reason = "supported_model_required"
+    elif eligible_model_count != len(supported_models):
+        reason = "official_pricing_required"
+    elif value.governance_state != "governed":
+        state = "governance_required"
+        reason = "governance_required"
+        can_govern = True
+    else:
+        state = "selectable"
+        selectable = True
+    return {
+        "state": state,
+        "selectable": selectable,
+        "can_govern": can_govern,
+        "reason": reason,
+        "eligible_model_count": eligible_model_count,
+    }
+
+
 def _https_endpoint(value: str) -> str:
     parsed = urlparse(str(value or "").strip())
     if (
@@ -175,6 +261,7 @@ def _https_endpoint(value: str) -> str:
 
 __all__ = [
     "ConnectionState",
+    "ConnectionStage",
     "DEEPSEEK_API_ENDPOINT",
     "GovernanceState",
     "ModelProviderRecord",
@@ -182,5 +269,7 @@ __all__ = [
     "ProviderPatch",
     "ProviderSupportState",
     "ProviderType",
+    "PROVIDER_CONNECTION_STAGES",
     "deepseek_api_endpoint",
+    "provider_route_eligibility",
 ]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from backend.finops.agent_inputs import (
+    build_finops_assistant_input,
     build_finops_agent_input,
     build_roi_agent_input,
 )
@@ -76,6 +77,116 @@ def test_finops_agent_input_is_bounded_and_contains_only_scoped_evidence() -> No
     serialized = str(payload)
     for forbidden in ("prompt", "answer", "raw identity", "internal_error", "must-not-escape"):
         assert forbidden not in serialized
+
+
+def test_finops_agent_input_projects_only_requested_authorized_evidence() -> None:
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": request_ref,
+                    "occurred_at": datetime(2026, 7, 24, hour, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": latency_ms,
+                    "tokens": TokenUsage(input=10, output=2, total=12),
+                    "estimated_cost": {"amount": 0.001, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            )
+            for request_ref, hour, latency_ms in (
+                ("req_latency_authorized", 2, 6200),
+                ("req_unselected_authorized", 3, 1800),
+            )
+        ]
+    )
+    query = FinOpsQuery(
+        tenant_ref="tenant-a",
+        authorized_workspace_ids=("ws-a",),
+        workspace_id="ws-a",
+        from_value="2026-07-23T00:00:00Z",
+        to_value="2026-07-25T00:00:00Z",
+    )
+
+    payload = build_finops_agent_input(
+        query,
+        FinOpsQueryService(repository),
+        evidence_refs=["req_latency_authorized"],
+    )
+
+    assert payload["evidence_refs"] == ["req_latency_authorized"]
+    assert [item["ref"] for item in payload["evidence_catalog"]] == [
+        "req_latency_authorized"
+    ]
+    assert "req_unselected_authorized" not in str(payload)
+
+    empty = build_finops_agent_input(
+        query,
+        FinOpsQueryService(repository),
+        evidence_refs=["req_not_authorized"],
+    )
+    assert empty["status"] == "insufficient_data"
+    assert empty["evidence_refs"] == []
+
+
+def test_finops_assistant_input_uses_single_compact_bootstrap() -> None:
+    query, service = _query_service()
+
+    class BootstrapOnlyService:
+        def __init__(self) -> None:
+            self.bootstrap_calls = 0
+
+        def bootstrap(self, selected_query: FinOpsQuery) -> dict[str, object]:
+            self.bootstrap_calls += 1
+            return service.bootstrap(selected_query)
+
+        def trends(self, *_args: object) -> object:
+            raise AssertionError("assistant input must not load trends separately")
+
+        def breakdowns(self, *_args: object) -> object:
+            raise AssertionError("assistant input must not load breakdowns separately")
+
+    compact_service = BootstrapOnlyService()
+    event = service.events(query)[0]
+    payload = build_finops_assistant_input(
+        query,
+        compact_service,
+        metric_context={"metric_id": "estimated_cost", "label": "估算成本"},
+        evidence_items=[event],
+    )
+
+    assert compact_service.bootstrap_calls == 1
+    assert payload["status"] == "ready"
+    assert payload["evidence_refs"] == ["req_aaaaaaaaaaaa"]
+    assert payload["overview"]["metrics"]["requests"] == 1
+    assert len(str(payload).encode("utf-8")) < 24_000
+
+
+def test_quick_finops_assistant_input_skips_full_bootstrap() -> None:
+    query, service = _query_service()
+
+    class EvidenceOnlyService:
+        def bootstrap(self, _selected_query: FinOpsQuery) -> dict[str, object]:
+            raise AssertionError("quick assistant input must not load full bootstrap")
+
+    event = service.events(query)[0]
+    payload = build_finops_assistant_input(
+        query,
+        EvidenceOnlyService(),
+        metric_context={"metric_id": "estimated_cost", "label": "估算成本"},
+        evidence_items=[event],
+        include_summary=False,
+    )
+
+    assert payload["status"] == "ready"
+    assert payload["evidence_refs"] == ["req_aaaaaaaaaaaa"]
+    assert payload["overview"]["metrics"] == {}
+    assert payload["trust"] == {}
 
 
 def test_roi_agent_input_accepts_only_verified_outcome_events() -> None:

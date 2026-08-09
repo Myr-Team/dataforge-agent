@@ -4,6 +4,7 @@ import {
   deleteWorkspace,
   listWorkspaces,
   loadConversation,
+  loadAuthSession,
   loadDashboard,
   loadFinOpsBootstrap,
   loadWorkspaceAccess,
@@ -167,12 +168,8 @@ export function App() {
   const [uploadState, setUploadState] = useState(null);
   const [deleting, setDeleting] = useState(false);
   const [notice, setNotice] = useState(null);
-  const [user, setUser] = useState({
-    name: "Demo User",
-    email: "local.demo@dataforge",
-    tenantScope: "local-demo",
-  });
-  const [authState, setAuthState] = useState("local");
+  const [user, setUser] = useState({});
+  const [authState, setAuthState] = useState("pending");
   const [observability, setObservability] = useState(null);
   const activeViewRef = useRef(activeView);
   const [tasks, setTasks] = useState([]);
@@ -649,7 +646,7 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const configuredEndpoint = import.meta.env.VITE_AUTH_ME || "";
+    const configuredEndpoint = import.meta.env.VITE_AUTH_SESSION || "";
     const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
     if (!configuredEndpoint && isLocal) {
       setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
@@ -658,26 +655,15 @@ export function App() {
         cancelled = true;
       };
     }
-    const endpoint = configuredEndpoint || "/.auth/me";
-    fetch(endpoint, { headers: { Accept: "application/json" } })
-      .then((response) => (response.ok ? response.json() : Promise.reject(new Error("auth unavailable"))))
-      .then((data) => {
-        const principal = Array.isArray(data) ? data[0] : data?.clientPrincipal || data;
-        const claims = principal?.user_claims || principal?.claims || [];
-        const claim = (...keys) => {
-          for (const key of keys) {
-            const match = claims.find((item) => {
-              const type = String(item.typ || item.type || "").toLowerCase();
-              return type === key || type.endsWith(`/${key}`);
-            });
-            if (match?.val || match?.value) return match.val || match.value;
-          }
-          return "";
-        };
+    const endpoint = configuredEndpoint || "/api/auth/session";
+    loadAuthSession(endpoint)
+      .then((session) => {
+        if (!session?.authenticated) throw new Error("auth unavailable");
         const next = {
-          name: claim("name", "displayname", "given_name") || principal?.userDetails || principal?.user_name || "DataForge User",
-          email: claim("emailaddress", "preferred_username", "upn", "email") || principal?.user_id || "",
-          tenantScope: claim("tenantid", "tid"),
+          name: String(session?.name || "DataForge User"),
+          email: String(session?.email || ""),
+          identityProvider: String(session?.identity_provider || "microsoft_entra"),
+          identitySource: String(session?.identity_source || "trusted_proxy"),
         };
         if (!cancelled) {
           setUser(next);
@@ -686,8 +672,8 @@ export function App() {
       })
       .catch(() => {
         if (!cancelled) {
-          setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
-          setAuthState("local");
+          setUser({});
+          setAuthState("unavailable");
         }
       });
     return () => {
@@ -1250,7 +1236,12 @@ export function App() {
 
   const logout = () => {
     if (authState !== "authenticated") {
-      setNotice({ type: "done", message: "当前是本地演示态，云端登录后这里会退出 Azure 会话。" });
+      setNotice({
+        type: authState === "local" ? "done" : "error",
+        message: authState === "local"
+          ? "当前是本地演示态，云端登录后这里会退出 Azure 会话。"
+          : "Microsoft Entra 身份信息暂不可用，请刷新页面重试。",
+      });
       return;
     }
     const url = import.meta.env.VITE_AUTH_LOGOUT || "/.auth/logout?post_logout_redirect_uri=/";
@@ -1311,6 +1302,7 @@ export function App() {
             onOpenConversation={openConversation}
             tasks={tasks}
             user={user}
+            authState={authState}
             settingsInitialTab={settingsInitialTab}
             onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}

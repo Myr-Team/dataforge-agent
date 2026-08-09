@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from azure.core.exceptions import ResourceNotFoundError
 
 import backend.model_provider_secrets as provider_secrets
 from backend.model_provider_secrets import (
@@ -33,6 +34,11 @@ class _FailingSecretClient:
         raise RuntimeError(f"provider failed with {value}")
 
 
+class _MissingSecretClient:
+    def get_secret(self, name: str) -> _Secret:
+        raise ResourceNotFoundError(message=f"missing {name}")
+
+
 def test_provider_secret_name_is_opaque_stable_and_provider_specific() -> None:
     name = provider_secret_name("tenant-sensitive", "provider_01")
 
@@ -51,6 +57,25 @@ def test_key_vault_provider_store_returns_only_a_reference() -> None:
     assert reference.startswith("kv:df-model-provider-")
     assert store.get("tenant-a", "provider_01", reference) == "secret-marker"
     assert "secret-marker" not in reference
+
+
+def test_key_vault_provider_store_reports_stored_secret_status() -> None:
+    client = _SecretClient()
+    store = KeyVaultModelProviderSecretStore(client=client)
+    reference = store.put("tenant-a", "provider_01", "secret-marker")
+
+    assert store.status("tenant-a", "provider_01", reference) == "stored"
+
+
+def test_key_vault_provider_store_reports_missing_secret_status() -> None:
+    store = KeyVaultModelProviderSecretStore(client=_MissingSecretClient())
+    reference = f"kv:{provider_secret_name('tenant-a', 'provider_01')}"
+
+    assert store.status("tenant-a", "provider_01", reference) == "missing"
+    with pytest.raises(ModelProviderSecretError) as captured:
+        store.get("tenant-a", "provider_01", reference)
+
+    assert captured.value.code == "provider_secret_missing"
 
 
 def test_provider_store_round_trips_one_bedrock_credential_bundle() -> None:

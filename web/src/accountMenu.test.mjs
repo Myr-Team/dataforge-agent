@@ -29,3 +29,13 @@ test("keeps the account menu truthful when a local preview has no identity claim
   assert.equal(model.email, "账号信息暂不可用");
   assert.equal(model.authLabel, "本地预览身份");
 });
+
+test("does not mislabel an unavailable production identity as local preview", async () => {
+  const { accountViewModel } = await loadAccountViewModel();
+  const model = accountViewModel({}, "unavailable");
+
+  assert.equal(model.initial, "U");
+  assert.equal(model.name, "当前账户");
+  assert.equal(model.email, "身份信息暂不可用");
+  assert.equal(model.authLabel, "Microsoft Entra 身份待恢复");
+});

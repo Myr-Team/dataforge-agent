@@ -64,6 +64,7 @@ class SelectedTextRoute:
     fallback_reason: str | None = None
     policy_revision: int | None = None
     price_card_revision: int | None = None
+    fallback_route: ModelRoute | None = None
 
 
 _ROUTE_SCOPE: ContextVar[SelectedTextRoute | None] = ContextVar("dataforge_model_route_scope", default=None)
@@ -71,6 +72,10 @@ _PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_mod
 _WORKSPACE_POLICY_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_model_policy_scope", default=None)
 _WORKSPACE_PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_price_card_scope", default=None)
 _MANUAL_ROUTE_SCOPE: ContextVar[str | None] = ContextVar("dataforge_manual_model_route_scope", default=None)
+_MODEL_ROUTE_REGISTRY_SCOPE: ContextVar[tuple[ModelRoute, ...] | None] = ContextVar(
+    "dataforge_model_route_registry_scope",
+    default=None,
+)
 
 
 def list_allowed_model_routes() -> list[ModelRoute]:
@@ -139,7 +144,7 @@ def resolve_text_route(*, capability: str = "chat") -> ModelRoute:
     required = str(capability or "chat").strip().lower()
     routes = [
         route
-        for route in list_allowed_model_routes()
+        for route in _current_model_routes()
         if required in route.capabilities and _runtime_route_enabled(route)
     ]
     if not routes:
@@ -161,7 +166,7 @@ def _routes_for_capability(capability: str) -> list[ModelRoute]:
     required = str(capability or "chat").strip().lower()
     return [
         route
-        for route in list_allowed_model_routes()
+        for route in _current_model_routes()
         if required in route.capabilities and _runtime_route_enabled(route)
     ]
 
@@ -192,7 +197,7 @@ def _pick_route(
 
 def _allowlisted_route(route_id: str, *, capability: str) -> ModelRoute | None:
     normalized = str(route_id or "").strip().lower()
-    for route in list_allowed_model_routes():
+    for route in _current_model_routes():
         if (
             route.route_id == normalized
             and str(capability or "").strip().lower() in route.capabilities
@@ -277,23 +282,28 @@ def select_text_route_record(
     for assignment, primary_selection in assignment_candidates:
         if not isinstance(assignment, Mapping):
             continue
-        for field_name, selection, fallback_reason in (
-            ("primary_route_id", primary_selection, None),
-            ("fallback_route_id", "fallback", "capability_missing"),
-        ):
-            route_id = str(assignment.get(field_name) or "").strip().lower()
-            if not route_id:
-                continue
-            selected = _allowlisted_route(route_id, capability=workspace_capability)
-            if selected is not None:
-                return SelectedTextRoute(
-                    route=selected,
-                    execution_kind=normalized_kind,
-                    selection=selection,
-                    fallback_reason=fallback_reason,
-                    policy_revision=policy_revision,
-                    price_card_revision=price_card_revision,
-                )
+        primary_route_id = str(assignment.get("primary_route_id") or "").strip().lower()
+        fallback_route_id = str(assignment.get("fallback_route_id") or "").strip().lower()
+        primary = _allowlisted_route(primary_route_id, capability=workspace_capability)
+        fallback = _allowlisted_route(fallback_route_id, capability=workspace_capability)
+        if primary is not None:
+            return SelectedTextRoute(
+                route=primary,
+                execution_kind=normalized_kind,
+                selection=primary_selection,
+                policy_revision=policy_revision,
+                price_card_revision=price_card_revision,
+                fallback_route=fallback,
+            )
+        if fallback is not None:
+            return SelectedTextRoute(
+                route=fallback,
+                execution_kind=normalized_kind,
+                selection="fallback",
+                fallback_reason="capability_missing",
+                policy_revision=policy_revision,
+                price_card_revision=price_card_revision,
+            )
     desired = _EXECUTION_KIND_CAPABILITY.get(normalized_kind, "chat")
     fallback_reason: str | None = None
     capability = desired
@@ -398,6 +408,7 @@ def model_route_scope(
             fallback_reason=safe_fallback_reason(scoped.fallback_reason),
             policy_revision=scoped.policy_revision,
             price_card_revision=scoped.price_card_revision,
+            fallback_route=scoped.fallback_route,
         )
     )
     inherited_price_card = _WORKSPACE_PRICE_CARD_SCOPE.get()
@@ -424,16 +435,24 @@ def workspace_model_policy_scope(
     policy: Mapping[str, Any] | None = None,
     price_card: Mapping[str, Any] | None = None,
     manual_route_id: str | None = None,
+    routes: list[ModelRoute] | tuple[ModelRoute, ...] | None = None,
 ) -> Iterator[None]:
     policy_token = _WORKSPACE_POLICY_SCOPE.set(dict(policy) if isinstance(policy, Mapping) else None)
     price_token = _WORKSPACE_PRICE_CARD_SCOPE.set(dict(price_card) if isinstance(price_card, Mapping) else None)
     manual_token = _MANUAL_ROUTE_SCOPE.set(str(manual_route_id).strip().lower() if manual_route_id else None)
+    routes_token = _MODEL_ROUTE_REGISTRY_SCOPE.set(tuple(routes) if routes is not None else None)
     try:
         yield None
     finally:
+        _MODEL_ROUTE_REGISTRY_SCOPE.reset(routes_token)
         _MANUAL_ROUTE_SCOPE.reset(manual_token)
         _WORKSPACE_PRICE_CARD_SCOPE.reset(price_token)
         _WORKSPACE_POLICY_SCOPE.reset(policy_token)
+
+
+def _current_model_routes() -> list[ModelRoute]:
+    scoped = _MODEL_ROUTE_REGISTRY_SCOPE.get()
+    return list(scoped) if scoped is not None else list_allowed_model_routes()
 
 
 def public_model_route_snapshot() -> dict[str, object]:

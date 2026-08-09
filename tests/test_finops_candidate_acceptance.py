@@ -65,12 +65,28 @@ def _payloads() -> dict:
         },
         "roi": {
             "metrics": [
-                {"value": 1.87}, {"value": 145}, {"value": 42}, {"value": 0.31}
+                {"id": "monthly_benefit", "value": 3_000},
+                {"id": "monthly_total_cost", "value": 800},
+                {"id": "monthly_net_benefit", "value": 2_200},
+                {"id": "roi_ratio", "value": 2.75},
             ],
             "value_bridge": {
                 "formula_revision": "roi-scenario-v1",
                 "scenario_id": "scenario-1",
                 "payback_months": 3.4,
+                "items": [
+                    {"id": "monthly_benefit", "value": 3_000, "unit": "USD"},
+                    {"id": "monthly_total_cost", "value": -800, "unit": "USD"},
+                    {"id": "monthly_net_benefit", "value": 2_200, "unit": "USD"},
+                ],
+            },
+            "evidence_maturity": {
+                "stages": [
+                    {"id": "investment", "evidence_refs": ["req_investment"]},
+                    {"id": "usage", "evidence_refs": ["req_usage"]},
+                    {"id": "output", "evidence_refs": ["req_output"]},
+                    {"id": "outcome", "evidence_refs": ["req_outcome"]},
+                ]
             },
             "unit_economics_trend": [{"value": 0.1}, {"value": 0.2}, {"value": 0.4}],
             "scenarios": [{"title": "运营自动化测算"}],
@@ -81,7 +97,22 @@ def _payloads() -> dict:
             "priorities": [{"id": str(index)} for index in range(4)],
             "optimization_portfolio": [{"id": str(index)} for index in range(4)],
             "selected_evidence_summaries": [
-                {"request_ref": f"req_{index}"} for index in range(4)
+                {"request_ref": f"req_risk_{index}"} for index in range(7)
+            ],
+            "evidence_sets": [
+                {
+                    "policy_type": policy_type,
+                    "items": [{"request_ref": request_ref, "signal": signal}],
+                }
+                for policy_type, request_ref, signal in (
+                    ("p95_latency", "req_risk_0", {"metric": "latency_ms", "value": 6200, "unit": "ms"}),
+                    ("cache_hit_rate", "req_risk_1", {"metric": "cache_state", "value": "miss", "unit": "state"}),
+                    ("unpriced_requests", "req_risk_2", {"metric": "pricing_status", "value": "unpriced", "unit": "status"}),
+                    ("error_rate", "req_risk_3", {"metric": "request_status", "value": "failed", "unit": "status"}),
+                    ("daily_cost_budget", "req_risk_4", {"metric": "estimated_cost", "value": 1.87, "unit": "USD"}),
+                    ("token_spike", "req_risk_5", {"metric": "tokens_total", "value": 31580, "unit": "token"}),
+                    ("apim_coverage", "req_risk_6", {"metric": "gateway_coverage", "value": "unmanaged", "unit": "state"}),
+                )
             ],
             "insight": {"summary": "风险来自不同调用与缓存证据。"},
             "governance_capability": {
@@ -112,6 +143,36 @@ def _payloads() -> dict:
             ]
         },
         "price_mappings": {"items": []},
+        "roi_request_details": {
+            request_ref: {"request_ref": request_ref, "status": "succeeded"}
+            for request_ref in ("req_investment", "req_usage", "req_output", "req_outcome")
+        },
+        "assistant_check": {
+            "requested_evidence_refs": ["req_risk_0"],
+            "response": {
+                "status": "ready",
+                "evidence_refs": ["req_risk_0"],
+                "evidence_labels": ["高时延证据"],
+            },
+        },
+        "model_routing": {
+            "policy": {
+                "agent_assignments": {
+                    "df-finops-analyst": {
+                        "primary_route_id": "terra",
+                        "fallback_route_id": "analysis",
+                    },
+                    "df-roi-analyst": {
+                        "primary_route_id": "terra",
+                        "fallback_route_id": "analysis",
+                    },
+                }
+            },
+            "routes": [
+                {"id": "terra", "deployment": "gpt-5.6-terra"},
+                {"id": "analysis", "deployment": "gpt-5.1"},
+            ],
+        },
     }
 
 
@@ -126,8 +187,28 @@ def test_candidate_acceptance_requires_complete_numeric_display_data() -> None:
         "cost": {"distinct": 3, "known": 3, "missing": 0},
     }
     assert summary["roi"]["metric_count"] == 4
-    assert summary["risk"]["distinct_evidence"] == 4
+    assert summary["roi"]["bridge_subtraction_verified"] is True
+    assert summary["roi"]["openable_stage_count"] == 4
+    assert summary["risk"]["distinct_evidence"] == 7
+    assert summary["risk"]["distinct_evidence_sets"] == 7
+    assert summary["risk"]["localized_string_signal_cases"] == 4
+    assert summary["assistant"]["selected_item_evidence_verified"] is True
+    assert summary["model_routing"]["operations_analysts_on_terra"] is True
     assert summary["request_detail_complete"] is True
+
+
+def test_candidate_acceptance_allows_the_available_analysis_route_as_fallback() -> None:
+    payloads = _payloads()
+    payloads["model_routing"]["routes"][1] = {
+        "id": "default",
+        "deployment": "gpt-5.1",
+    }
+    for assignment in payloads["model_routing"]["policy"]["agent_assignments"].values():
+        assignment["fallback_route_id"] = "default"
+
+    summary = summarize_candidate_payloads(payloads)
+
+    assert summary["model_routing"]["operations_analysts_on_terra"] is True
 
 
 def test_candidate_acceptance_rejects_equal_chart_values() -> None:
@@ -175,4 +256,58 @@ def test_candidate_acceptance_rejects_repeated_risk_evidence() -> None:
         item["request_ref"] = "req_same"
 
     with pytest.raises(CandidateAcceptanceError, match="risk evidence is not sufficiently distinct"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_roi_bridge_that_adds_cost() -> None:
+    payloads = _payloads()
+    payloads["roi"]["value_bridge"]["items"][1]["value"] = 800
+
+    with pytest.raises(CandidateAcceptanceError, match="ROI value bridge must subtract cost"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_non_openable_roi_evidence() -> None:
+    payloads = _payloads()
+    payloads["roi"]["evidence_maturity"]["stages"][2]["evidence_refs"] = ["run-output"]
+
+    with pytest.raises(CandidateAcceptanceError, match="ROI stage evidence is not request-level"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_reused_or_missing_risk_evidence_sets() -> None:
+    payloads = _payloads()
+    payloads["risk"]["evidence_sets"] = payloads["risk"]["evidence_sets"][:5]
+
+    with pytest.raises(CandidateAcceptanceError, match="risk policy evidence lacks distinct coverage"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_missing_string_signal_examples() -> None:
+    payloads = _payloads()
+    for evidence_set in payloads["risk"]["evidence_sets"]:
+        for item in evidence_set["items"]:
+            if isinstance(item["signal"]["value"], str):
+                item["signal"]["value"] = None
+
+    with pytest.raises(CandidateAcceptanceError, match="localized string evidence is incomplete"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_assistant_evidence_drift() -> None:
+    payloads = _payloads()
+    payloads["assistant_check"]["response"]["evidence_refs"] = ["req_risk_1"]
+
+    with pytest.raises(CandidateAcceptanceError, match="assistant evidence does not match selected item"):
+        summarize_candidate_payloads(payloads)
+
+
+def test_candidate_acceptance_rejects_missing_terra_analyst_assignment() -> None:
+    payloads = _payloads()
+    payloads["model_routing"]["policy"]["agent_assignments"]["df-roi-analyst"] = {
+        "primary_route_id": "analysis",
+        "fallback_route_id": "terra",
+    }
+
+    with pytest.raises(CandidateAcceptanceError, match="operations analyst routing is not Terra-first"):
         summarize_candidate_payloads(payloads)

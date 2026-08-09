@@ -55,13 +55,18 @@ class ProviderGateway:
             except ProviderFailure as fallback_error:
                 self._record_failure(fallback, fallback_error)
                 raise
-            self._record_success(fallback, fallback_result)
+            self._record_success(
+                fallback,
+                fallback_result,
+                selection="fallback",
+                fallback_reason=error.category,
+            )
             return GatewayInvocationResult(
                 route=fallback,
                 result=fallback_result,
                 fallback_used=True,
             )
-        self._record_success(primary, result)
+        self._record_success(primary, result, selection="primary")
         return GatewayInvocationResult(
             route=primary,
             result=result,
@@ -95,6 +100,9 @@ class ProviderGateway:
         self,
         route: ModelRoute,
         result: ProviderResult,
+        *,
+        selection: str,
+        fallback_reason: str | None = None,
     ) -> None:
         usage = result.usage.model_dump(mode="json")
         self._record(
@@ -105,6 +113,8 @@ class ProviderGateway:
                 "latency_ms": result.latency_ms,
                 "output_started": result.output_started,
                 "usage": usage,
+                "selection": selection,
+                "fallback_reason": fallback_reason,
             }
         )
 

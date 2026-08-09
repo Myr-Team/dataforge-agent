@@ -8,14 +8,17 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  Route,
   ShieldCheck,
 } from "lucide-react";
 
 import {
   createModelProvider,
   disableModelProvider,
+  governModelProvider,
   loadModelProviders,
   rotateModelProviderSecret,
+  suspendModelProvider,
   testModelProvider,
 } from "./api.js";
 import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
@@ -222,13 +225,79 @@ export function ProviderConnectionsPage() {
                   ) : (
                     <>
                       <p>{item.providerLabel} · {item.baseUrl}</p>
-                      <small>最近检测：{formatTime(item.lastTestedAt)} · 凭据：{item.secretStored ? "已安全保存" : "未保存"}</small>
                     </>
                   )}
                 </div>
               </div>
+              {!item.isBedrock ? (
+                <dl className="provider-fact-grid" aria-label={`${item.name} 连接事实`}>
+                  <div>
+                    <dt>凭据</dt>
+                    <dd className={item.credentialTone}>{item.credentialLabel}</dd>
+                    <small>仅保存在安全凭据存储中</small>
+                  </div>
+                  <div>
+                    <dt>连接</dt>
+                    <dd>{item.connectionLabel}</dd>
+                    <small>{item.stageLabel}</small>
+                  </div>
+                  <div>
+                    <dt>最近检测</dt>
+                    <dd>{formatTime(item.lastTestedAt)}</dd>
+                    <small>{item.totalDurationLabel}</small>
+                  </div>
+                </dl>
+              ) : null}
               {item.safeErrorLabel ? (
                 <div className="provider-safe-error"><CircleAlert size={14} />{item.safeErrorLabel}</div>
+              ) : null}
+              {!item.isBedrock ? (
+                <div className="provider-route-readiness">
+                  <ol aria-label={`${item.name} 接入进度`}>
+                    {item.lifecycle.map((step, index) => (
+                      <li className={step.state} key={step.id}>
+                        <span>{step.state === "complete" ? <CheckCircle2 size={13} /> : index + 1}</span>
+                        <div><b>{step.label}</b><small>{step.detail}</small></div>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className={`provider-route-callout ${item.routeSelectable ? "ready" : item.canGovern ? "action" : "waiting"}`}>
+                    <Route size={15} />
+                    <div>
+                      <b>{item.routeSelectable ? "已进入 Agent 模型路由" : item.canGovern ? "等待管理员纳管" : "模型路由尚未就绪"}</b>
+                      <span>{item.routeReasonLabel}</span>
+                    </div>
+                    {item.governanceAction === "govern" ? (
+                      <button
+                        type="button"
+                        className="primary-button provider-govern-button"
+                        disabled={Boolean(busy)}
+                        onClick={() => runAction(
+                          `govern:${item.providerId}`,
+                          () => governModelProvider(item.providerId, item.revision),
+                          `${item.name} 已纳入模型路由，可在模型分配中选择。`,
+                        )}
+                      >
+                        {busy === `govern:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <ShieldCheck size={14} />}
+                        纳入模型路由
+                      </button>
+                    ) : item.governanceAction === "suspend" ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={Boolean(busy)}
+                        onClick={() => runAction(
+                          `suspend:${item.providerId}`,
+                          () => suspendModelProvider(item.providerId, item.revision),
+                          `${item.name} 已暂停进入新模型路由，现有配置需在模型分配中复核。`,
+                        )}
+                      >
+                        {busy === `suspend:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <Power size={14} />}
+                        暂停路由
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
               {item.isBedrock ? (
                 <>
@@ -266,7 +335,7 @@ export function ProviderConnectionsPage() {
                 <button
                   type="button"
                   className="secondary-button"
-                  disabled={Boolean(busy) || item.connectionState === "disabled"}
+                  disabled={Boolean(busy) || !item.canTest}
                   onClick={() => runAction(
                     `test:${item.providerId}`,
                     () => testModelProvider(item.providerId),
@@ -276,8 +345,8 @@ export function ProviderConnectionsPage() {
                   {busy === `test:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <PlugZap size={14} />}
                   检测连接
                 </button>
-                <label className="provider-secret-field">
-                  <span>更新 Key</span>
+                <label className={`provider-secret-field ${item.primaryAction === "rotate_secret" ? "required" : ""}`}>
+                  <span>{item.primaryAction === "rotate_secret" ? "重新录入 Key" : "更新 Key"}</span>
                   <input
                     type="password"
                     autoComplete="new-password"

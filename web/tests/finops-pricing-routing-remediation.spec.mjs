@@ -195,3 +195,92 @@ test("Bedrock save copy remains neutral until the refreshed record is connected"
   await expect(page.getByRole("status")).toContainText("测试结果已刷新");
   await expect(page.getByRole("status")).not.toContainText("配置测试可用");
 });
+
+test("missing DeepSeek credential is re-entered without exposing secret material", async ({ page }) => {
+  const keyMarker = "deepseek-private-key-marker";
+  await installFinOpsMockApi(page, [], {
+    providerItems: [{
+      provider_id: "provider_deepseek",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      base_url: "https://api.deepseek.com",
+      connection_state: "invalid",
+      governance_state: "pending",
+      secret_status: "missing",
+      connection_stage: "secret_read",
+      stage_durations_ms: { secret_read: 3 },
+      safe_error_category: "provider_secret_missing",
+      revision: 1,
+      available_models: [],
+    }],
+  });
+  await openProviderSettings(page);
+
+  await expect(page.getByText("需要重新录入 Key", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "检测连接" })).toBeDisabled();
+  await page.getByLabel("重新录入 Key").fill(keyMarker);
+  await page.getByRole("button", { name: "更换凭据" }).click();
+
+  await expect(page.getByText("已安全保存", { exact: true })).toBeVisible();
+  await expect(page.getByText("全部检测完成", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "检测连接" })).toBeEnabled();
+  expect(await page.locator("body").innerText()).not.toContain(keyMarker);
+  expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain(keyMarker);
+});
+
+test("connected DeepSeek is explicitly governed before selection and shows official cache pricing", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls, {
+    providerItems: [{
+      provider_id: "provider_deepseek",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      base_url: "https://api.deepseek.com",
+      connection_state: "connected",
+      governance_state: "pending",
+      secret_status: "stored",
+      connection_stage: "completed",
+      last_success_at: new Date().toISOString(),
+      revision: 4,
+      route_eligibility: {
+        state: "governance_required",
+        selectable: false,
+        can_govern: true,
+        reason: "governance_required",
+        eligible_model_count: 1,
+      },
+      available_models: [{
+        model_id: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        capabilities: ["analysis", "chat"],
+        support_state: "supported",
+        price_key: "deepseek:deepseek-v4-flash:official",
+      }],
+    }],
+  });
+
+  await openProviderSettings(page);
+  await expect(page.getByText("连接与计价已就绪，可纳入 Agent 模型路由。")).toBeVisible();
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "deepseek-provider-governance-desktop.png"),
+    fullPage: true,
+  });
+  await page.getByRole("button", { name: "纳入模型路由" }).click();
+  await expect(page.getByText("已进入 Agent 模型路由", { exact: true })).toBeVisible();
+  expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/govern"))).toBe(true);
+
+  await page.getByRole("button", { name: "Agent 模型" }).click();
+  const defaultModel = page.getByLabel("默认模型");
+  await expect(defaultModel.locator("optgroup[label='DeepSeek 原厂'] option")).toHaveText(/DeepSeek V4 Flash/);
+  await expect(page.getByText("缓存命中", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.0028", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.14", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.28", { exact: true }).first()).toBeVisible();
+  await page.getByText("$0.0028", { exact: true }).first().scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: path.join(outputDir, "deepseek-model-routing-pricing-desktop.png"),
+    fullPage: false,
+  });
+});

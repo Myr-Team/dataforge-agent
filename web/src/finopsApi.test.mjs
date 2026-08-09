@@ -12,6 +12,7 @@ import {
   disableMemberBudget,
   disableIdentityGroupMapping,
   disableModelProvider,
+  governModelProvider,
   loadFinOpsBootstrap,
   loadFinOpsRemediationDraft,
   loadFinOpsRemediationDrafts,
@@ -19,6 +20,9 @@ import {
   loadDashboard,
   loadGovernanceCapabilities,
   loadLatestFinOpsRiskScan,
+  loadFinOpsRiskScans,
+  loadFinOpsRiskScan,
+  loadServiceReadiness,
   loadFinOpsRoiDecision,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
@@ -33,6 +37,7 @@ import {
   promoteFinOpsRemediationDraft,
   reviewFinOpsRemediationDraft,
   rotateModelProviderSecret,
+  suspendModelProvider,
   saveMemberBudget,
   saveMemberBudgetNotification,
   sendMemberBudgetTestEmail,
@@ -278,6 +283,29 @@ test("risk scan clients preserve the selected scope and send a strict read-only 
   assert.equal(calls[1].signal, controller.signal);
 });
 
+test("risk history and service readiness clients preserve workspace scope", async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || "GET" });
+    return { ok: true, json: async () => ({ items: [] }) };
+  };
+
+  try {
+    await loadFinOpsRiskScans("ws-a", 8);
+    await loadFinOpsRiskScan("rscan_safe", "ws-a");
+    await loadServiceReadiness("ws-a");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.deepEqual(calls, [
+    { url: "/api/finops/risk/scans?workspace_id=ws-a&limit=8", method: "GET" },
+    { url: "/api/finops/risk/scans/rscan_safe?workspace_id=ws-a", method: "GET" },
+    { url: "/api/service-readiness?workspace_id=ws-a", method: "GET" },
+  ]);
+});
+
 test("remediation clients use encoded endpoints and send only strict server payloads", async () => {
   const originalFetch = globalThis.fetch;
   const controller = new AbortController();
@@ -447,6 +475,13 @@ test("metric-aware assistant sends only the typed request body", async () => {
 });
 
 
+test("assistant bootstrap uses one workspace-scoped request", async () => {
+  const source = await readFile(new URL("./api.js", import.meta.url), "utf8");
+  assert.match(source, /loadFinOpsAssistantBootstrap/);
+  assert.match(source, /assistant\/bootstrap/);
+});
+
+
 test("planning APIs use bounded native endpoints", async () => {
   const source = await readFile(new URL("./api.js", import.meta.url), "utf8");
 
@@ -468,6 +503,7 @@ test("official pricing APIs use the server-owned catalog and typed mapping body"
     await loadFinOpsOfficialPriceCatalog();
     await loadFinOpsOfficialPriceMappings();
     await updateFinOpsOfficialPriceMapping("gpt-5.6-terra", {
+      workspaceId: "ws-a",
       officialPriceKey: "azure-openai:gpt-5.1:global-standard:global",
       baseRevision: 2,
     });
@@ -478,7 +514,7 @@ test("official pricing APIs use the server-owned catalog and typed mapping body"
   assert.deepEqual(calls.map((item) => item.url), [
     "/api/finops/pricing/catalog",
     "/api/finops/pricing/mappings",
-    "/api/finops/pricing/mappings/gpt-5.6-terra",
+    "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
   ]);
   assert.deepEqual(JSON.parse(calls[2].options.body), {
     official_price_key: "azure-openai:gpt-5.1:global-standard:global",
@@ -496,12 +532,15 @@ test("deleting a wrong mapping issues a DELETE and tolerates a 204 body", async 
 
   let result;
   try {
-    result = await deleteFinOpsOfficialPriceMapping("gpt-5.6-terra");
+    result = await deleteFinOpsOfficialPriceMapping("gpt-5.6-terra", {
+      workspaceId: "ws-a",
+      baseRevision: 3,
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(calls[0].url, "/api/finops/pricing/mappings/gpt-5.6-terra");
+  assert.equal(calls[0].url, "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a&base_revision=3");
   assert.equal(calls[0].method, "DELETE");
   assert.deepEqual(result, {});
 });
@@ -653,6 +692,8 @@ test("provider management uses typed endpoints and revisioned writes", async () 
       api_key: "test-key-marker",
     });
     await rotateModelProviderSecret("provider/a", "rotated-key-marker", 4);
+    await governModelProvider("provider/a", 5);
+    await suspendModelProvider("provider/a", 6);
     await disableModelProvider("provider/a", 5);
   } finally {
     globalThis.fetch = originalFetch;
@@ -662,10 +703,14 @@ test("provider management uses typed endpoints and revisioned writes", async () 
     "/api/model-providers",
     "/api/model-providers",
     "/api/model-providers/provider%2Fa/rotate-secret",
+    "/api/model-providers/provider%2Fa/govern",
+    "/api/model-providers/provider%2Fa/suspend",
     "/api/model-providers/provider%2Fa/disable",
   ]);
   assert.equal(JSON.parse(calls[2].options.body).base_revision, 4);
   assert.equal(JSON.parse(calls[3].options.body).base_revision, 5);
+  assert.equal(JSON.parse(calls[4].options.body).base_revision, 6);
+  assert.equal(JSON.parse(calls[5].options.body).base_revision, 5);
 });
 
 test("Bedrock create sends credentials once", async () => {

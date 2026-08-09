@@ -28,6 +28,7 @@ from backend.finops.budget_subjects import BudgetSubject
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.member_budgets import MemberBudget
 from backend.finops.member_budgets import MemberCostSummary
+from backend.model_policy import current_model_price_card, current_text_route
 from auth_fixtures import trusted_headers
 
 
@@ -579,6 +580,496 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     assert denied.status_code == 403
 
 
+def _operations_route_allowlist(*, include_terra: bool = True) -> str:
+    terra = (
+        ',{"id":"terra","deployment":"gpt-5.6-terra","label":"GPT-5.6 Terra",'
+        '"capabilities":["analysis","chat"]}'
+        if include_terra
+        else ""
+    )
+    return (
+        '[{"id":"analysis","deployment":"gpt-5.1","label":"GPT-5.1",'
+        '"capabilities":["analysis","chat"]}'
+        f"{terra}]"
+    )
+
+
+def _operations_model_configuration() -> dict[str, object]:
+    return {
+        "policy": {
+            "revision": 11,
+            "assignments": {},
+            "agent_assignments": {
+                "df-finops-analyst": {
+                    "primary_route_id": "terra",
+                    "fallback_route_id": "analysis",
+                },
+                "df-roi-analyst": {
+                    "primary_route_id": "terra",
+                    "fallback_route_id": "analysis",
+                },
+            },
+        },
+        "price_card": {
+            "revision": 6,
+            "currency": "USD",
+            "entries": [
+                {
+                    "route_id": "terra",
+                    "input_per_million": 2.5,
+                    "output_per_million": 15.0,
+                },
+                {
+                    "route_id": "analysis",
+                    "input_per_million": 1.25,
+                    "output_per_million": 10.0,
+                },
+            ],
+        },
+    }
+
+
+def test_finops_assistant_uses_workspace_terra_agent_policy(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    def runner(agent_name: str, *_args: object, **_kwargs: object) -> dict[str, object]:
+        selected = current_text_route()
+        price_card = current_model_price_card()
+        observed.append(
+            {
+                "agent_name": agent_name,
+                "deployment": selected.route.deployment,
+                "selection": selected.selection,
+                "policy_revision": selected.policy_revision,
+                "price_card_revision": selected.price_card_revision,
+                "price_card_scope_revision": price_card.get("revision"),
+            }
+        )
+        return {
+            "structured": {
+                "answer": "已按工作区模型策略完成运营分析。",
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", _operations_route_allowlist())
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda workspace_id: _operations_model_configuration()
+        if workspace_id == "ws-a"
+        else {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+
+    response = client.post(
+        "/api/finops/assistant/query",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "question": "请分析当前调用情况。",
+            "mode": "deep",
+            "metric_context": {
+                "metric_id": "requests",
+                "label": "调用次数",
+                "value": 1,
+                "unit": "次",
+                "window": {
+                    "from": "2026-07-01T00:00:00Z",
+                    "to": "2026-07-25T00:00:00Z",
+                },
+                "filters": {"workspace_id": "ws-a"},
+                "data_status": "complete",
+                "evidence_state": "observed",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert observed == [
+        {
+            "agent_name": "df-finops-analyst",
+            "deployment": "gpt-5.6-terra",
+            "selection": "agent_policy",
+            "policy_revision": 11,
+            "price_card_revision": 6,
+            "price_card_scope_revision": 6,
+        }
+    ]
+
+
+def test_demo_workspace_uses_read_only_terra_default_only_when_policy_is_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", _operations_route_allowlist())
+    monkeypatch.setenv("DF_FINOPS_DEMO_WORKSPACE_ID", "demo-corpus")
+    configurations = {
+        "demo-corpus": {
+            "policy": {},
+            "price_card": {},
+            "policy_persisted": False,
+        },
+        "ordinary-workspace": {
+            "policy": {},
+            "price_card": {},
+            "policy_persisted": False,
+        },
+        "demo-explicitly-cleared": {
+            "policy": {},
+            "price_card": {},
+            "policy_persisted": True,
+        },
+    }
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda workspace_id: configurations[workspace_id],
+    )
+
+    with finops_router._finops_model_route_scope(
+        workspace_id="demo-corpus",
+        agent_id="df-finops-analyst",
+    ) as demo_selected:
+        assert demo_selected.route.deployment == "gpt-5.6-terra"
+        assert demo_selected.selection == "agent_policy"
+
+    with finops_router._finops_model_route_scope(
+        workspace_id="ordinary-workspace",
+        agent_id="df-finops-analyst",
+    ) as ordinary_selected:
+        assert ordinary_selected.route.deployment == "gpt-5.1"
+        assert ordinary_selected.selection == "policy"
+
+    monkeypatch.setenv("DF_FINOPS_DEMO_WORKSPACE_ID", "demo-explicitly-cleared")
+    with finops_router._finops_model_route_scope(
+        workspace_id="demo-explicitly-cleared",
+        agent_id="df-finops-analyst",
+    ) as cleared_selected:
+        assert cleared_selected.route.deployment == "gpt-5.1"
+        assert cleared_selected.selection == "policy"
+
+
+def test_finops_assistant_uses_configured_analysis_fallback_when_terra_is_unavailable(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: list[dict[str, object]] = []
+
+    def runner(agent_name: str, *_args: object, **_kwargs: object) -> dict[str, object]:
+        selected = current_text_route()
+        observed.append(
+            {
+                "agent_name": agent_name,
+                "deployment": selected.route.deployment,
+                "selection": selected.selection,
+                "fallback_reason": selected.fallback_reason,
+            }
+        )
+        return {
+            "structured": {
+                "answer": "Terra 不可用时已使用安全回退模型。",
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setenv(
+        "DF_MODEL_ROUTE_ALLOWLIST",
+        _operations_route_allowlist(include_terra=False),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda _workspace_id: _operations_model_configuration(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+
+    response = client.post(
+        "/api/finops/assistant/query",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "question": "请分析当前调用情况。",
+            "mode": "deep",
+            "metric_context": {
+                "metric_id": "requests",
+                "label": "调用次数",
+                "value": 1,
+                "unit": "次",
+                "window": {
+                    "from": "2026-07-01T00:00:00Z",
+                    "to": "2026-07-25T00:00:00Z",
+                },
+                "filters": {"workspace_id": "ws-a"},
+                "data_status": "complete",
+                "evidence_state": "observed",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert observed == [
+        {
+            "agent_name": "df-finops-analyst",
+            "deployment": "gpt-5.1",
+            "selection": "fallback",
+            "fallback_reason": "capability_missing",
+        }
+    ]
+
+
+def test_finops_assistant_binds_model_input_to_selected_policy_evidence(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_authorized",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 6200,
+                    "tokens": TokenUsage(input=20, output=4, total=24),
+                    "estimated_cost": {"amount": 0.002, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_latency_unselected",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 3100,
+                    "tokens": TokenUsage(input=15, output=3, total=18),
+                    "estimated_cost": {"amount": 0.0015, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            ),
+        ]
+    )
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": f"req_latency_higher_{index}",
+                    "occurred_at": datetime(
+                        2026,
+                        7,
+                        24,
+                        5 + index,
+                        0,
+                        tzinfo=timezone.utc,
+                    ),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 10_000 + index,
+                    "tokens": TokenUsage(input=10, output=2, total=12),
+                    "estimated_cost": {"amount": 0.001, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            )
+            for index in range(4)
+        ]
+    )
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        return {
+            "structured": {
+                "answer": "高时延请求需要复核。",
+                "evidence_refs": ["req_latency_authorized"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    metric_context = {
+        "metric_id": "risk_p95_latency",
+        "label": "响应时延优化",
+        "value": 6200,
+        "unit": "ms",
+        "window": {
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
+        "filters": {"workspace_id": "ws-a"},
+        "data_status": "complete",
+        "evidence_state": "observed",
+        "policy_type": "p95_latency",
+        "evidence_refs": ["req_latency_authorized"],
+    }
+    response = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "为什么时延偏高？", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["evidence_refs"] == ["req_latency_authorized"]
+    assert len(model_inputs) == 1
+    assert "req_latency_authorized" in model_inputs[0]
+    assert "req_latency_unselected" not in model_inputs[0]
+    assert "req_aaaaaaaaaaaa" not in model_inputs[0]
+
+    metric_context["evidence_refs"] = [
+        "req_latency_authorized",
+        "req_other_workspace",
+    ]
+    partially_forged = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "复核选中的时延证据。", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert partially_forged.status_code == 200
+    assert partially_forged.json()["evidence_refs"] == ["req_latency_authorized"]
+    assert "req_other_workspace" not in model_inputs[-1]
+
+    metric_context["evidence_refs"] = ["req_other_workspace"]
+    forged = client.post(
+        "/api/finops/assistant/query",
+        json={"question": "分析这条证据。", "metric_context": metric_context},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert forged.status_code == 200
+    assert forged.json()["status"] == "insufficient_data"
+    assert forged.json()["evidence_refs"] == []
+    assert "req_other_workspace" not in str(forged.json())
+    assert len(model_inputs) == 2
+
+
+@pytest.mark.parametrize(
+    ("policy_type", "request_ref", "event_updates"),
+    [
+        ("p95_latency", "req_policy_latency", {"latency_ms": 6200}),
+        (
+            "cache_hit_rate",
+            "req_policy_cache",
+            {
+                "result_cache": {
+                    "eligible": True,
+                    "state": "miss",
+                    "reason": "eligible",
+                }
+            },
+        ),
+        (
+            "unpriced_requests",
+            "req_policy_unpriced",
+            {"estimated_cost": {"amount": None, "status": "unavailable"}},
+        ),
+        (
+            "error_rate",
+            "req_policy_error",
+            {"status": "failed", "error_category": "provider_5xx"},
+        ),
+    ],
+)
+def test_finops_assistant_real_policy_selectors_bind_four_risk_evidence_types(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+    policy_type: str,
+    request_ref: str,
+    event_updates: dict[str, object],
+) -> None:
+    event = {
+        "request_ref": request_ref,
+        "occurred_at": datetime(2026, 7, 24, 5, 0, tzinfo=timezone.utc),
+        "call_class": "model",
+        "tenant_ref": "tenantref-a",
+        "workspace_id": "ws-a",
+        "agent_id": "df-coordinator",
+        "deployment": "gpt-5-mini",
+        "status": "succeeded",
+        "latency_ms": 900,
+        "tokens": TokenUsage(input=20, output=4, total=24),
+        "estimated_cost": {"amount": 0.002, "status": "estimated"},
+        "evidence_state": "observed",
+    }
+    event.update(event_updates)
+    repository.upsert_events([FinOpsRequestEvent.model_validate(event)])
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        return {
+            "structured": {
+                "answer": "当前规则证据可复核。",
+                "evidence_refs": [request_ref],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    response = client.post(
+        "/api/finops/assistant/query",
+        json={
+            "question": "请复核当前风险证据。",
+            "metric_context": {
+                "metric_id": f"risk_{policy_type}",
+                "label": "风险证据",
+                "value": 1,
+                "unit": "",
+                "window": {
+                    "from": "2026-07-01T00:00:00Z",
+                    "to": "2026-07-25T00:00:00Z",
+                },
+                "filters": {"workspace_id": "ws-a"},
+                "data_status": "complete",
+                "evidence_state": "observed",
+                "policy_type": policy_type,
+                "evidence_refs": [request_ref],
+            },
+        },
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ready"
+    assert response.json()["evidence_refs"] == [request_ref]
+    assert len(model_inputs) == 1
+    assert request_ref in model_inputs[0]
+    assert "req_aaaaaaaaaaaa" not in model_inputs[0]
+
+
 def test_finops_assistant_reuses_a_long_persisted_answer_without_rejecting_history(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
@@ -631,6 +1122,88 @@ def test_finops_assistant_reuses_a_long_persisted_answer_without_rejecting_histo
     )
 
     assert second.status_code == 200
+
+
+def test_finops_assistant_does_not_persist_or_replay_foreign_refs_from_model_prose(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_inputs: list[str] = []
+
+    def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:
+        model_inputs.append(payload)
+        if len(model_inputs) == 1:
+            return {
+                "structured": {
+                    "conclusion": "当前结论引用了 req_other_workspace。",
+                    "basis": "依据仍来自当前窗口。",
+                    "impact": "需要复核。",
+                    "recommendation": "先查看证据。",
+                    "caveat": "只读分析。",
+                    "evidence_refs": ["req_aaaaaaaaaaaa"],
+                    "suggested_questions": [],
+                }
+            }
+        return {
+            "structured": {
+                "conclusion": "当前窗口证据可复核。",
+                "basis": "依据来自已授权请求。",
+                "impact": "影响仍需验证。",
+                "recommendation": "继续观察。",
+                "caveat": "仅适用于当前窗口。",
+                "evidence_refs": ["req_aaaaaaaaaaaa"],
+                "suggested_questions": [],
+            }
+        }
+
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_assistant_service",
+        lambda: FinOpsAssistantService(model_runner=runner),
+    )
+    payload = {
+        "question": "当前调用情况如何？",
+        "metric_context": {
+            "metric_id": "requests",
+            "label": "调用次数",
+            "value": 1,
+            "unit": "次",
+            "window": {
+                "from": "2026-07-01T00:00:00Z",
+                "to": "2026-07-25T00:00:00Z",
+            },
+            "filters": {"workspace_id": "ws-a"},
+            "data_status": "complete",
+            "evidence_state": "observed",
+        },
+    }
+    first = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "unavailable"
+    assert "req_other_workspace" not in first.text
+
+    messages = client.get(
+        f"/api/finops/assistant/conversations/{first.json()['conversation_ref']}/messages",
+        params={"workspace_id": "ws-a"},
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert messages.status_code == 200
+    assert "req_other_workspace" not in messages.text
+
+    payload["conversation_ref"] = first.json()["conversation_ref"]
+    second = client.post(
+        "/api/finops/assistant/query",
+        json=payload,
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+    assert second.status_code == 200
+    assert second.json()["status"] == "ready"
+    assert len(model_inputs) == 2
+    assert "req_other_workspace" not in model_inputs[1]
 
 
 def test_finops_read_contract_and_request_detail_are_privacy_bounded(client: TestClient) -> None:
@@ -768,6 +1341,54 @@ def test_finops_request_detail_returns_application_request_and_visible_response(
     assert payload["technical_refs"]["request_ref"] == "req_aaaaaaaaaaaa"
     for forbidden in ("provider_response", "system_prompt", "internal_error", "must-not-escape"):
         assert forbidden not in response.text
+
+
+def test_finops_workspace_display_name_is_reused_within_refresh_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = getattr(finops_router, "_WORKSPACE_NAME_CACHE", None)
+    if isinstance(cache, dict):
+        cache.clear()
+    calls: list[str] = []
+
+    def workspaces() -> list[dict[str, str]]:
+        calls.append("load")
+        return [{"workspace_id": "ws-a", "name": "Commerce"}]
+
+    monkeypatch.setattr(finops_router, "list_workspaces", workspaces)
+
+    assert finops_router._workspace_name("ws-a") == "Commerce"
+    assert finops_router._workspace_name("ws-a") == "Commerce"
+    assert calls == ["load"]
+
+
+def test_finops_workspace_scoped_query_does_not_enumerate_all_workspaces(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DF_FINOPS_SCOPED_AUTHZ_FAST_PATH", "1")
+    checked: list[str] = []
+
+    def role(workspace_id: str, _actor: object) -> str:
+        checked.append(workspace_id)
+        return "owner"
+
+    monkeypatch.setattr(finops_router, "active_workspace_role", role)
+    monkeypatch.setattr(
+        finops_router,
+        "_authorized_workspace_roles",
+        lambda _actor: (_ for _ in ()).throw(
+            AssertionError("workspace-scoped query must not enumerate all workspaces")
+        ),
+    )
+
+    response = client.get(
+        "/api/finops/filters?workspace_id=ws-a&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert checked == ["ws-a"]
 
 
 def test_finops_request_detail_builds_server_owned_azure_monitor_link(
@@ -964,6 +1585,80 @@ def test_finops_manual_analysis_is_accepted_as_background_work(
         "trigger_fingerprint": "f" * 64,
     }
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("agent_kind", ["finops", "roi"])
+def test_finops_manual_analysis_background_work_uses_agent_specific_terra_policy(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    agent_kind: str,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    class RecordingInsightService:
+        def fingerprint(self, **_kwargs):
+            return "f" * 64
+
+        def by_fingerprint(self, **_kwargs):
+            return None
+
+        def analyze(self, **kwargs):
+            selected = current_text_route()
+            calls.append(
+                {
+                    "agent_kind": kwargs["agent_kind"],
+                    "deployment": selected.route.deployment,
+                    "selection": selected.selection,
+                    "policy_revision": selected.policy_revision,
+                    "price_card_revision": selected.price_card_revision,
+                    "price_card_scope_revision": current_model_price_card().get("revision"),
+                }
+            )
+            return _ready_insight()
+
+    monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", _operations_route_allowlist())
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda _workspace_id: _operations_model_configuration(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "get_finops_insight_service",
+        lambda: RecordingInsightService(),
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "_manual_insight_input",
+        lambda **_kwargs: {
+            "status": "ready",
+            "evidence_refs": ["req_aaaaaaaaaaaa"],
+        },
+    )
+
+    response = client.post(
+        "/api/finops/insights/analyze",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "agent_kind": agent_kind,
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
+    )
+
+    assert response.status_code == 202
+    assert calls == [
+        {
+            "agent_kind": agent_kind,
+            "deployment": "gpt-5.6-terra",
+            "selection": "agent_policy",
+            "policy_revision": 11,
+            "price_card_revision": 6,
+            "price_card_scope_revision": 6,
+        }
+    ]
 
 
 def test_finops_manual_analysis_requires_corresponding_read_permission(

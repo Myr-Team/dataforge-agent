@@ -140,6 +140,8 @@ def test_repository_internal_patch_updates_server_owned_observations() -> None:
             last_tested_at=tested_at,
             last_success_at=tested_at,
             safe_error_category=None,
+            connection_stage="completed",
+            stage_durations_ms={"secret_read": 2, "provider_auth": 4},
         ),
         actor_ref="actor-service",
     )
@@ -150,6 +152,8 @@ def test_repository_internal_patch_updates_server_owned_observations() -> None:
     assert saved.last_tested_at == tested_at
     assert saved.last_success_at == tested_at
     assert saved.safe_error_category is None
+    assert saved.connection_stage == "completed"
+    assert saved.stage_durations_ms == {"secret_read": 2, "provider_auth": 4}
 
 
 class _SqlCursor:
@@ -263,6 +267,8 @@ def test_sql_repository_round_trips_and_updates_provider_region() -> None:
         value.last_tested_at,
         value.last_success_at,
         value.safe_error_category,
+        value.connection_stage,
+        "{}",
         value.revision,
         value.created_by_ref,
         value.updated_by_ref,

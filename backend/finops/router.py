@@ -3,37 +3,57 @@ from __future__ import annotations
 import os
 import hashlib
 import json
+import re
+import time
+import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from statistics import median
-from typing import Any, Literal, Mapping
+from typing import Any, Iterator, Literal, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
+    from ..audit_store import record_audit_event
     from .. import cache_store
     from ..identity import actor_from_request, is_trusted_tenant_identity
     from ..foundry_client import run_agent
     from ..lineage_sql import build_lineage_sql_connection_factory
     from ..run_store import get_run, list_runs
     from ..workspace_authz import active_workspace_role
-    from ..workspace_store import list_workspaces
+    from ..workspace_store import list_workspaces, load_workspace_model_configuration
     from ..control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
+    from ..model_policy import (
+        SelectedTextRoute,
+        model_route_scope,
+        select_text_route_record,
+        workspace_model_policy_scope,
+    )
 except ImportError:
+    from audit_store import record_audit_event
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
     from foundry_client import run_agent
     from lineage_sql import build_lineage_sql_connection_factory
     from run_store import get_run, list_runs
     from workspace_authz import active_workspace_role
-    from workspace_store import list_workspaces
+    from workspace_store import list_workspaces, load_workspace_model_configuration
     from control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
+    from model_policy import (
+        SelectedTextRoute,
+        model_route_scope,
+        select_text_route_record,
+        workspace_model_policy_scope,
+    )
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_selection import (
     EvidenceSet,
+    policy_evidence_candidates,
     select_metric_evidence,
     select_policy_evidence,
 )
@@ -42,9 +62,14 @@ from .evidence_repository import (
     SqlEvidenceAliasRepository,
 )
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
-from .agent_inputs import build_finops_agent_input, build_roi_agent_input
-from .analysis_agents import FinOpsAnalysisAgent
+from .agent_inputs import (
+    build_finops_agent_input,
+    build_finops_assistant_input,
+    build_roi_agent_input,
+)
+from .analysis_agents import FinOpsAnalysisAgent, analysis_agent_id
 from .assistant import AssistantRequest, AssistantTurn, FinOpsAssistantService
+from .assistant_bootstrap import AssistantBootstrapCache
 from .assistant_store import (
     AssistantConversationExpired,
     AssistantMessage,
@@ -116,6 +141,7 @@ from .sql_planning import SqlFinOpsPlanningRepository
 from .roi_economics import build_roi_economics
 from .opportunities import build_opportunity_queue
 from .decision_service import build_risk_decision, build_roi_decision
+from .demo_workspace_seed import demo_operations_model_policy
 from .insight_repository import InMemoryInsightRepository, SqlInsightRepository
 from .insight_service import FinOpsInsightService
 from .repository import RunStoreFinOpsRepository
@@ -179,6 +205,7 @@ _MEMBER_BUDGET_REPOSITORY = InMemoryMemberBudgetRepository()
 _SQL_MEMBER_BUDGET_REPOSITORY: SqlMemberBudgetRepository | None = None
 _ASSISTANT_STORE = InMemoryAssistantConversationStore()
 _SQL_ASSISTANT_STORE: SqlAssistantConversationStore | None = None
+_ASSISTANT_BOOTSTRAP_CACHE = AssistantBootstrapCache()
 _RISK_SCAN_REPOSITORY = InMemoryRiskScanRepository()
 _SQL_RISK_SCAN_REPOSITORY: SqlRiskScanRepository | None = None
 
@@ -410,6 +437,10 @@ def get_finops_assistant_store() -> Any:
     return _ASSISTANT_STORE
 
 
+def get_finops_assistant_bootstrap_cache() -> AssistantBootstrapCache:
+    return _ASSISTANT_BOOTSTRAP_CACHE
+
+
 def get_finops_anomaly_service() -> FinOpsAnomalyService:
     global _SQL_ANOMALY_SERVICE
     if _enabled("DF_FINOPS_SQL_ENABLED"):
@@ -470,6 +501,67 @@ def get_finops_assistant_service() -> FinOpsAssistantService:
     return FinOpsAssistantService(model_runner=run_agent)
 
 
+@contextmanager
+def _finops_model_route_scope(
+    *,
+    workspace_id: str,
+    agent_id: str | None,
+    execution_kind: str = "full_analysis",
+) -> Iterator[SelectedTextRoute]:
+    configuration = load_workspace_model_configuration(workspace_id)
+    policy = (
+        configuration.get("policy")
+        if isinstance(configuration, Mapping)
+        and isinstance(configuration.get("policy"), Mapping)
+        else None
+    )
+    policy_persisted = (
+        configuration.get("policy_persisted") is True
+        if isinstance(configuration, Mapping)
+        and "policy_persisted" in configuration
+        else bool(policy)
+    )
+    demo_workspace_id = str(
+        os.environ.get("DF_FINOPS_DEMO_WORKSPACE_ID") or "demo-corpus"
+    ).strip()
+    if (
+        not policy_persisted
+        and demo_workspace_id
+        and workspace_id == demo_workspace_id
+    ):
+        # Read-only default for the allowlisted demo workspace. It is never
+        # persisted here, so Owner saves/removals still go through the audited
+        # model-routing API; an explicitly persisted empty policy wins.
+        policy = demo_operations_model_policy()
+    price_card = (
+        configuration.get("price_card")
+        if isinstance(configuration, Mapping)
+        and isinstance(configuration.get("price_card"), Mapping)
+        else None
+    )
+    with workspace_model_policy_scope(policy=policy, price_card=price_card):
+        selected = select_text_route_record(
+            execution_kind,
+            agent_id=agent_id,
+        )
+        with model_route_scope(route=selected, price_card=price_card):
+            yield selected
+
+
+def _analyze_insight_with_workspace_route(
+    service: Any,
+    *,
+    workspace_id: str,
+    agent_kind: Literal["finops", "roi"],
+    **kwargs: Any,
+) -> Any:
+    with _finops_model_route_scope(
+        workspace_id=workspace_id,
+        agent_id=analysis_agent_id(agent_kind),
+    ):
+        return service.analyze(agent_kind=agent_kind, **kwargs)
+
+
 def get_finops_planning_service() -> FinOpsPlanningService:
     global _SQL_PLANNING_REPOSITORY
     if _enabled("DF_FINOPS_SQL_ENABLED"):
@@ -492,14 +584,28 @@ def get_finops_saved_view_service() -> FinOpsSavedViewService:
     return FinOpsSavedViewService(_SAVED_VIEW_REPOSITORY)
 
 
+_WORKSPACE_NAME_CACHE_SECONDS = 300.0
+_WORKSPACE_NAME_CACHE: dict[str, tuple[float, str]] = {}
+
+
 def _workspace_name(workspace_id: str) -> str:
+    now = time.monotonic()
+    cached = _WORKSPACE_NAME_CACHE.get(workspace_id)
+    if cached is not None and cached[0] > now:
+        return cached[1]
+    name = ""
     for item in list_workspaces():
         if (
             isinstance(item, Mapping)
             and str(item.get("workspace_id") or "").strip() == workspace_id
         ):
-            return str(item.get("name") or "").strip()
-    return ""
+            name = str(item.get("name") or "").strip()
+            break
+    _WORKSPACE_NAME_CACHE[workspace_id] = (
+        now + _WORKSPACE_NAME_CACHE_SECONDS,
+        name,
+    )
+    return name
 
 
 def _assistant_evidence_name(item: Mapping[str, Any]) -> str:
@@ -608,6 +714,19 @@ def _authorized_workspace_roles(actor: Mapping[str, Any]) -> dict[str, str]:
     return roles
 
 
+def _workspace_roles_for_query(
+    actor: Mapping[str, Any],
+    workspace_id: str | None,
+) -> dict[str, str]:
+    if not workspace_id:
+        return _authorized_workspace_roles(actor)
+    try:
+        role = active_workspace_role(workspace_id, actor)
+    except FileNotFoundError:
+        return {}
+    return {workspace_id: role} if role else {}
+
+
 def _context(
     request: Request,
     *,
@@ -626,7 +745,11 @@ def _context(
     actor = actor_from_request(request, fallback=False)
     if not is_trusted_tenant_identity(actor):
         raise HTTPException(status_code=401, detail="trusted tenant identity is required")
-    roles = _authorized_workspace_roles(actor)
+    roles = (
+        _workspace_roles_for_query(actor, workspace_id)
+        if workspace_id and _enabled("DF_FINOPS_SCOPED_AUTHZ_FAST_PATH")
+        else _authorized_workspace_roles(actor)
+    )
     if workspace_id and workspace_id not in roles:
         raise HTTPException(status_code=403, detail="workspace access denied for finops.read")
     selected_ids = (workspace_id,) if workspace_id else tuple(sorted(roles))
@@ -677,8 +800,9 @@ def _permission_scope(
 
 
 def _window(from_value: str | None, to_value: str | None) -> tuple[str, str]:
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    end = _parse_time(to_value) if to_value else now
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    default_end = now.replace(minute=(now.minute // 5) * 5)
+    end = _parse_time(to_value) if to_value else default_end
     start = _parse_time(from_value) if from_value else end - timedelta(days=30)
     if start > end or end - start > timedelta(days=90):
         raise ValueError("FinOps query window must be ordered and no longer than 90 days")
@@ -980,6 +1104,34 @@ def _assistant_scope(request: Request, workspace_id: str) -> AssistantScope:
     )
 
 
+@router.get("/assistant/bootstrap")
+async def bootstrap_assistant_history(
+    request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+) -> dict[str, Any]:
+    scope = _assistant_scope(request, workspace_id)
+    cached = get_finops_assistant_bootstrap_cache().load(
+        scope,
+        lambda: get_finops_assistant_store().bootstrap(scope, message_limit=40),
+    )
+    value = cached.value
+    return {
+        "conversation": (
+            value.conversation.model_dump(mode="json")
+            if value.conversation is not None
+            else None
+        ),
+        "messages": [item.model_dump(mode="json") for item in value.messages],
+        "loaded_at": value.loaded_at.isoformat(),
+        "expires_at": (
+            value.conversation.expires_at.isoformat()
+            if value.conversation is not None
+            else None
+        ),
+        "cache_status": cached.cache_status,
+    }
+
+
 @router.get("/assistant/conversations")
 async def list_assistant_conversations(
     request: Request,
@@ -1000,6 +1152,7 @@ async def create_assistant_conversation(
 ) -> dict[str, Any]:
     scope = _assistant_scope(request, body.workspace_id)
     value = get_finops_assistant_store().create(scope, title=body.title)
+    get_finops_assistant_bootstrap_cache().invalidate(scope)
     return {"conversation": value.model_dump(mode="json")}
 
 
@@ -1031,6 +1184,7 @@ async def clear_assistant_conversation(
     scope = _assistant_scope(request, workspace_id)
     try:
         get_finops_assistant_store().clear(scope, conversation_ref)
+        get_finops_assistant_bootstrap_cache().invalidate(scope)
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
@@ -1107,20 +1261,50 @@ async def assistant_query(
                     ),
                 ),
             )
+            get_finops_assistant_bootstrap_cache().invalidate(scope)
         except AssistantConversationExpired as exc:
             raise HTTPException(
                 status_code=404,
                 detail="Operations AI conversation expired",
             ) from exc
-    evidence_payload = build_finops_agent_input(
+    events = query_service.events(query)
+    requested_refs = set(context.evidence_refs)
+    selection_events = (
+        [event for event in events if event.request_ref in requested_refs]
+        if requested_refs
+        else events
+    )
+    selected = (
+        select_policy_evidence(selection_events, context.policy_type, limit=3)
+        if context.policy_type
+        else select_metric_evidence(
+            selection_events,
+            _assistant_evidence_metric(context.metric_id),
+            limit=3,
+        )
+    )
+    selected_refs = {
+        item.request_ref
+        for item in selected.items
+    }
+    selected_items = [event for event in events if event.request_ref in selected_refs]
+    evidence_payload = build_finops_assistant_input(
         query,
         query_service,
+        metric_context=context.model_dump(mode="json", by_alias=True),
         evidence_name_resolver=_assistant_evidence_name,
+        evidence_items=selected_items,
+        include_summary=body.mode == "deep",
     )
-    response = get_finops_assistant_service().answer(
-        request=body,
-        evidence_payload=evidence_payload,
-    )
+    with _finops_model_route_scope(
+        workspace_id=workspace_id,
+        agent_id=(analysis_agent_id("finops") if body.mode == "deep" else None),
+        execution_kind=("full_analysis" if body.mode == "deep" else "direct_reply"),
+    ):
+        response = get_finops_assistant_service().answer(
+            request=body,
+            evidence_payload=evidence_payload,
+        )
     if store is not None and conversation_ref:
         try:
             store.append(
@@ -1142,12 +1326,28 @@ async def assistant_query(
                     },
                 ),
             )
+            get_finops_assistant_bootstrap_cache().invalidate(scope)
         except AssistantConversationExpired:
             pass
     return {
         **response.model_dump(mode="json"),
         "conversation_ref": conversation_ref,
     }
+
+
+def _assistant_evidence_metric(metric_id: str) -> str:
+    metric = str(metric_id or "").strip().lower()
+    if "cache" in metric:
+        return "cache"
+    if "token" in metric:
+        return "tokens"
+    if "latency" in metric or metric in {"p50", "p95"}:
+        return "latency"
+    if "cost" in metric or "budget" in metric or metric.startswith("roi_"):
+        return "estimated_cost"
+    if "success" in metric or "error" in metric:
+        return "success_rate"
+    return "requests"
 
 
 @router.get("/budgets")
@@ -1473,21 +1673,252 @@ def _decision_envelope(
     } | dict(decision)
 
 
+def _request_refs_by_run(
+    events: list[FinOpsRequestEvent],
+    *,
+    run_limit: int = 300,
+    refs_per_run: int = 3,
+    preferred_run_ids: Sequence[str] = (),
+) -> dict[str, list[str]]:
+    """Build a bounded run/request index from already-authorized query rows."""
+    preferred_order = list(
+        dict.fromkeys(
+            str(run_id or "").strip()
+            for run_id in preferred_run_ids
+            if str(run_id or "").strip()
+        )
+    )
+    preferred = set(preferred_order)
+    preferred_refs: dict[str, list[str]] = {}
+    fallback_refs: dict[str, list[str]] = {}
+
+    def add(event: FinOpsRequestEvent) -> None:
+        run_id = str(event.run_id or "").strip()
+        request_ref = str(event.request_ref or "").strip()
+        if not run_id or not request_ref.startswith("req_"):
+            return
+        target = preferred_refs if run_id in preferred else fallback_refs
+        if run_id not in target:
+            if target is fallback_refs and len(target) >= run_limit:
+                return
+            target[run_id] = []
+        if (
+            request_ref not in target[run_id]
+            and len(target[run_id]) < refs_per_run
+        ):
+            target[run_id].append(request_ref)
+
+    for event in events:
+        add(event)
+
+    result: dict[str, list[str]] = {}
+    for run_id in preferred_order:
+        refs = preferred_refs.get(run_id)
+        if refs:
+            result[run_id] = refs
+            if len(result) >= run_limit:
+                return result
+    for run_id, refs in fallback_refs.items():
+        result[run_id] = refs
+        if len(result) >= run_limit:
+            break
+    return result
+
+
+def _roi_snapshot_with_ledger_lineage(
+    roi: Mapping[str, Any],
+    events: Sequence[FinOpsRequestEvent],
+) -> dict[str, Any]:
+    """Use the authorized request ledger as the ROI usage and cost lineage source."""
+    payload = dict(roi)
+    usage = dict(roi.get("usage") or {}) if isinstance(roi.get("usage"), Mapping) else {}
+    usage["runs"] = len(events)
+    payload["usage"] = usage
+
+    observed_run_ids: list[str] = []
+    priced_run_ids: list[str] = []
+    priced_event_count = 0
+    priced_lineage_complete = True
+    observed_lineage_complete = True
+    unpriced_models: set[str] = set()
+    for event in events:
+        run_id = str(event.run_id or "").strip()
+        if not run_id:
+            observed_lineage_complete = False
+        elif run_id not in observed_run_ids:
+            observed_run_ids.append(run_id)
+        if event.estimated_cost.amount is None:
+            model = str(event.model or event.deployment or "").strip()
+            if model:
+                unpriced_models.add(model)
+            continue
+        priced_event_count += 1
+        if not run_id:
+            priced_lineage_complete = False
+        elif run_id not in priced_run_ids:
+            priced_run_ids.append(run_id)
+
+    cost_evidence = (
+        dict(roi.get("cost_evidence") or {})
+        if isinstance(roi.get("cost_evidence"), Mapping)
+        else {}
+    )
+    if events:
+        cost_evidence["status"] = (
+            "complete"
+            if priced_event_count == len(events)
+            else "incomplete"
+            if priced_event_count
+            else "not_configured"
+        )
+    cost_evidence["observed_run_ids"] = priced_run_ids[:300]
+    cost_evidence["priced_run_ids"] = priced_run_ids[:300]
+    cost_evidence["lineage_complete"] = (
+        priced_event_count > 0 and priced_lineage_complete
+    )
+    cost_evidence["unpriced_models"] = sorted(unpriced_models)[:50]
+    payload["cost_evidence"] = cost_evidence
+    payload["observed_run_ids"] = observed_run_ids[:300]
+    payload["lineage_complete"] = bool(events) and observed_lineage_complete
+    return payload
+
+
+def _roi_stage_source_lineage(
+    query: FinOpsQuery,
+    cost_value: Mapping[str, Any],
+) -> tuple[list[str], int, dict[str, str]]:
+    """Load stage source IDs without returning them through the public API."""
+    if not query.workspace_id:
+        return [], 0, {}
+    start = _parse_time(query.from_value)
+    end = _parse_time(query.to_value)
+    try:
+        artifact_count = max(0, int(cost_value.get("artifact_count") or 0))
+    except (TypeError, ValueError):
+        artifact_count = 0
+    artifact_items: list[Any] = []
+    if artifact_count:
+        try:
+            from ..control_plane import list_workspace_artifacts
+        except ImportError:
+            from control_plane import list_workspace_artifacts
+        try:
+            artifact_items = list_workspace_artifacts(
+                query.workspace_id,
+                run_limit=None,
+            ).get("artifacts") or []
+        except Exception:
+            artifact_items = []
+
+    artifact_runs: list[str] = []
+    artifact_source_count = 0
+    seen_artifact_runs: set[str] = set()
+    for item in artifact_items:
+        if not isinstance(item, Mapping) or start is None or end is None:
+            continue
+        item_workspace = str(item.get("workspace_id") or "").strip()
+        if item_workspace != query.workspace_id:
+            continue
+        timestamp = str(
+            item.get("created_at")
+            or item.get("updated_at")
+            or item.get("time")
+            or ""
+        ).strip()
+        try:
+            occurred_at = _parse_time(timestamp)
+        except ValueError:
+            continue
+        run_id = str(item.get("run_id") or "").strip()
+        if (
+            start <= occurred_at < end
+            and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", run_id)
+        ):
+            artifact_source_count += 1
+            if run_id not in seen_artifact_runs and len(artifact_runs) < 300:
+                seen_artifact_runs.add(run_id)
+                artifact_runs.append(run_id)
+            if artifact_source_count >= 300:
+                break
+
+    outcome = (
+        cost_value.get("outcome_evidence")
+        if isinstance(cost_value.get("outcome_evidence"), Mapping)
+        else {}
+    )
+    selected_outcomes = {
+        str(value or "").strip()
+        for value in outcome.get("outcome_event_ids") or []
+        if str(value or "").strip()
+    }
+    if not selected_outcomes:
+        return artifact_runs, artifact_source_count, {}
+    try:
+        try:
+            from ..outcome_store import list_outcome_events
+        except ImportError:
+            from outcome_store import list_outcome_events
+        outcome_items = list_outcome_events(query.workspace_id)
+    except Exception:
+        outcome_items = []
+    source_by_outcome: dict[str, str] = {}
+    for item in outcome_items:
+        if not isinstance(item, Mapping):
+            continue
+        if str(item.get("workspace_id") or "").strip() != query.workspace_id:
+            continue
+        event_id = str(item.get("event_id") or "").strip()
+        source = item.get("source") if isinstance(item.get("source"), Mapping) else {}
+        source_run_id = str(source.get("run_id") or "").strip()
+        if event_id in selected_outcomes and source_run_id:
+            source_by_outcome[event_id] = source_run_id
+            if len(source_by_outcome) >= 300:
+                break
+    return artifact_runs, artifact_source_count, source_by_outcome
+
+
 def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
     if not query.workspace_id:
         raise ValueError("ROI decision requires one workspace")
-    roi = workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value)
+    events = query_service.events(query)
+    roi = _roi_snapshot_with_ledger_lineage(
+        workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value),
+        events,
+    )
     cost_value = workspace_cost_value_snapshot(query.workspace_id, query.from_value, query.to_value)
     economics = _roi_economics_payload(query_service, query, roi, cost_value)
     unit_trend = merge_output_trend(
         query_service.unit_economics_trend(query, "day").get("items") or [],
         cost_value.get("output_trend") or [],
     )
+    artifact_run_ids, artifact_source_count, outcome_source_run_ids = _roi_stage_source_lineage(
+        query,
+        cost_value,
+    )
+    cost_evidence = (
+        roi.get("cost_evidence")
+        if isinstance(roi.get("cost_evidence"), Mapping)
+        else {}
+    )
+    preferred_run_ids = [
+        *artifact_run_ids,
+        *outcome_source_run_ids.values(),
+        *(cost_evidence.get("priced_run_ids") or []),
+        *(roi.get("observed_run_ids") or []),
+    ]
+    request_refs_by_run = _request_refs_by_run(
+        events,
+        preferred_run_ids=preferred_run_ids,
+    )
     decision = build_roi_decision(
         economics=economics,
         roi_snapshot=roi,
         cost_value=cost_value,
         unit_trend=unit_trend,
+        request_refs_by_run=request_refs_by_run,
+        artifact_run_ids=artifact_run_ids,
+        artifact_source_count=artifact_source_count,
+        outcome_source_run_ids=outcome_source_run_ids,
     )
     # Keep Task 1's schema-safe display projection while returning the full
     # bounded trend rows that this page needs for unavailable-data states.
@@ -1600,15 +2031,30 @@ def _risk_evidence_sets(
 ) -> list[EvidenceSet]:
     by_ref = {event.request_ref: event for event in events}
     result: list[EvidenceSet] = []
+    fingerprints: set[tuple[str, ...]] = set()
     for opportunity in opportunities:
         requested_refs = [
             str(value)
             for value in opportunity.get("evidence_refs") or []
             if str(value) in by_ref
         ]
-        candidates = [by_ref[ref] for ref in requested_refs] if requested_refs else events
         policy_type = str(opportunity.get("policy_type") or "")
-        selected = select_policy_evidence(candidates, policy_type, limit=3)
+        ranked = policy_evidence_candidates(events, policy_type)
+        ranked_by_ref = {event.request_ref: event for event in ranked}
+        candidates = [
+            ranked_by_ref[ref]
+            for ref in requested_refs
+            if ref in ranked_by_ref
+        ]
+        candidates.extend(
+            event for event in ranked if event.request_ref not in requested_refs
+        )
+        candidates = list({event.request_ref: event for event in candidates}.values())[:12]
+        selected = _distinct_policy_evidence_set(
+            candidates,
+            policy_type,
+            fingerprints,
+        )
         result.append(
             selected.model_copy(
                 update={
@@ -1618,6 +2064,32 @@ def _risk_evidence_sets(
             )
         )
     return result
+
+
+def _distinct_policy_evidence_set(
+    candidates: list[FinOpsRequestEvent],
+    policy_type: str,
+    fingerprints: set[tuple[str, ...]],
+) -> EvidenceSet:
+    sample_size = min(3, len(candidates))
+    if sample_size == 0:
+        return select_policy_evidence([], policy_type, limit=3)
+    fallback: EvidenceSet | None = None
+    for indexes in combinations(range(len(candidates)), sample_size):
+        selected = select_policy_evidence(
+            [candidates[index] for index in indexes],
+            policy_type,
+            limit=sample_size,
+        )
+        if fallback is None:
+            fallback = selected
+        fingerprint = tuple(sorted(item.request_ref for item in selected.items))
+        if fingerprint and fingerprint not in fingerprints:
+            fingerprints.add(fingerprint)
+            return selected
+    assert fallback is not None
+    fingerprints.add(tuple(sorted(item.request_ref for item in fallback.items)))
+    return fallback
 
 
 def _risk_evidence_summaries(evidence_sets: list[EvidenceSet]) -> list[dict[str, Any]]:
@@ -1753,6 +2225,27 @@ def _public_risk_scan(
     }
 
 
+def _public_risk_scan_summary(scan: FinOpsRiskScan) -> dict[str, Any]:
+    return {
+        "scan_ref": scan.scan_ref,
+        "workspace_id": scan.scope.workspace_id,
+        "status": scan.status,
+        "policy_revision": scan.policy_revision,
+        "ledger_revision": scan.ledger_revision,
+        "rule_count": scan.rules_evaluated,
+        "rules_triggered": scan.rules_triggered,
+        "rules_clear": scan.rules_clear,
+        "rules_insufficient": scan.rules_insufficient,
+        "rules_unavailable": scan.rules_unavailable,
+        "request_sample_count": scan.request_sample_count,
+        "evidence_bound_findings": scan.evidence_bound_findings,
+        "evidence_coverage_pct": scan.evidence_coverage_pct,
+        "started_at": scan.started_at,
+        "finished_at": scan.finished_at,
+        "safe_error_category": scan.safe_error_category,
+    }
+
+
 def _scan_finding_evidence(
     finding: RiskScanFinding,
     events: list[FinOpsRequestEvent],
@@ -1796,6 +2289,69 @@ def _risk_scan_context(
     return service, query, service.events(query)
 
 
+def _risk_scan_read_scope(
+    request: Request,
+    workspace_id: str,
+) -> tuple[str, dict[str, str]]:
+    tenant_ref, _, roles = _pricing_read_context(request)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(
+            status_code=403,
+            detail="risk scan requires admin or owner",
+        )
+    return tenant_ref, roles
+
+
+def _risk_scan_audit_required(
+    request: Request,
+    *,
+    workspace_id: str,
+    scan_ref: str,
+) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request, fallback=False),
+            "finops_risk_scan.run",
+            {
+                "workspace_id": workspace_id,
+                "resource_type": "finops_risk_scan",
+                "resource_id": scan_ref,
+            },
+            result="allowed",
+            reason_code="authorized",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit persistence is required",
+        ) from exc
+
+
+@router.get("/risk/scans")
+async def list_risk_scans(
+    request: Request,
+    workspace_id: str = Query(min_length=1, max_length=160),
+    limit: int = Query(default=5, ge=1, le=50),
+) -> dict[str, Any]:
+    tenant_ref, _ = _risk_scan_read_scope(request, workspace_id)
+    try:
+        items = get_finops_risk_scan_service().list(
+            tenant_ref=tenant_ref,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
+    return {
+        "items": [_public_risk_scan_summary(item) for item in items],
+        "count": len(items),
+        "workspace_id": workspace_id,
+    }
+
+
 @router.post("/risk/scans", status_code=201)
 async def run_risk_scan(
     body: RiskScanCreateRequest,
@@ -1813,6 +2369,12 @@ async def run_risk_scan(
             model=body.model,
         )
         actor = actor_from_request(request, fallback=False)
+        scan_ref = f"rscan_{uuid.uuid4().hex}"
+        _risk_scan_audit_required(
+            request,
+            workspace_id=body.workspace_id,
+            scan_ref=scan_ref,
+        )
         scan = get_finops_risk_scan_service().run(
             tenant_ref=query.tenant_ref,
             scope=_risk_scan_scope(query),
@@ -1823,6 +2385,7 @@ async def run_risk_scan(
             policy_revision=_risk_policy_revision(query.tenant_ref),
             ledger_revision=_risk_ledger_revision(events),
             initiated_by_ref=_actor_ref(actor),
+            scan_ref=scan_ref,
         )
         _bump_finops_domains(
             query.tenant_ref,
@@ -1871,6 +2434,42 @@ async def latest_risk_scan(
             scope=_risk_scan_scope(query),
         )
         if scan is None:
+            raise HTTPException(status_code=404, detail="risk scan not found")
+        return _public_risk_scan(scan, events=events)
+    except HTTPException:
+        raise
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
+
+
+@router.get("/risk/scans/{scan_ref}")
+async def risk_scan_detail(
+    scan_ref: str,
+    request: Request,
+    workspace_id: str = Query(min_length=1, max_length=160),
+) -> dict[str, Any]:
+    tenant_ref, _ = _risk_scan_read_scope(request, workspace_id)
+    try:
+        scan = get_finops_risk_scan_service().get(
+            tenant_ref=tenant_ref,
+            scan_ref=scan_ref,
+        )
+        if scan is None or scan.scope.workspace_id != workspace_id:
+            raise HTTPException(status_code=404, detail="risk scan not found")
+        _service, query, events = _risk_scan_context(
+            request,
+            from_value=scan.scope.from_value,
+            to_value=scan.scope.to_value,
+            department_id=scan.scope.department_id,
+            workspace_id=workspace_id,
+            agent_id=scan.scope.agent_id,
+            actor_ref=scan.scope.actor_ref,
+            model=scan.scope.model,
+        )
+        if query.tenant_ref != tenant_ref:
             raise HTTPException(status_code=404, detail="risk scan not found")
         return _public_risk_scan(scan, events=events)
     except HTTPException:
@@ -2386,7 +2985,9 @@ async def analyze_insight(
             "trigger_fingerprint": fingerprint,
         }
     background_tasks.add_task(
-        service.analyze,
+        _analyze_insight_with_workspace_route,
+        service,
+        workspace_id=body.workspace_id,
         agent_kind=body.agent_kind,
         tenant_ref=query.tenant_ref,
         workspace_ids=selected_workspace_ids,
@@ -2965,13 +3566,79 @@ def _require_admin_scope(
         raise HTTPException(status_code=403, detail="workspace access denied for finops.write")
 
 
-def _require_tenant_owner(roles: Mapping[str, str]) -> None:
-    """Tenant-level pricing writes require Owner across every authorized workspace."""
-    if not roles or not all(role == "owner" for role in roles.values()):
+def _configured_oid_set(name: str) -> set[str]:
+    return {
+        value.strip().lower()
+        for value in re.split(r"[,;\s]+", str(os.environ.get(name) or ""))
+        if value.strip()
+    }
+
+
+def _tenant_pricing_capability(
+    *,
+    actor: Mapping[str, Any],
+    roles: Mapping[str, str],
+) -> tuple[bool, str]:
+    actor_id = str(actor.get("actor_id") or "").strip().lower()
+    if actor_id and actor_id in _configured_oid_set("DF_FINOPS_TENANT_OWNER_OIDS"):
+        return True, "entra_tenant_pricing_admin"
+    if roles and all(role == "owner" for role in roles.values()):
+        return True, "all_workspaces_owner"
+    return False, "read_only"
+
+
+def _require_tenant_pricing_admin(
+    *,
+    actor: Mapping[str, Any],
+    roles: Mapping[str, str],
+) -> str:
+    can_manage, source = _tenant_pricing_capability(actor=actor, roles=roles)
+    if not can_manage:
         raise HTTPException(
             status_code=403,
-            detail="official price mapping requires owner",
+            detail="official price mapping requires tenant pricing admin",
         )
+    return source
+
+
+def _pricing_audit_workspace(
+    roles: Mapping[str, str],
+    workspace_id: str,
+) -> str:
+    selected = str(workspace_id or "").strip()
+    if selected not in roles:
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.pricing.write",
+        )
+    return selected
+
+
+def _pricing_audit_required(
+    request: Request,
+    *,
+    workspace_id: str,
+    deployment: str,
+    revision: int,
+) -> None:
+    resource_id = f"{str(deployment).strip()}:{int(revision)}"
+    try:
+        record_audit_event(
+            actor_from_request(request, fallback=False),
+            "model_price_mapping.write",
+            {
+                "workspace_id": workspace_id,
+                "resource_type": "model_price_mapping",
+                "resource_id": resource_id,
+            },
+            result="allowed",
+            reason_code="authorized",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit persistence is required",
+        ) from exc
 
 
 def _require_tenant_admin(roles: Mapping[str, str]) -> None:
@@ -3333,11 +4000,19 @@ async def official_pricing_catalog(request: Request) -> dict[str, Any]:
 
 @router.get("/pricing/mappings")
 async def official_pricing_mappings(request: Request) -> dict[str, Any]:
-    tenant_ref, _, _ = _pricing_read_context(request)
+    tenant_ref, _, roles = _pricing_read_context(request)
+    actor = actor_from_request(request, fallback=False)
+    can_manage, authorization_source = _tenant_pricing_capability(
+        actor=actor,
+        roles=roles,
+    )
     items = get_finops_price_mapping_repository().list(tenant_ref)
     return {
         "items": [item.model_dump(mode="json") for item in items],
         "count": len(items),
+        "scope": "tenant",
+        "can_manage": can_manage,
+        "authorization_source": authorization_source,
     }
 
 
@@ -3346,9 +4021,12 @@ async def update_official_pricing_mapping(
     deployment: str,
     body: PriceMappingUpdateRequest,
     request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
 ) -> dict[str, Any]:
     tenant_ref, actor_ref, roles = _pricing_read_context(request)
-    _require_tenant_owner(roles)
+    actor = actor_from_request(request, fallback=False)
+    _require_tenant_pricing_admin(actor=actor, roles=roles)
+    audit_workspace = _pricing_audit_workspace(roles, workspace_id)
     catalog = load_official_price_catalog()
     price = catalog.get(body.official_price_key)
     if price is None:
@@ -3371,6 +4049,12 @@ async def update_official_pricing_mapping(
         mapping_revision=body.base_revision + 1,
         updated_by_ref=actor_ref,
     )
+    _pricing_audit_required(
+        request,
+        workspace_id=audit_workspace,
+        deployment=deployment,
+        revision=mapping.mapping_revision,
+    )
     try:
         saved = get_finops_price_mapping_repository().upsert(
             mapping,
@@ -3390,10 +4074,27 @@ async def update_official_pricing_mapping(
 async def delete_official_pricing_mapping(
     deployment: str,
     request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+    base_revision: int = Query(..., ge=1),
 ) -> Response:
     tenant_ref, _, roles = _pricing_read_context(request)
-    _require_tenant_owner(roles)
-    deleted = get_finops_price_mapping_repository().delete(tenant_ref, deployment)
+    actor = actor_from_request(request, fallback=False)
+    _require_tenant_pricing_admin(actor=actor, roles=roles)
+    audit_workspace = _pricing_audit_workspace(roles, workspace_id)
+    _pricing_audit_required(
+        request,
+        workspace_id=audit_workspace,
+        deployment=deployment,
+        revision=base_revision,
+    )
+    try:
+        deleted = get_finops_price_mapping_repository().delete(
+            tenant_ref,
+            deployment,
+            base_revision=base_revision,
+        )
+    except PriceMappingConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(
             status_code=404,

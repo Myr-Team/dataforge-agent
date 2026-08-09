@@ -18,9 +18,9 @@ import {
   searchIdentityGovernanceGroups,
   updateIdentityGroupMapping,
 } from "./api.js";
-import { identityAccessViewModel, identityGroupSearchViewModel } from "./identityAccessViewModel.js";
+import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionViewModel } from "./identityAccessViewModel.js";
 
-export function IdentityAccessPage({ workspaceId = "" }) {
+export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null });
@@ -48,6 +48,10 @@ export function IdentityAccessPage({ workspaceId = "" }) {
 
   useEffect(() => { load(); }, [load]);
   const view = useMemo(() => identityAccessViewModel(state.payload || {}, workspaceId), [state.payload, workspaceId]);
+  const session = useMemo(
+    () => identitySessionViewModel({ user, authState, access: workspaceAccess }),
+    [authState, user, workspaceAccess],
+  );
 
   useEffect(() => {
     setRoleDraft(Object.fromEntries(view.mappings.map((item) => [item.mappingId, item.role])));
@@ -132,6 +136,24 @@ export function IdentityAccessPage({ workspaceId = "" }) {
           <RefreshCw size={16} className={state.loading ? "spin" : ""} />
         </button>
       </header>
+
+      <section className={`identity-session-card ${session.trusted ? "trusted" : "unavailable"}`} data-testid="identity-session-card">
+        <div className="identity-session-person">
+          <span aria-hidden="true">{session.trusted ? (session.displayName.trim()[0] || "ID") : "?"}</span>
+          <div>
+            <small>当前登录身份</small>
+            <h3>{session.displayName}</h3>
+            <p>{session.email || "请刷新登录状态后再进行权限操作"}</p>
+          </div>
+          <em>{session.trusted ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}{session.identitySourceLabel}</em>
+        </div>
+        <dl className="identity-session-facts">
+          <div><dt>身份提供方</dt><dd>{session.identityLabel}</dd></div>
+          <div><dt>当前角色</dt><dd>{session.roleLabel}</dd></div>
+          <div><dt>授权来源</dt><dd>{session.authorizationLabel}</dd></div>
+        </dl>
+        <p className="identity-demo-note"><ShieldCheck size={14} />演示权限切换时，请在无痕窗口登录另一个已授权 Entra 用户；页面只展示服务端实际判定的角色，不提供前端伪切换。</p>
+      </section>
 
       <div className="identity-trust-strip">
         <div>

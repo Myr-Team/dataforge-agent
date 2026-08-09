@@ -468,6 +468,9 @@ BEGIN
         last_tested_at DATETIME2(7) NULL,
         last_success_at DATETIME2(7) NULL,
         safe_error_category NVARCHAR(64) NULL,
+        connection_stage NVARCHAR(64) NULL,
+        stage_durations_json NVARCHAR(MAX) NOT NULL
+            CONSTRAINT DF_finops_model_provider_stage_durations DEFAULT N'{}',
         revision INT NOT NULL,
         created_by_ref NVARCHAR(160) NOT NULL,
         updated_by_ref NVARCHAR(160) NOT NULL,
@@ -492,10 +495,27 @@ BEGIN
         CONSTRAINT CK_finops_model_provider_models CHECK (
             ISJSON(available_models_json) = 1
         ),
+        CONSTRAINT CK_finops_model_provider_stage_durations CHECK (
+            ISJSON(stage_durations_json) = 1
+        ),
         CONSTRAINT CK_finops_model_provider_revision CHECK (revision >= 1)
     );
     CREATE UNIQUE INDEX UQ_finops_model_provider_name
         ON df_finops.model_provider (tenant_ref, display_name);
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.model_provider', N'connection_stage') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD connection_stage NVARCHAR(64) NULL');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.model_provider', N'stage_durations_json') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.model_provider ADD stage_durations_json NVARCHAR(MAX) NULL');
+    EXEC(N'UPDATE df_finops.model_provider SET stage_durations_json = N''{}'' WHERE stage_durations_json IS NULL');
+    EXEC(N'ALTER TABLE df_finops.model_provider ALTER COLUMN stage_durations_json NVARCHAR(MAX) NOT NULL');
 END;
 GO
 
@@ -982,7 +1002,9 @@ BEGIN
         rules_triggered INT NOT NULL,
         rules_clear INT NOT NULL,
         rules_insufficient INT NOT NULL,
+        rules_unavailable INT NOT NULL,
         request_sample_count INT NOT NULL,
+        evidence_bound_findings INT NOT NULL,
         evidence_coverage_pct DECIMAL(7, 4) NOT NULL,
         started_at DATETIME2(7) NOT NULL,
         finished_at DATETIME2(7) NULL,
@@ -1001,7 +1023,9 @@ BEGIN
             AND rules_triggered >= 0
             AND rules_clear >= 0
             AND rules_insufficient >= 0
+            AND rules_unavailable >= 0
             AND request_sample_count >= 0
+            AND evidence_bound_findings >= 0
         ),
         CONSTRAINT CK_finops_risk_scan_coverage CHECK (
             evidence_coverage_pct >= 0 AND evidence_coverage_pct <= 100
@@ -1011,6 +1035,22 @@ BEGIN
         ON df_finops.risk_scan (
             tenant_ref, workspace_id, scope_fingerprint, started_at DESC
         );
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.risk_scan', N'rules_unavailable') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.risk_scan
+        ADD rules_unavailable INT NOT NULL
+            CONSTRAINT DF_finops_risk_scan_rules_unavailable DEFAULT (0)');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.risk_scan', N'evidence_bound_findings') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.risk_scan
+        ADD evidence_bound_findings INT NOT NULL
+            CONSTRAINT DF_finops_risk_scan_evidence_bound_findings DEFAULT (0)');
 END;
 GO
 
@@ -1052,5 +1092,40 @@ BEGIN
             sample_count >= 0 AND minimum_samples >= 0
         )
     );
+END;
+GO
+
+IF OBJECT_ID(N'df_finops.job_run_status', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.job_run_status (
+        job_name NVARCHAR(48) NOT NULL,
+        execution_ref NVARCHAR(64) NOT NULL,
+        run_status NVARCHAR(16) NOT NULL,
+        started_at DATETIME2(7) NOT NULL,
+        completed_at DATETIME2(7) NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        rows_observed INT NOT NULL
+            CONSTRAINT DF_finops_job_run_rows_observed DEFAULT (0),
+        rows_written INT NOT NULL
+            CONSTRAINT DF_finops_job_run_rows_written DEFAULT (0),
+        source_freshness_at DATETIME2(7) NULL,
+        CONSTRAINT PK_finops_job_run_status
+            PRIMARY KEY (job_name, execution_ref),
+        CONSTRAINT CK_finops_job_run_status_name CHECK (
+            job_name IN (
+                N'finops_apim_reconciliation',
+                N'finops_rollup',
+                N'finops_retention'
+            )
+        ),
+        CONSTRAINT CK_finops_job_run_status_state CHECK (
+            run_status IN (N'running', N'succeeded', N'failed')
+        ),
+        CONSTRAINT CK_finops_job_run_status_counts CHECK (
+            rows_observed >= 0 AND rows_written >= 0
+        )
+    );
+    CREATE INDEX IX_finops_job_run_status_latest
+        ON df_finops.job_run_status (job_name, started_at DESC);
 END;
 GO

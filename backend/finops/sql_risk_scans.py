@@ -30,17 +30,19 @@ class SqlRiskScanRepository:
                     workspace_id = ?, scope_fingerprint = ?, scope_json = ?,
                     scan_status = ?, policy_revision = ?, ledger_revision = ?,
                     rules_evaluated = ?, rules_triggered = ?, rules_clear = ?,
-                    rules_insufficient = ?, request_sample_count = ?,
+                    rules_insufficient = ?, rules_unavailable = ?,
+                    request_sample_count = ?, evidence_bound_findings = ?,
                     evidence_coverage_pct = ?, finished_at = ?,
                     safe_error_category = ?
                 WHEN NOT MATCHED THEN INSERT (
                     tenant_ref, scan_ref, workspace_id, scope_fingerprint,
                     scope_json, scan_status, policy_revision, ledger_revision,
                     rules_evaluated, rules_triggered, rules_clear,
-                    rules_insufficient, request_sample_count,
+                    rules_insufficient, rules_unavailable,
+                    request_sample_count, evidence_bound_findings,
                     evidence_coverage_pct, started_at, finished_at,
                     initiated_by_ref, safe_error_category
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                 value.tenant_ref,
                 value.scan_ref,
                 value.scope.workspace_id,
@@ -53,7 +55,9 @@ class SqlRiskScanRepository:
                 value.rules_triggered,
                 value.rules_clear,
                 value.rules_insufficient,
+                value.rules_unavailable,
                 value.request_sample_count,
+                value.evidence_bound_findings,
                 value.evidence_coverage_pct,
                 value.finished_at,
                 value.safe_error_category,
@@ -69,7 +73,9 @@ class SqlRiskScanRepository:
                 value.rules_triggered,
                 value.rules_clear,
                 value.rules_insufficient,
+                value.rules_unavailable,
                 value.request_sample_count,
+                value.evidence_bound_findings,
                 value.evidence_coverage_pct,
                 value.started_at,
                 value.finished_at,
@@ -117,7 +123,8 @@ class SqlRiskScanRepository:
                 SELECT scan_ref, tenant_ref, workspace_id, scope_fingerprint,
                     scope_json, scan_status, policy_revision, ledger_revision,
                     rules_evaluated, rules_triggered, rules_clear,
-                    rules_insufficient, request_sample_count,
+                    rules_insufficient, rules_unavailable,
+                    request_sample_count, evidence_bound_findings,
                     evidence_coverage_pct, started_at, finished_at,
                     initiated_by_ref, safe_error_category
                 FROM df_finops.risk_scan
@@ -161,6 +168,29 @@ class SqlRiskScanRepository:
         if row is None:
             return None
         return self.get(tenant_ref, str(row[0]))
+
+    def list(
+        self,
+        tenant_ref: str,
+        workspace_id: str,
+        limit: int,
+    ) -> list[FinOpsRiskScan]:
+        bounded_limit = max(1, min(int(limit), 50))
+        with self._transaction() as cursor:
+            rows = cursor.execute(
+                f"""/* finops:list-risk-scan-refs */
+                SELECT TOP ({bounded_limit}) scan_ref
+                FROM df_finops.risk_scan
+                WHERE tenant_ref = ? AND workspace_id = ?
+                ORDER BY started_at DESC, scan_ref DESC""",
+                tenant_ref,
+                workspace_id,
+            ).fetchall()
+        return [
+            scan
+            for row in rows
+            if (scan := self.get(tenant_ref, str(row[0]))) is not None
+        ]
 
     @contextmanager
     def _transaction(self) -> Iterator[Any]:
@@ -217,12 +247,14 @@ def _decode_scan(row: Any, finding_rows: list[Any]) -> FinOpsRiskScan:
             "rules_triggered": row[9],
             "rules_clear": row[10],
             "rules_insufficient": row[11],
-            "request_sample_count": row[12],
-            "evidence_coverage_pct": float(row[13]),
-            "started_at": _db_time(row[14]),
-            "finished_at": _db_time(row[15]) if row[15] is not None else None,
-            "initiated_by_ref": row[16],
-            "safe_error_category": row[17],
+            "rules_unavailable": row[12],
+            "request_sample_count": row[13],
+            "evidence_bound_findings": row[14],
+            "evidence_coverage_pct": float(row[15]),
+            "started_at": _db_time(row[16]),
+            "finished_at": _db_time(row[17]) if row[17] is not None else None,
+            "initiated_by_ref": row[18],
+            "safe_error_category": row[19],
             "findings": findings,
         }
     )

@@ -795,6 +795,11 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
                     *[f"tool_{index}" for index in range(20)],
                 ],
                 "cache_hit": True,
+                "model_route": "azure-fallback",
+                "provider_type": "azure_foundry",
+                "provider_id": None,
+                "model_id": "gpt-5.1",
+                "fallback_reason": "rate_limited",
             },
         }
     )
@@ -823,6 +828,11 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
     assert completed.tool_names[:2] == ("search_pack_context", "render_pdf_report")
     assert len(completed.tool_names) == 12
     assert completed.cache_hit is True
+    assert completed.model_route == "azure-fallback"
+    assert completed.provider_type == "azure_foundry"
+    assert completed.provider_id is None
+    assert completed.model_id == "gpt-5.1"
+    assert completed.fallback_reason == "rate_limited"
     assert completed.started_ns is not None
     assert completed.completed_ns is not None
     assert completed.completed_ns >= completed.started_ns

@@ -35,6 +35,76 @@ const DOMAIN_LABELS = Object.freeze({
   governance: "治理",
 });
 
+const CUSTOMER_FACING_FINOPS_TERMS = Object.freeze({
+  gateway_coverage: "入口治理覆盖",
+  app_observed: "应用侧已观测",
+  unmanaged: "未纳入统一入口",
+  unknown: "来源待确认",
+  cache_state: "缓存状态",
+  tokens_total: "Token 总量",
+  provider_5xx: "模型服务异常",
+});
+
+const CUSTOMER_FACING_FINOPS_TERM_PATTERN = /(^|[^A-Za-z0-9_.:/-])(gateway_coverage|app_observed|unmanaged|unknown|cache_state|tokens_total|provider_5xx)(?![A-Za-z0-9_.:/-])/g;
+
+const EVIDENCE_SIGNAL_LABELS = Object.freeze({
+  latency_ms: "响应时延",
+  request_status: "调用状态",
+  pricing_status: "计价状态",
+  cache_state: "缓存状态",
+  gateway_coverage: "入口治理覆盖",
+  tokens_total: "Token 总量",
+  estimated_cost: "估算成本",
+});
+
+const EVIDENCE_VALUE_LABELS = Object.freeze({
+  succeeded: "调用成功",
+  failed: "调用失败",
+  hit: "缓存命中",
+  miss: "缓存未命中",
+  bypassed: "未使用缓存",
+  unavailable: "状态暂不可用",
+  priced: "已计价",
+  unpriced: "未计价",
+  estimated: "估算值",
+  apim_governed: "已纳入统一入口",
+  app_observed: "应用侧已观测",
+  unmanaged: "未纳入统一入口",
+  unknown: "来源待确认",
+});
+
+const EVIDENCE_STRING_VALUES_BY_SIGNAL = Object.freeze({
+  request_status: Object.freeze(["succeeded", "failed"]),
+  cache_state: Object.freeze(["hit", "miss", "bypassed", "unavailable"]),
+  pricing_status: Object.freeze(["priced", "unpriced", "estimated", "unavailable"]),
+  gateway_coverage: Object.freeze(["apim_governed", "app_observed", "unmanaged", "unknown", "unavailable"]),
+});
+
+const EVIDENCE_UNITS_BY_SIGNAL = Object.freeze({
+  latency_ms: Object.freeze(["ms", "milliseconds"]),
+  request_status: Object.freeze(["status"]),
+  pricing_status: Object.freeze(["status"]),
+  cache_state: Object.freeze(["state"]),
+  gateway_coverage: Object.freeze(["state"]),
+  tokens_total: Object.freeze(["token", "tokens", "Token"]),
+  estimated_cost: Object.freeze(["USD"]),
+});
+
+const EVIDENCE_UNIT_LABELS = Object.freeze({
+  USD: "USD",
+  ratio: "ROI",
+  percent: "%",
+  percentage_point: "个百分点",
+  milliseconds: "毫秒",
+  ms: "毫秒",
+  requests: "次请求",
+  token: "Token",
+  tokens: "Token",
+  Token: "Token",
+  status: "",
+  state: "",
+});
+
 const LEVEL_LABELS = Object.freeze({
   low: "低",
   medium: "中",
@@ -131,6 +201,21 @@ function boundedText(value, maximum = 160) {
 }
 
 
+function customerFacingFinOpsProse(value, maximum) {
+  const text = boundedText(value, maximum);
+  return text.replace(
+    CUSTOMER_FACING_FINOPS_TERM_PATTERN,
+    (match, prefix, term) => `${prefix}${CUSTOMER_FACING_FINOPS_TERMS[term]}`,
+  );
+}
+
+
+function customerFacingFinOpsLabel(value, maximum) {
+  const text = boundedText(value, maximum);
+  return CUSTOMER_FACING_FINOPS_TERMS[text] || text;
+}
+
+
 function boundedTexts(value, limit = 8, maximum = 200) {
   if (typeof value === "string") {
     const item = boundedText(value, maximum);
@@ -223,7 +308,11 @@ function unavailableValueLabel(status) {
 function formatValue(value, unit, status) {
   if (value === null) return unavailableValueLabel(status);
   if (unit === "USD") {
-    const maximumFractionDigits = value !== 0 && Math.abs(value) < 0.01 ? 5 : 2;
+    const maximumFractionDigits = value !== 0 && Math.abs(value) < 0.01
+      ? 5
+      : value !== 0 && Math.abs(value) < 1
+        ? 4
+        : 2;
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
@@ -314,14 +403,18 @@ function proportionalItems(items) {
 function safeBridge(raw, metrics) {
   const source = isRecord(raw) ? raw : {};
   const explicit = records(source.items).map(safeMetric).filter(Boolean);
-  const metricItems = explicit.length
-    ? explicit
-    : metrics.filter((item) => [
+  const metricItems = explicit.length ? explicit : metrics
+    .filter((item) => [
       "monthly_benefit",
       "monthly_total_cost",
       "monthly_net_benefit",
       "roi_ratio",
-    ].includes(item.id));
+    ].includes(item.id))
+    .map((item) => {
+      if (item.id !== "monthly_total_cost" || item.value === null) return item;
+      const value = -Math.abs(item.value);
+      return { ...item, value, valueLabel: formatValue(value, item.unit, item.status) };
+    });
   const items = proportionalItems(metricItems.slice(0, 8));
   const paybackMonths = finiteNumber(source.payback_months);
   return {
@@ -550,7 +643,7 @@ function matrixPoints(value) {
   return raw.map((item) => ({
     ...item,
     radius: pointRadius(item.bubbleSize, minimum, maximum),
-    accessibleLabel: `${item.label}；证据置信度 ${formatNumber(item.xConfidence)}；业务影响 ${formatNumber(item.yImpact)}；影响范围 ${formatNumber(item.bubbleSize, 0)} 次请求`,
+    accessibleLabel: `${item.label}；证据置信度 ${formatNumber(item.xConfidence)}；运营严重度 ${formatNumber(item.yImpact)}；评估样本量 ${formatNumber(item.bubbleSize, 0)} 次请求`,
   }));
 }
 
@@ -587,7 +680,7 @@ function safeOpportunity(raw) {
   return {
     id,
     label: boundedText(raw.title, 100) || POLICY_LABELS[policy],
-    summary: boundedText(raw.recommendation ?? raw.summary, 260),
+    summary: customerFacingFinOpsProse(raw.recommendation ?? raw.summary, 260),
     policy,
     policyLabel: POLICY_LABELS[policy],
     domain,
@@ -658,7 +751,7 @@ function safePortfolioMetadata(raw) {
   const values = {
     xAxis: source.x_axis === "effort" ? "实施难度" : "",
     yAxis: source.y_axis === "value_impact" ? "价值影响" : "",
-    size: source.size === "affected_scope" ? "影响范围" : "",
+    size: ["sample_count", "affected_scope"].includes(source.size) ? "评估样本量" : "",
     color: source.color === "risk_domain" ? "风险域" : "",
   };
   const available = Object.values(values).filter(Boolean).length;
@@ -685,25 +778,51 @@ function safeEvidenceSummaries(value) {
     if (!requestRef) return [];
     const signal = isRecord(item.signal) ? item.signal : {};
     const technical = isRecord(item.technical_refs) ? item.technical_refs : {};
-    const signalValue = finiteNumber(signal.value);
-    const unit = safeUnit(signal.unit);
+    const metricKey = boundedText(signal.metric, 80);
+    const metricLabel = EVIDENCE_SIGNAL_LABELS[metricKey] || "运营信号";
+    const numericSignalValue = finiteNumber(signal.value);
+    const rawSignalValue = boundedText(signal.value, 48).toLowerCase();
+    const rawUnit = boundedText(signal.unit, 32);
+    const allowedUnits = EVIDENCE_UNITS_BY_SIGNAL[metricKey] || [];
+    const unitCompatible = allowedUnits.includes(rawUnit);
+    const allowedStringValues = EVIDENCE_STRING_VALUES_BY_SIGNAL[metricKey] || [];
+    const stringValueCompatible = unitCompatible && allowedStringValues.includes(rawSignalValue);
+    const numericValueCompatible = unitCompatible
+      && !Object.hasOwn(EVIDENCE_STRING_VALUES_BY_SIGNAL, metricKey)
+      && numericSignalValue !== null;
+    const signalValue = numericValueCompatible ? numericSignalValue : null;
+    const stringValueLabel = stringValueCompatible
+      ? EVIDENCE_VALUE_LABELS[rawSignalValue]
+      : "";
+    const unit = numericValueCompatible || stringValueCompatible ? rawUnit : "";
+    let valueLabel = "暂不可用";
+    if (signalValue !== null) {
+      if (["ms", "milliseconds"].includes(unit)) valueLabel = `${formatNumber(signalValue, 1)} ${EVIDENCE_UNIT_LABELS[unit]}`;
+      else if (unit === "USD" || unit === "ratio" || unit === "percent") valueLabel = formatValue(signalValue, unit, "observed");
+      else {
+        const suffix = EVIDENCE_UNIT_LABELS[unit] || "";
+        valueLabel = suffix ? `${formatNumber(signalValue)} ${suffix}` : formatNumber(signalValue);
+      }
+    } else if (stringValueLabel) {
+      valueLabel = stringValueLabel;
+    }
     return [{
       requestRef,
       requestName: boundedText(item.request_name, 120),
       operation: boundedText(item.operation, 80),
       modelLabel: boundedText(item.model_label, 120),
       signal: {
-        metric: boundedText(signal.metric, 80),
+        metric: metricLabel,
         value: signalValue,
         unit,
-        valueLabel: formatValue(signalValue, unit, "observed"),
+        valueLabel,
       },
       latencyMs: nonNegativeNumber(item.latency_ms),
       cacheState: ["hit", "miss", "bypassed", "unavailable"].includes(item.cache_state)
         ? item.cache_state
         : "unavailable",
       status: ["succeeded", "failed"].includes(item.status) ? item.status : "unavailable",
-      errorCategory: boundedText(item.error_category, 64),
+      errorCategory: customerFacingFinOpsLabel(item.error_category, 64),
       visibleAnswerSummary: boundedText(item.visible_answer_summary, 400),
       technical: {
         requestRef: safeReference(technical.request_ref),
@@ -867,6 +986,35 @@ export function riskScanView(payload) {
     finishedAt: boundedText(source.finished_at, 40),
     readOnly: governance.mode === "read_only_scan" && governance.automatic_actions === false,
   };
+}
+
+
+export function riskScanHistoryView(payload) {
+  return records(payload?.items).flatMap((item) => {
+    const scanRef = boundedText(item.scan_ref, 48);
+    const status = boundedText(item.status, 24);
+    if (!scanRef || !["completed", "failed", "running"].includes(status)) return [];
+    const triggered = nonNegativeNumber(item.rules_triggered) ?? 0;
+    const samples = nonNegativeNumber(item.request_sample_count) ?? 0;
+    const coverage = nonNegativeNumber(item.evidence_coverage_pct);
+    const statusLabel = status === "completed"
+      ? "已完成"
+      : status === "running" ? "扫描中" : "未完成";
+    const summary = status === "completed"
+      ? `${triggered} 项需关注 · ${samples} 次请求 · 证据覆盖 ${coverage === null ? "待确认" : `${formatNumber(coverage, 2)}%`}`
+      : status === "running" ? "正在读取当前授权范围的运行证据" : "扫描未完成，可重新执行";
+    return [{
+      scanRef,
+      status,
+      statusLabel,
+      summary,
+      startedAt: boundedText(item.started_at, 40),
+      finishedAt: boundedText(item.finished_at, 40),
+      triggered,
+      samples,
+      coverage,
+    }];
+  }).slice(0, 12);
 }
 
 

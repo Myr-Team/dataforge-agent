@@ -32,12 +32,33 @@ class _Secrets:
     def get(self, tenant_ref: str, provider_id: str, secret_ref: str) -> str:
         return self.values[(tenant_ref, provider_id)]
 
+    def status(self, tenant_ref: str, provider_id: str, secret_ref: str) -> str:
+        return "stored" if (tenant_ref, provider_id) in self.values else "missing"
+
     def rotate(self, tenant_ref: str, provider_id: str, api_key: str) -> str:
         self.rotate_calls += 1
         return self.put(tenant_ref, provider_id, api_key)
 
 
 class _Transport:
+    def get_json(self, **values: object) -> ProviderHttpResponse:
+        if values.get("path") == "/user/balance":
+            return ProviderHttpResponse(
+                status_code=200,
+                headers={},
+                json_body={"is_available": True},
+            )
+        return ProviderHttpResponse(
+            status_code=200,
+            headers={},
+            json_body={
+                "data": [
+                    {"id": "deepseek-v4-flash"},
+                    {"id": "deepseek-v4-pro"},
+                ]
+            },
+        )
+
     def post_json(self, **_: object) -> ProviderHttpResponse:
         return ProviderHttpResponse(
             status_code=200,
@@ -113,6 +134,18 @@ def _client(
         "get_provider_transport",
         lambda: transport or _Transport(),
     )
+    from backend.provider_connection_probe import DeepSeekConnectionProbe
+
+    monkeypatch.setattr(
+        "backend.model_provider_service.DeepSeekConnectionProbe",
+        lambda *, transport: DeepSeekConnectionProbe(
+            transport=transport,
+            resolver=lambda _host, port, **_kwargs: [
+                (2, 1, 6, "", ("8.8.8.8", port))
+            ],
+            tls_probe=lambda _host, _port, _timeout: None,
+        ),
+    )
     monkeypatch.setattr(
         provider_router,
         "_authorized_workspace_roles",
@@ -152,6 +185,15 @@ def test_owner_creates_tests_and_lists_masked_deepseek_provider(monkeypatch) -> 
 
     assert created.status_code == 201
     assert created.json()["connection_state"] == "connected"
+    assert created.json()["connection_stage"] == "completed"
+    assert list(created.json()["stage_durations_ms"]) == [
+        "secret_read",
+        "endpoint_resolution",
+        "tls_connect",
+        "provider_auth",
+        "minimal_inference",
+        "model_discovery",
+    ]
     assert created.json()["secret_status"] == "stored"
     assert listed.status_code == 200
     assert listed.json()["count"] == 1
@@ -161,6 +203,114 @@ def test_owner_creates_tests_and_lists_masked_deepseek_provider(monkeypatch) -> 
     assert list(secrets.values.values()) == ["secret-marker"]
     assert audits[0]["action"] == "model_provider.manage"
     assert "secret-marker" not in str(audits)
+
+
+def test_owner_governs_and_suspends_verified_deepseek_routes(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+
+    assert created["route_eligibility"] == {
+        "state": "governance_required",
+        "selectable": False,
+        "can_govern": True,
+        "reason": "governance_required",
+        "eligible_model_count": 2,
+    }
+
+    governed = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": created["revision"]},
+    )
+
+    assert governed.status_code == 200
+    assert governed.json()["governance_state"] == "governed"
+    assert governed.json()["revision"] == created["revision"] + 1
+    assert governed.json()["route_eligibility"] == {
+        "state": "selectable",
+        "selectable": True,
+        "can_govern": False,
+        "reason": None,
+        "eligible_model_count": 2,
+    }
+    assert audits[-1]["metadata"]["reason_code"] == "routing_governed"
+
+    suspended = client.post(
+        f"/api/model-providers/{created['provider_id']}/suspend",
+        headers=headers,
+        json={"base_revision": governed.json()["revision"]},
+    )
+
+    assert suspended.status_code == 200
+    assert suspended.json()["governance_state"] == "pending"
+    assert suspended.json()["route_eligibility"]["reason"] == "governance_required"
+    tenant_ref = next(iter(secrets.values))[0]
+    assert repository.get(tenant_ref, created["provider_id"]).connection_state == "connected"
+    assert audits[-1]["metadata"]["reason_code"] == "routing_suspended"
+
+
+def test_provider_governance_requires_current_revision_and_stored_secret(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    audit_count = len(audits)
+
+    stale = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": 1},
+    )
+    assert stale.status_code == 409
+    assert len(audits) == audit_count
+
+    tenant_ref = next(iter(secrets.values))[0]
+    secrets.values.clear()
+    unavailable = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": created["revision"]},
+    )
+    assert unavailable.status_code == 422
+    assert unavailable.json()["detail"] == "provider_secret_unavailable"
+    assert len(audits) == audit_count
+
+    current = repository.get(tenant_ref, created["provider_id"])
+    assert current.governance_state == "pending"
+
+
+def test_provider_governance_requires_owner_or_admin(monkeypatch) -> None:
+    client, _repository, _secrets, audits = _client(
+        monkeypatch,
+        roles={"ws-a": "viewer"},
+    )
+
+    response = client.post(
+        "/api/model-providers/provider_unknown/govern",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+        json={"base_revision": 1},
+    )
+
+    assert response.status_code == 403
+    assert audits == []
 
 
 def test_owner_creates_masked_bedrock_provider(monkeypatch) -> None:

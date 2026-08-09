@@ -83,56 +83,26 @@ class SqlDemoSeedRepository:
             ).fetchall()
             existing = {str(row[0]) for row in existing_rows}
             updated_at = datetime.now(timezone.utc)
+            cursor.execute(
+                """/* finops:delete-stale-demo-seed-event */
+                DELETE FROM df_finops.demo_seed_event
+                WHERE tenant_ref = ? AND workspace_id = ? AND seed_batch = ?""",
+                tenant_ref,
+                workspace_id,
+                batch,
+            )
             for request_ref in normalized:
                 cursor.execute(
                     """/* finops:upsert-demo-seed-event */
-                    MERGE df_finops.demo_seed_event WITH (HOLDLOCK) AS target
-                    USING (
-                        SELECT ? AS tenant_ref, ? AS workspace_id,
-                               ? AS seed_batch, ? AS request_ref
-                    ) AS source
-                    ON target.tenant_ref = source.tenant_ref
-                       AND target.workspace_id = source.workspace_id
-                       AND target.seed_batch = source.seed_batch
-                       AND target.request_ref = source.request_ref
-                    WHEN MATCHED THEN
-                        UPDATE SET updated_at = ?
-                    WHEN NOT MATCHED THEN
-                        INSERT (
-                            tenant_ref, workspace_id, seed_batch,
-                            request_ref, updated_at
-                        )
-                        VALUES (
-                            source.tenant_ref, source.workspace_id,
-                            source.seed_batch, source.request_ref, ?
-                        );""",
+                    INSERT INTO df_finops.demo_seed_event (
+                        tenant_ref, workspace_id, seed_batch,
+                        request_ref, updated_at
+                    ) VALUES (?, ?, ?, ?, ?);""",
                     tenant_ref,
                     workspace_id,
                     batch,
                     request_ref,
                     updated_at,
-                    updated_at,
-                )
-            if normalized:
-                placeholders = ", ".join("?" for _ in normalized)
-                cursor.execute(
-                    f"""/* finops:delete-stale-demo-seed-event */
-                    DELETE FROM df_finops.demo_seed_event
-                    WHERE tenant_ref = ? AND workspace_id = ? AND seed_batch = ?
-                      AND request_ref NOT IN ({placeholders})""",
-                    tenant_ref,
-                    workspace_id,
-                    batch,
-                    *normalized,
-                )
-            else:
-                cursor.execute(
-                    """/* finops:delete-stale-demo-seed-event */
-                    DELETE FROM df_finops.demo_seed_event
-                    WHERE tenant_ref = ? AND workspace_id = ? AND seed_batch = ?""",
-                    tenant_ref,
-                    workspace_id,
-                    batch,
                 )
             connection.commit()
             current = set(normalized)
@@ -184,8 +154,8 @@ class SqlDemoSeedRepository:
                 _upsert_event(cursor, event)
 
             stale = tuple(sorted(previous - current))
-            if stale:
-                placeholders = ", ".join("?" for _ in stale)
+            for stale_batch in _chunks(stale):
+                placeholders = ", ".join("?" for _ in stale_batch)
                 cursor.execute(
                     f"""/* finops:delete-stale-demo-request-event */
                     DELETE target
@@ -202,63 +172,29 @@ class SqlDemoSeedRepository:
                       )""",
                     tenant_ref,
                     workspace_id,
-                    *stale,
+                    *stale_batch,
                 )
 
             updated_at = datetime.now(timezone.utc)
+            cursor.execute(
+                """/* finops:delete-retired-demo-seed-ownership */
+                DELETE FROM df_finops.demo_seed_event
+                WHERE tenant_ref = ? AND workspace_id = ?""",
+                tenant_ref,
+                workspace_id,
+            )
             for request_ref in normalized:
                 cursor.execute(
                     """/* finops:upsert-demo-seed-event */
-                    MERGE df_finops.demo_seed_event WITH (HOLDLOCK) AS target
-                    USING (
-                        SELECT ? AS tenant_ref, ? AS workspace_id,
-                               ? AS seed_batch, ? AS request_ref
-                    ) AS source
-                    ON target.tenant_ref = source.tenant_ref
-                       AND target.workspace_id = source.workspace_id
-                       AND target.seed_batch = source.seed_batch
-                       AND target.request_ref = source.request_ref
-                    WHEN MATCHED THEN
-                        UPDATE SET updated_at = ?
-                    WHEN NOT MATCHED THEN
-                        INSERT (
-                            tenant_ref, workspace_id, seed_batch,
-                            request_ref, updated_at
-                        )
-                        VALUES (
-                            source.tenant_ref, source.workspace_id,
-                            source.seed_batch, source.request_ref, ?
-                        );""",
+                    INSERT INTO df_finops.demo_seed_event (
+                        tenant_ref, workspace_id, seed_batch,
+                        request_ref, updated_at
+                    ) VALUES (?, ?, ?, ?, ?);""",
                     tenant_ref,
                     workspace_id,
                     batch,
                     request_ref,
                     updated_at,
-                    updated_at,
-                )
-
-            if normalized:
-                placeholders = ", ".join("?" for _ in normalized)
-                cursor.execute(
-                    f"""/* finops:delete-retired-demo-seed-ownership */
-                    DELETE FROM df_finops.demo_seed_event
-                    WHERE tenant_ref = ? AND workspace_id = ?
-                      AND (
-                          seed_batch <> ?
-                          OR request_ref NOT IN ({placeholders})
-                      )""",
-                    tenant_ref,
-                    workspace_id,
-                    batch,
-                    *normalized,
-                )
-            else:
-                cursor.execute(
-                    """/* finops:delete-retired-demo-seed-ownership */
-                    DELETE FROM df_finops.demo_seed_event
-                    WHERE tenant_ref = ? AND workspace_id = ?""",
-                    tenant_ref,
-                    workspace_id,
                 )
             connection.commit()
             return len(current - previous), len(current & previous)
@@ -271,3 +207,13 @@ class SqlDemoSeedRepository:
             ) from exc
         finally:
             connection.close()
+
+
+def _chunks(
+    values: tuple[str, ...],
+    size: int = 1_000,
+) -> tuple[tuple[str, ...], ...]:
+    return tuple(
+        values[index : index + size]
+        for index in range(0, len(values), size)
+    )
