@@ -115,3 +115,49 @@ def test_sql_seed_event_replacement_updates_facts_and_ownership_atomically() -> 
     assert "finops:delete-retired-demo-seed-ownership" in operations
     assert connection.commits == 1
     assert connection.rollbacks == 0
+
+
+def test_sql_seed_replacement_stays_below_sql_server_parameter_limit() -> None:
+    request_refs = tuple(f"req_bulk_{index:04d}" for index in range(2_200))
+    connection = RecordingConnection()
+    repository = SqlDemoSeedRepository(connection_factory=lambda: connection)
+
+    repository.replace_batch(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v1",
+        request_refs=request_refs,
+    )
+
+    assert max(
+        len(parameters) for _, parameters in connection.cursor_value.calls
+    ) <= 2_100
+
+
+def test_sql_seed_event_replacement_batches_large_stale_sets() -> None:
+    generated = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        allowed_workspace_id="ws-demo",
+        now=datetime(2026, 7, 30, 8, tzinfo=timezone.utc),
+    )
+    stale_rows = [
+        ("operations-v0", f"req_retired_{index:04d}")
+        for index in range(2_200)
+    ]
+    connection = RecordingConnection(rows=stale_rows)
+    repository = SqlDemoSeedRepository(connection_factory=lambda: connection)
+
+    repository.replace_batch_events(
+        tenant_ref="tenant_demo",
+        workspace_id="ws-demo",
+        batch="operations-v1",
+        events=(generated.events[0],),
+        event_repository=object(),
+    )
+
+    assert max(
+        len(parameters) for _, parameters in connection.cursor_value.calls
+    ) <= 2_100
