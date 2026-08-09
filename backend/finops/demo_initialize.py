@@ -5,18 +5,22 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import urlparse
 
 try:
+    from ..artifact_registry import get_artifact, reserve_artifact, write_artifact
     from ..lineage_sql import build_lineage_sql_connection_factory
     from ..outcome_store import upsert_demo_outcome_events
     from ..roi_scenario_store import upsert_demo_roi_scenario
-    from ..run_store import complete_run, get_run, start_run
+    from ..run_store import complete_run, get_run, start_run, update_run_proposal
 except ImportError:
+    from artifact_registry import get_artifact, reserve_artifact, write_artifact
     from lineage_sql import build_lineage_sql_connection_factory
     from outcome_store import upsert_demo_outcome_events
     from roi_scenario_store import upsert_demo_roi_scenario
-    from run_store import complete_run, get_run, start_run
+    from run_store import complete_run, get_run, start_run, update_run_proposal
 
 from .demo_workspace_seed import DemoSeedResult, seed_demo_workspace
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
@@ -129,9 +133,12 @@ def persist_demo_run_evidence(
     get_run_fn: Callable[[str], Mapping[str, Any]] = get_run,
     start_run_fn: Callable[..., Any] = start_run,
     complete_run_fn: Callable[..., Any] = complete_run,
+    artifact_writer_fn: Callable[[str, Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, int]:
     created = 0
     reused = 0
+    artifacts_created = 0
+    artifacts_reused = 0
     for value in values:
         run_id = str(value.get("run_id") or "").strip()
         message = str(value.get("message") or "").strip()
@@ -149,26 +156,115 @@ def persist_demo_run_evidence(
             ):
                 raise RuntimeError("demo run id is already owned by another record")
             reused += 1
-            continue
-        start_run_fn(
-            run_id,
-            workspace_id,
-            message,
-            actor=None,
-            trace_id=str(value.get("trace_id") or "") or None,
-            trace_agent_id=str(value.get("trace_agent_id") or "") or None,
-            origin="operations_demo",
+        else:
+            start_run_fn(
+                run_id,
+                workspace_id,
+                message,
+                actor=None,
+                trace_id=str(value.get("trace_id") or "") or None,
+                trace_agent_id=str(value.get("trace_agent_id") or "") or None,
+                origin="operations_demo",
+            )
+            final_text = str(value.get("final_text") or "").strip()
+            persisted = complete_run_fn(
+                run_id,
+                status=str(value.get("status") or "completed"),
+                final={"text": final_text} if final_text else None,
+            )
+            if not persisted:
+                raise RuntimeError("demo run evidence could not be persisted")
+            created += 1
+        artifact = value.get("artifact")
+        if artifact_writer_fn is not None and isinstance(artifact, Mapping):
+            if artifact_writer_fn(run_id, artifact):
+                artifacts_created += 1
+            else:
+                artifacts_reused += 1
+    result: dict[str, Any] = {
+        "created": created,
+        "reused": reused,
+        "seed_batch": seed_key,
+    }
+    if artifact_writer_fn is not None:
+        result.update(
+            {
+                "artifacts_created": artifacts_created,
+                "artifacts_reused": artifacts_reused,
+            }
         )
-        final_text = str(value.get("final_text") or "").strip()
-        persisted = complete_run_fn(
-            run_id,
-            status=str(value.get("status") or "completed"),
-            final={"text": final_text} if final_text else None,
-        )
-        if not persisted:
-            raise RuntimeError("demo run evidence could not be persisted")
-        created += 1
-    return {"created": created, "reused": reused, "seed_batch": seed_key}
+    return result
+
+
+def persist_demo_artifact_evidence(
+    run_id: str,
+    artifact: Mapping[str, Any],
+    *,
+    get_run_fn: Callable[[str], Mapping[str, Any]] = get_run,
+    get_artifact_fn: Callable[[str], Mapping[str, Any] | None] = get_artifact,
+    reserve_artifact_fn: Callable[..., Mapping[str, Any]] = reserve_artifact,
+    write_artifact_fn: Callable[..., Mapping[str, Any]] = write_artifact,
+    update_run_proposal_fn: Callable[..., Mapping[str, Any] | None] = update_run_proposal,
+    output_dir: Path | None = None,
+) -> bool:
+    current = get_run_fn(run_id)
+    workspace_id = str(current.get("workspace_id") or "").strip()
+    if not workspace_id or str(current.get("origin") or "") != "operations_demo":
+        raise RuntimeError("demo artifact run is not owned by the initializer")
+    kind = str(artifact.get("kind") or "").strip()
+    if kind not in {"pilot_plan", "action_plan"}:
+        raise ValueError("demo artifact kind is not allowed")
+    markdown = str(artifact.get("markdown") or "").strip()
+    if not markdown:
+        raise ValueError("demo artifact content is required")
+
+    run_artifact = current.get("artifact") if isinstance(current.get("artifact"), Mapping) else {}
+    final = current.get("final") if isinstance(current.get("final"), Mapping) else {}
+    if not run_artifact and isinstance(final.get("artifact"), Mapping):
+        run_artifact = final["artifact"]
+    proposal = run_artifact.get("proposal") if isinstance(run_artifact.get("proposal"), Mapping) else {}
+    urls = proposal.get("artifact_urls") if isinstance(proposal.get("artifact_urls"), Mapping) else {}
+    existing_url = str(urls.get(kind) or "").strip()
+    if existing_url:
+        existing_name = Path(urlparse(existing_url).path).name
+        try:
+            existing = get_artifact_fn(existing_name)
+        except (ValueError, RuntimeError):
+            existing = None
+        if (
+            isinstance(existing, Mapping)
+            and existing.get("status") == "ready"
+            and existing.get("workspace_id") == workspace_id
+            and existing.get("kind") == kind
+        ):
+            return False
+
+    reservation = reserve_artifact_fn(
+        workspace_id=workspace_id,
+        kind=kind,
+        content_type="text/markdown; charset=utf-8",
+        suffix=".md",
+    )
+    target_dir = output_dir or Path(__file__).resolve().parents[2] / "generated-outputs"
+    record = write_artifact_fn(
+        reservation,
+        markdown.encode("utf-8"),
+        target_dir,
+    )
+    generated_at = datetime.now(timezone.utc).isoformat()
+    artifact_url = f"/api/artifacts/{record['artifact_name']}"
+    updated = update_run_proposal_fn(
+        run_id,
+        {
+            "title": str(artifact.get("title") or "运营分析产物").strip()[:120],
+            "artifact_urls": {kind: artifact_url},
+            "artifact_generated_at": {kind: generated_at},
+            "generated_at": generated_at,
+        },
+    )
+    if not isinstance(updated, Mapping):
+        raise RuntimeError("demo artifact lineage could not be persisted")
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -218,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
                 workspace_id,
                 values,
                 seed_key=seed_key,
+                artifact_writer_fn=persist_demo_artifact_evidence,
             )
         )
 

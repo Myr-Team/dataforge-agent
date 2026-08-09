@@ -6,6 +6,7 @@ import pytest
 
 from backend.finops.demo_initialize import (
     initialize_demo_workspace,
+    persist_demo_artifact_evidence,
     persist_demo_run_evidence,
 )
 from backend.finops.demo_seed_repository import InMemoryDemoSeedRepository
@@ -161,6 +162,131 @@ def test_demo_run_writer_creates_once_and_reuses_owned_records() -> None:
         "seed_batch": "operations-v1",
     }
     assert starts == completes == ["run_demo_recent_001"]
+
+
+def test_demo_run_writer_persists_each_declared_artifact_once() -> None:
+    stored: dict[str, dict[str, object]] = {}
+    artifact_writes: list[tuple[str, str]] = []
+    values = (
+        {
+            "run_id": "run_demo_recent_001",
+            "message": "分析当前工作区的运营数据",
+            "final_text": "已形成运营复盘摘要。",
+            "status": "completed",
+            "trace_id": "a" * 32,
+            "trace_agent_id": "Product Architect",
+            "artifact": {
+                "kind": "pilot_plan",
+                "title": "运营优化试点计划",
+                "markdown": "# 运营优化试点计划\n\n按证据复核运营改进。",
+            },
+        },
+    )
+
+    def get_run(run_id: str):
+        if run_id not in stored:
+            raise FileNotFoundError(run_id)
+        return stored[run_id]
+
+    def start_run(run_id: str, workspace_id: str, message: str, **kwargs):
+        stored[run_id] = {
+            "run_id": run_id,
+            "workspace_id": workspace_id,
+            "message": message,
+            "origin": kwargs["origin"],
+        }
+
+    def complete_run(run_id: str, **_kwargs):
+        return stored[run_id]
+
+    def write_artifact(run_id: str, artifact: dict[str, object]) -> bool:
+        current = stored[run_id]
+        if current.get("demo_artifact_kind") == artifact["kind"]:
+            return False
+        current["demo_artifact_kind"] = artifact["kind"]
+        artifact_writes.append((run_id, str(artifact["kind"])))
+        return True
+
+    first = persist_demo_run_evidence(
+        "ws-demo",
+        values,
+        seed_key="operations-v3",
+        get_run_fn=get_run,
+        start_run_fn=start_run,
+        complete_run_fn=complete_run,
+        artifact_writer_fn=write_artifact,
+    )
+    second = persist_demo_run_evidence(
+        "ws-demo",
+        values,
+        seed_key="operations-v3",
+        get_run_fn=get_run,
+        start_run_fn=start_run,
+        complete_run_fn=complete_run,
+        artifact_writer_fn=write_artifact,
+    )
+
+    assert first["artifacts_created"] == 1
+    assert first["artifacts_reused"] == 0
+    assert second["artifacts_created"] == 0
+    assert second["artifacts_reused"] == 1
+    assert artifact_writes == [("run_demo_recent_001", "pilot_plan")]
+
+
+def test_demo_artifact_writer_creates_a_ready_openable_artifact_once(tmp_path) -> None:
+    current: dict[str, object] = {
+        "run_id": "run_demo_recent_001",
+        "workspace_id": "ws-demo",
+        "origin": "operations_demo",
+        "artifact": {"proposal": {"artifact_urls": {}}},
+    }
+    records: dict[str, dict[str, object]] = {}
+    writes: list[bytes] = []
+    updates: list[dict[str, object]] = []
+
+    def reserve(**kwargs):
+        return {**kwargs, "artifact_name": "artifact-ready-demo.md"}
+
+    def write(reservation, content, output_dir):
+        assert output_dir == tmp_path
+        writes.append(content)
+        record = {
+            **reservation,
+            "status": "ready",
+            "bytes": len(content),
+        }
+        records[str(record["artifact_name"])] = record
+        return record
+
+    def update(_run_id: str, proposal: dict[str, object]):
+        updates.append(proposal)
+        current["artifact"] = {"proposal": proposal}
+        return current
+
+    artifact = {
+        "kind": "pilot_plan",
+        "title": "运营优化试点计划",
+        "markdown": "# 运营优化试点计划\n\n按证据复核。",
+    }
+    arguments = {
+        "get_run_fn": lambda _run_id: current,
+        "get_artifact_fn": lambda name: records.get(name),
+        "reserve_artifact_fn": reserve,
+        "write_artifact_fn": write,
+        "update_run_proposal_fn": update,
+        "output_dir": tmp_path,
+    }
+
+    assert persist_demo_artifact_evidence(
+        "run_demo_recent_001", artifact, **arguments
+    ) is True
+    assert persist_demo_artifact_evidence(
+        "run_demo_recent_001", artifact, **arguments
+    ) is False
+    assert len(writes) == len(updates) == 1
+    assert updates[0]["artifact_urls"] == {
+        "pilot_plan": "/api/artifacts/artifact-ready-demo.md"
+    }
 
 
 def test_initializer_upgrades_legacy_batch_and_persists_repeatable_demo_findings() -> None:

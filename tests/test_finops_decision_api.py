@@ -269,11 +269,153 @@ def test_roi_decision_maps_only_authorized_stage_runs_to_request_refs(
         "req_usage_000001",
         "req_output_000001",
     ]
-    assert stages["investment"]["evidence_refs"] == ["req_usage_000001"]
+    assert stages["investment"]["evidence_refs"] == [
+        "req_usage_000001",
+        "req_output_000001",
+    ]
     assert stages["output"]["evidence_refs"] == ["req_output_000001"]
     assert stages["output"]["complete"] is True
     assert stages["outcome"]["evidence_refs"] == ["req_output_000001"]
     assert "req_other_workspace" not in response.text
+
+
+def test_request_ref_index_prioritizes_required_lineage_beyond_global_bound() -> None:
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_noise_{index:06d}",
+                "occurred_at": datetime(2026, 7, 24, 2, 0, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "run_id": f"run-noise-{index:03d}",
+                "status": "succeeded",
+                "tokens": {"total": 10},
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(301)
+    ]
+    events.append(
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": "req_required_000001",
+                "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "run_id": "run-required",
+                "status": "succeeded",
+                "tokens": {"total": 10},
+                "estimated_cost": {
+                    "amount": 0.001,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+    )
+
+    index = finops_router._request_refs_by_run(
+        events,
+        run_limit=300,
+        preferred_run_ids=(
+            "run-required",
+            *(f"run-noise-{item:03d}" for item in range(301)),
+        ),
+    )
+
+    assert index["run-required"] == ["req_required_000001"]
+    assert len(index) == 300
+
+
+def test_roi_decision_uses_authorized_ledger_for_usage_and_priced_lineage(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    repository: InMemoryFinOpsRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_ledger_priced_001",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-ledger-priced",
+                    "status": "succeeded",
+                    "tokens": {"total": 12},
+                    "estimated_cost": {
+                        "amount": 0.001,
+                        "currency": "USD",
+                        "status": "estimated",
+                    },
+                    "evidence_state": "observed",
+                }
+            ),
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_ledger_unpriced_01",
+                    "occurred_at": datetime(2026, 7, 24, 4, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenant-a",
+                    "workspace_id": "ws-a",
+                    "run_id": "run-ledger-unpriced",
+                    "status": "succeeded",
+                    "tokens": {"total": 18},
+                    "estimated_cost": {
+                        "amount": None,
+                        "currency": "USD",
+                        "status": "unavailable",
+                    },
+                    "evidence_state": "partial",
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "workspace_roi_snapshot",
+        lambda workspace_id, from_value, to_value: {
+            "workspace_id": workspace_id,
+            "usage": {"runs": 0},
+            "observed_run_ids": [],
+            "cost_evidence": {
+                "status": "not_configured",
+                "priced_run_ids": [],
+                "lineage_complete": False,
+            },
+        },
+    )
+
+    response = client.get(
+        "/api/finops/roi/decision",
+        params={
+            "workspace_id": "ws-a",
+            "from": "2026-07-01T00:00:00Z",
+            "to": "2026-08-01T00:00:00Z",
+        },
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    stages = {
+        item["id"]: item
+        for item in response.json()["evidence_maturity"]["stages"]
+    }
+    assert stages["usage"]["value"] == 3
+    assert "req_ledger_priced_001" in stages["usage"]["evidence_refs"]
+    assert "req_ledger_unpriced_01" in stages["usage"]["evidence_refs"]
+    assert stages["investment"]["evidence_refs"] == ["req_ledger_priced_001"]
+    assert "模型计价未完整覆盖" in stages["investment"]["evidence_gap"]
 
 
 def test_risk_decision_does_not_trigger_agent(

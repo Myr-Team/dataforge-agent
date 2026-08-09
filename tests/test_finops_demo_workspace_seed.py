@@ -276,6 +276,16 @@ def test_seed_emits_versioned_roi_scenario_and_distinct_outcome_evidence() -> No
     assert roi_writes[0][0] == outcome_writes[0][0] == "ws-demo"
     assert run_writes[0][0] == "ws-demo"
     assert len(result.run_evidence) == 24
+    artifact_specs = [
+        item["artifact"]
+        for item in result.run_evidence
+        if isinstance(item.get("artifact"), dict)
+    ]
+    assert [item["kind"] for item in artifact_specs] == [
+        "pilot_plan",
+        "action_plan",
+    ]
+    assert all(str(item["markdown"]).startswith("# ") for item in artifact_specs)
     assert {
         item["message"] for item in result.run_evidence
     } >= {

@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from statistics import median
-from typing import Any, Iterator, Literal, Mapping
+from typing import Any, Iterator, Literal, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, Response
@@ -1671,24 +1671,109 @@ def _request_refs_by_run(
     *,
     run_limit: int = 300,
     refs_per_run: int = 3,
+    preferred_run_ids: Sequence[str] = (),
 ) -> dict[str, list[str]]:
     """Build a bounded run/request index from already-authorized query rows."""
-    result: dict[str, list[str]] = {}
-    for event in events:
+    preferred_order = list(
+        dict.fromkeys(
+            str(run_id or "").strip()
+            for run_id in preferred_run_ids
+            if str(run_id or "").strip()
+        )
+    )
+    preferred = set(preferred_order)
+    preferred_refs: dict[str, list[str]] = {}
+    fallback_refs: dict[str, list[str]] = {}
+
+    def add(event: FinOpsRequestEvent) -> None:
         run_id = str(event.run_id or "").strip()
         request_ref = str(event.request_ref or "").strip()
         if not run_id or not request_ref.startswith("req_"):
-            continue
-        if run_id not in result:
-            if len(result) >= run_limit:
-                continue
-            result[run_id] = []
+            return
+        target = preferred_refs if run_id in preferred else fallback_refs
+        if run_id not in target:
+            if target is fallback_refs and len(target) >= run_limit:
+                return
+            target[run_id] = []
         if (
-            request_ref not in result[run_id]
-            and len(result[run_id]) < refs_per_run
+            request_ref not in target[run_id]
+            and len(target[run_id]) < refs_per_run
         ):
-            result[run_id].append(request_ref)
+            target[run_id].append(request_ref)
+
+    for event in events:
+        add(event)
+
+    result: dict[str, list[str]] = {}
+    for run_id in preferred_order:
+        refs = preferred_refs.get(run_id)
+        if refs:
+            result[run_id] = refs
+            if len(result) >= run_limit:
+                return result
+    for run_id, refs in fallback_refs.items():
+        result[run_id] = refs
+        if len(result) >= run_limit:
+            break
     return result
+
+
+def _roi_snapshot_with_ledger_lineage(
+    roi: Mapping[str, Any],
+    events: Sequence[FinOpsRequestEvent],
+) -> dict[str, Any]:
+    """Use the authorized request ledger as the ROI usage and cost lineage source."""
+    payload = dict(roi)
+    usage = dict(roi.get("usage") or {}) if isinstance(roi.get("usage"), Mapping) else {}
+    usage["runs"] = len(events)
+    payload["usage"] = usage
+
+    observed_run_ids: list[str] = []
+    priced_run_ids: list[str] = []
+    priced_event_count = 0
+    priced_lineage_complete = True
+    observed_lineage_complete = True
+    unpriced_models: set[str] = set()
+    for event in events:
+        run_id = str(event.run_id or "").strip()
+        if not run_id:
+            observed_lineage_complete = False
+        elif run_id not in observed_run_ids:
+            observed_run_ids.append(run_id)
+        if event.estimated_cost.amount is None:
+            model = str(event.model or event.deployment or "").strip()
+            if model:
+                unpriced_models.add(model)
+            continue
+        priced_event_count += 1
+        if not run_id:
+            priced_lineage_complete = False
+        elif run_id not in priced_run_ids:
+            priced_run_ids.append(run_id)
+
+    cost_evidence = (
+        dict(roi.get("cost_evidence") or {})
+        if isinstance(roi.get("cost_evidence"), Mapping)
+        else {}
+    )
+    if events:
+        cost_evidence["status"] = (
+            "complete"
+            if priced_event_count == len(events)
+            else "incomplete"
+            if priced_event_count
+            else "not_configured"
+        )
+    cost_evidence["observed_run_ids"] = priced_run_ids[:300]
+    cost_evidence["priced_run_ids"] = priced_run_ids[:300]
+    cost_evidence["lineage_complete"] = (
+        priced_event_count > 0 and priced_lineage_complete
+    )
+    cost_evidence["unpriced_models"] = sorted(unpriced_models)[:50]
+    payload["cost_evidence"] = cost_evidence
+    payload["observed_run_ids"] = observed_run_ids[:300]
+    payload["lineage_complete"] = bool(events) and observed_lineage_complete
+    return payload
 
 
 def _roi_stage_source_lineage(
@@ -1788,7 +1873,11 @@ def _roi_stage_source_lineage(
 def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, Any]:
     if not query.workspace_id:
         raise ValueError("ROI decision requires one workspace")
-    roi = workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value)
+    events = query_service.events(query)
+    roi = _roi_snapshot_with_ledger_lineage(
+        workspace_roi_snapshot(query.workspace_id, query.from_value, query.to_value),
+        events,
+    )
     cost_value = workspace_cost_value_snapshot(query.workspace_id, query.from_value, query.to_value)
     economics = _roi_economics_payload(query_service, query, roi, cost_value)
     unit_trend = merge_output_trend(
@@ -1799,7 +1888,21 @@ def _roi_decision_payload(query_service: Any, query: FinOpsQuery) -> dict[str, A
         query,
         cost_value,
     )
-    request_refs_by_run = _request_refs_by_run(query_service.events(query))
+    cost_evidence = (
+        roi.get("cost_evidence")
+        if isinstance(roi.get("cost_evidence"), Mapping)
+        else {}
+    )
+    preferred_run_ids = [
+        *artifact_run_ids,
+        *outcome_source_run_ids.values(),
+        *(cost_evidence.get("priced_run_ids") or []),
+        *(roi.get("observed_run_ids") or []),
+    ]
+    request_refs_by_run = _request_refs_by_run(
+        events,
+        preferred_run_ids=preferred_run_ids,
+    )
     decision = build_roi_decision(
         economics=economics,
         roi_snapshot=roi,

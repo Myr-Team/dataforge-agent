@@ -494,23 +494,43 @@ def _run_evidence_seeds(
             str(event.route or ""),
             ("分析当前工作区的运营数据", "已完成运营数据分析。"),
         )
-        rows.append(
-            {
-                "run_id": event.run_id,
-                "message": request_text,
-                "final_text": response_text if event.status == "succeeded" else None,
-                "status": (
-                    "completed"
-                    if event.status == "succeeded"
-                    else "failed"
+        row = {
+            "run_id": event.run_id,
+            "message": request_text,
+            "final_text": response_text if event.status == "succeeded" else None,
+            "status": (
+                "completed"
+                if event.status == "succeeded"
+                else "failed"
+            ),
+            "trace_id": hashlib.sha256(
+                f"{batch}:{event.run_id}:trace".encode("utf-8")
+            ).hexdigest()[:32],
+            "trace_agent_id": event.agent_id,
+            "seed_batch": batch,
+        }
+        if event.run_id == "run_demo_recent_000":
+            row["artifact"] = {
+                "kind": "pilot_plan",
+                "title": "运营优化试点计划",
+                "markdown": (
+                    "# 运营优化试点计划\n\n"
+                    "## 目标\n基于近期调用、成本和时延证据验证优化机会。\n\n"
+                    "## 验收\n复核成本归因、缓存效果和业务结果证据。\n"
                 ),
-                "trace_id": hashlib.sha256(
-                    f"{batch}:{event.run_id}:trace".encode("utf-8")
-                ).hexdigest()[:32],
-                "trace_agent_id": event.agent_id,
-                "seed_batch": batch,
             }
-        )
+        elif event.run_id == "run_demo_recent_001":
+            row["artifact"] = {
+                "kind": "action_plan",
+                "title": "运营复盘行动清单",
+                "markdown": (
+                    "# 运营复盘行动清单\n\n"
+                    "1. 核对未计价模型映射。\n"
+                    "2. 复核慢请求与失败请求证据。\n"
+                    "3. 比较重复分析的缓存命中效果。\n"
+                ),
+            }
+        rows.append(row)
     return tuple(rows)
 
 
