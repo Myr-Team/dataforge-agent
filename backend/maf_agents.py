@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import inspect
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,9 @@ from .model_policy import (
     resolve_text_route,
     select_text_route_record,
 )
+from .model_provider_runtime import current_provider_connection, runtime_provider_secret
+from .deepseek_provider import ProviderFailure
+from .provider_fallback import may_fallback
 from .rag import search
 from .schemas import AuditVerdict, FeasibilityReport
 from .tracing import gateway_request_headers
@@ -265,17 +269,139 @@ def _create_foundry_agent(spec: AgentSpec, client: Any, workspace_id: str) -> Ag
         name=spec.agent_id,
         description=spec.description,
         instructions=spec.instructions,
-        tools=_tools_for(spec, workspace_id, type(client)),
+        tools=_tools_for(
+            spec,
+            workspace_id,
+            getattr(client, "tool_client_type", type(client)),
+        ),
         default_options={"response_format": response_format} if response_format is not None else {},
     )
 
 
+class _BoundedFallbackChatClient:
+    tool_client_type = OpenAIChatClient
+
+    def __init__(
+        self,
+        primary: Any,
+        fallback: Any,
+        *,
+        fallback_route: ModelRoute,
+    ) -> None:
+        self._primary = primary
+        self._fallback = fallback
+        self._fallback_route = fallback_route
+
+    def get_response(self, *args: Any, **kwargs: Any) -> Any:
+        primary_response = self._primary.get_response(*args, **kwargs)
+        if kwargs.get("stream") is True or not inspect.isawaitable(primary_response):
+            return primary_response
+
+        async def await_with_fallback() -> Any:
+            try:
+                return await primary_response
+            except Exception as exc:
+                failure = _provider_failure(exc)
+                if not may_fallback(
+                    failure,
+                    output_started=False,
+                    side_effect_started=False,
+                ):
+                    raise
+                fallback_response = self._fallback.get_response(*args, **kwargs)
+                result = await fallback_response if inspect.isawaitable(fallback_response) else fallback_response
+                return _annotate_fallback_response(
+                    result,
+                    route=self._fallback_route,
+                    reason=failure.category,
+                )
+
+        return await_with_fallback()
+
+
+def _provider_failure(exc: Exception) -> ProviderFailure:
+    if isinstance(exc, ProviderFailure):
+        return exc
+    status_code = getattr(exc, "status_code", None)
+    if isinstance(status_code, int):
+        category, retryable = {
+            400: ("invalid_request", False),
+            401: ("authentication_failed", False),
+            402: ("insufficient_balance", False),
+            422: ("invalid_parameters", False),
+            429: ("rate_limited", True),
+        }.get(
+            status_code,
+            ("provider_unavailable", status_code >= 500),
+        )
+        return ProviderFailure(
+            category,
+            retryable=retryable,
+            status_code=status_code,
+        )
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return ProviderFailure("provider_timeout", retryable=True)
+    return ProviderFailure("provider_error", retryable=False)
+
+
+def _annotate_fallback_response(
+    response: Any,
+    *,
+    route: ModelRoute,
+    reason: str,
+) -> Any:
+    metadata = {
+        "model_route": route.route_id,
+        "provider_type": route.provider_type,
+        "provider_id": route.provider_id,
+        "model_id": route.model_id,
+        "fallback_reason": reason,
+    }
+    current = getattr(response, "additional_properties", None)
+    try:
+        setattr(
+            response,
+            "additional_properties",
+            {**(dict(current) if isinstance(current, dict) else {}), **metadata},
+        )
+        return response
+    except Exception:
+        copier = getattr(response, "model_copy", None)
+        if callable(copier):
+            return copier(update={"additional_properties": metadata})
+        return response
+
+
 def _create_maf_chat_client(selected_route: SelectedTextRoute | None = None) -> Any:
+    selected = selected_route or current_text_route()
+    primary = _create_route_maf_chat_client(selected)
+    fallback_route = selected.fallback_route
+    if selected.route.provider_type == "azure_foundry" or fallback_route is None:
+        return primary
+    if fallback_route.provider_type != "azure_foundry":
+        return primary
+    fallback = _create_route_maf_chat_client(
+        SelectedTextRoute(
+            route=fallback_route,
+            execution_kind=selected.execution_kind,
+            selection="fallback",
+            fallback_reason="provider_error",
+            policy_revision=selected.policy_revision,
+            price_card_revision=selected.price_card_revision,
+        )
+    )
+    return _BoundedFallbackChatClient(
+        primary,
+        fallback,
+        fallback_route=fallback_route,
+    )
+
+
+def _create_route_maf_chat_client(selected: SelectedTextRoute) -> Any:
     auth_mode = str(os.environ.get("DF_MAF_AUTH_MODE") or "auto").strip().lower()
     if auth_mode not in {"auto", "api_key", "managed_identity"}:
         raise ValueError("DF_MAF_AUTH_MODE must be auto, api_key, or managed_identity")
 
-    selected = selected_route or current_text_route()
     model = selected.route.deployment
     external_route = selected.route.provider_type != "azure_foundry"
     external_routing_enabled = str(
@@ -289,9 +415,24 @@ def _create_maf_chat_client(selected_route: SelectedTextRoute | None = None) -> 
         "yes",
         "on",
     }
-    if external_route and not gateway_enabled:
-        raise RuntimeError("external provider routing requires APIM")
-    if gateway_enabled:
+    provider_apim_enabled = str(
+        os.environ.get("DF_PROVIDER_APIM_ENABLED") or ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    if external_route and provider_apim_enabled and not gateway_enabled:
+        raise RuntimeError("external provider APIM routing requires the gateway")
+    use_gateway = gateway_enabled and (not external_route or provider_apim_enabled)
+    if external_route and not use_gateway:
+        connection = current_provider_connection(selected.route.provider_id)
+        if connection is None:
+            raise RuntimeError("external provider connection is unavailable")
+        if str(connection.get("provider_type") or "") != "deepseek":
+            raise RuntimeError("external provider type is unsupported")
+        return OpenAIChatClient(
+            model=str(selected.route.model_id or model),
+            api_key=runtime_provider_secret(connection),
+            base_url=str(connection.get("base_url") or ""),
+        )
+    if use_gateway:
         gateway_url = str(os.environ.get("DF_APIM_GATEWAY_URL") or "").strip().rstrip("/")
         audience = str(os.environ.get("DF_APIM_AUDIENCE") or "").strip().rstrip("/")
         if not gateway_url or not audience:

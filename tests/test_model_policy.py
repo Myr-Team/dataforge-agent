@@ -177,6 +177,8 @@ def test_workspace_policy_and_manual_override_select_allowlisted_routes(monkeypa
     assert policy_selected.route.route_id == "luna"
     assert policy_selected.selection == "workspace_policy"
     assert policy_selected.policy_revision == 4
+    assert policy_selected.fallback_route is not None
+    assert policy_selected.fallback_route.route_id == "sol"
     assert manual_selected.route.route_id == "sol"
     assert manual_selected.selection == "manual"
     assert manual_selected.policy_revision == 4

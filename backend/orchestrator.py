@@ -86,7 +86,8 @@ try:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from .model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from .model_policy import SelectedTextRoute, current_model_price_card, current_text_route, list_allowed_model_routes, model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from .model_provider_runtime import load_actor_provider_runtime, provider_runtime_scope
     from .pm_skills import playbook_suggestion
     from .rag import search
     from .result_cache_policy import ResultCacheContext, evaluate_result_cache
@@ -183,7 +184,8 @@ except ImportError:
         public_market_comparison,
         unavailable_market_comparison,
     )
-    from model_policy import SelectedTextRoute, current_model_price_card, current_text_route, model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from model_policy import SelectedTextRoute, current_model_price_card, current_text_route, list_allowed_model_routes, model_route_scope, select_text_route_record, workspace_model_policy_scope
+    from model_provider_runtime import load_actor_provider_runtime, provider_runtime_scope
     from pm_skills import playbook_suggestion
     from rag import search
     from result_cache_policy import ResultCacheContext, evaluate_result_cache
@@ -6432,21 +6434,29 @@ def _maf_model_response_payload(
     price_card: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     selected = selected_route or current_text_route()
+    observed_route_id = event.model_route or selected.route.route_id
+    observed_model_id = event.model_id or selected.route.deployment
+    observed_provider_type = event.provider_type or selected.route.provider_type
+    observed_provider_id = event.provider_id if event.model_route else selected.route.provider_id
+    observed_fallback_reason = event.fallback_reason or selected.fallback_reason
     payload: dict[str, Any] = {
         "agent": event.agent_id,
         "orchestrator": "maf_full",
         "mode": mode,
         "status": event.status,
-        "route": selected.route.route_id,
-        "deployment": selected.route.deployment,
-        "model_route": selected.route.route_id,
-        "model_deployment": selected.route.deployment,
+        "route": observed_route_id,
+        "deployment": observed_model_id,
+        "model_route": observed_route_id,
+        "model_deployment": observed_model_id,
+        "provider_type": observed_provider_type,
         "selection": selected.selection,
-        "fallback_reason": selected.fallback_reason,
+        "fallback_reason": observed_fallback_reason,
         "execution_kind": selected.execution_kind,
         "policy_revision": selected.policy_revision,
         "price_card_revision": selected.price_card_revision,
     }
+    if observed_provider_id:
+        payload["provider_id"] = observed_provider_id
     if event.response_id:
         payload["response_id"] = event.response_id
     usage = {
@@ -6462,7 +6472,7 @@ def _maf_model_response_payload(
         payload["usage"] = usage
     payload["cost_estimate"] = estimate_model_cost(
         usage,
-        {"route_id": selected.route.route_id, "price_card_revision": selected.price_card_revision},
+        {"route_id": observed_route_id, "price_card_revision": selected.price_card_revision},
         price_card if isinstance(price_card, Mapping) else current_model_price_card(),
     )
     if event.duration_ms is not None:
@@ -6687,30 +6697,33 @@ async def orchestrate_chat(req: ChatRequest) -> AsyncIterator[str]:
     actor = public_actor(actor_from_ui_context(req.ui_context))
     execution = execution_context(req)
     model_config = load_workspace_model_configuration(req.workspace_id)
-    with workspace_model_policy_scope(
-        policy=model_config.get("policy"),
-        price_card=model_config.get("price_card"),
-        manual_route_id=req.model_route_id,
-    ):
-        with agent_trace(
-            workspace_id=req.workspace_id,
-            conversation_id=execution.run_id,
-            actor=actor,
-        ) as span:
-            trace_id = trace_id_from_span(span)
-            trace = (
-                {"trace_id": trace_id, "agent_id": foundry_runtime_agent_id()}
-                if trace_id
-                else None
-            )
-            async for frame in _orchestrate_chat_impl(
-                req,
-                conv_id=execution.run_id,
-                new_conversation=execution.persist_messages and req.conversation_id is None,
-                execution=execution,
-                trace=trace,
-            ):
-                yield frame
+    provider_runtime = load_actor_provider_runtime(actor)
+    with provider_runtime_scope(provider_runtime.connections):
+        with workspace_model_policy_scope(
+            policy=model_config.get("policy"),
+            price_card=model_config.get("price_card"),
+            manual_route_id=req.model_route_id,
+            routes=[*list_allowed_model_routes(), *provider_runtime.routes],
+        ):
+            with agent_trace(
+                workspace_id=req.workspace_id,
+                conversation_id=execution.run_id,
+                actor=actor,
+            ) as span:
+                trace_id = trace_id_from_span(span)
+                trace = (
+                    {"trace_id": trace_id, "agent_id": foundry_runtime_agent_id()}
+                    if trace_id
+                    else None
+                )
+                async for frame in _orchestrate_chat_impl(
+                    req,
+                    conv_id=execution.run_id,
+                    new_conversation=execution.persist_messages and req.conversation_id is None,
+                    execution=execution,
+                    trace=trace,
+                ):
+                    yield frame
 
 
 async def _orchestrate_chat_impl(

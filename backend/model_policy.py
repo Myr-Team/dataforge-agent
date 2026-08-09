@@ -64,6 +64,7 @@ class SelectedTextRoute:
     fallback_reason: str | None = None
     policy_revision: int | None = None
     price_card_revision: int | None = None
+    fallback_route: ModelRoute | None = None
 
 
 _ROUTE_SCOPE: ContextVar[SelectedTextRoute | None] = ContextVar("dataforge_model_route_scope", default=None)
@@ -281,23 +282,28 @@ def select_text_route_record(
     for assignment, primary_selection in assignment_candidates:
         if not isinstance(assignment, Mapping):
             continue
-        for field_name, selection, fallback_reason in (
-            ("primary_route_id", primary_selection, None),
-            ("fallback_route_id", "fallback", "capability_missing"),
-        ):
-            route_id = str(assignment.get(field_name) or "").strip().lower()
-            if not route_id:
-                continue
-            selected = _allowlisted_route(route_id, capability=workspace_capability)
-            if selected is not None:
-                return SelectedTextRoute(
-                    route=selected,
-                    execution_kind=normalized_kind,
-                    selection=selection,
-                    fallback_reason=fallback_reason,
-                    policy_revision=policy_revision,
-                    price_card_revision=price_card_revision,
-                )
+        primary_route_id = str(assignment.get("primary_route_id") or "").strip().lower()
+        fallback_route_id = str(assignment.get("fallback_route_id") or "").strip().lower()
+        primary = _allowlisted_route(primary_route_id, capability=workspace_capability)
+        fallback = _allowlisted_route(fallback_route_id, capability=workspace_capability)
+        if primary is not None:
+            return SelectedTextRoute(
+                route=primary,
+                execution_kind=normalized_kind,
+                selection=primary_selection,
+                policy_revision=policy_revision,
+                price_card_revision=price_card_revision,
+                fallback_route=fallback,
+            )
+        if fallback is not None:
+            return SelectedTextRoute(
+                route=fallback,
+                execution_kind=normalized_kind,
+                selection="fallback",
+                fallback_reason="capability_missing",
+                policy_revision=policy_revision,
+                price_card_revision=price_card_revision,
+            )
     desired = _EXECUTION_KIND_CAPABILITY.get(normalized_kind, "chat")
     fallback_reason: str | None = None
     capability = desired
@@ -402,6 +408,7 @@ def model_route_scope(
             fallback_reason=safe_fallback_reason(scoped.fallback_reason),
             policy_revision=scoped.policy_revision,
             price_card_revision=scoped.price_card_revision,
+            fallback_route=scoped.fallback_route,
         )
     )
     inherited_price_card = _WORKSPACE_PRICE_CARD_SCOPE.get()
