@@ -205,6 +205,114 @@ def test_owner_creates_tests_and_lists_masked_deepseek_provider(monkeypatch) -> 
     assert "secret-marker" not in str(audits)
 
 
+def test_owner_governs_and_suspends_verified_deepseek_routes(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+
+    assert created["route_eligibility"] == {
+        "state": "governance_required",
+        "selectable": False,
+        "can_govern": True,
+        "reason": "governance_required",
+        "eligible_model_count": 2,
+    }
+
+    governed = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": created["revision"]},
+    )
+
+    assert governed.status_code == 200
+    assert governed.json()["governance_state"] == "governed"
+    assert governed.json()["revision"] == created["revision"] + 1
+    assert governed.json()["route_eligibility"] == {
+        "state": "selectable",
+        "selectable": True,
+        "can_govern": False,
+        "reason": None,
+        "eligible_model_count": 2,
+    }
+    assert audits[-1]["metadata"]["reason_code"] == "routing_governed"
+
+    suspended = client.post(
+        f"/api/model-providers/{created['provider_id']}/suspend",
+        headers=headers,
+        json={"base_revision": governed.json()["revision"]},
+    )
+
+    assert suspended.status_code == 200
+    assert suspended.json()["governance_state"] == "pending"
+    assert suspended.json()["route_eligibility"]["reason"] == "governance_required"
+    tenant_ref = next(iter(secrets.values))[0]
+    assert repository.get(tenant_ref, created["provider_id"]).connection_state == "connected"
+    assert audits[-1]["metadata"]["reason_code"] == "routing_suspended"
+
+
+def test_provider_governance_requires_current_revision_and_stored_secret(monkeypatch) -> None:
+    client, repository, secrets, audits = _client(monkeypatch)
+    headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
+    created = client.post(
+        "/api/model-providers",
+        headers=headers,
+        json={
+            "provider_type": "deepseek",
+            "display_name": "DeepSeek",
+            "base_url": "https://api.deepseek.com",
+            "api_key": "secret-marker",
+        },
+    ).json()
+    audit_count = len(audits)
+
+    stale = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": 1},
+    )
+    assert stale.status_code == 409
+    assert len(audits) == audit_count
+
+    tenant_ref = next(iter(secrets.values))[0]
+    secrets.values.clear()
+    unavailable = client.post(
+        f"/api/model-providers/{created['provider_id']}/govern",
+        headers=headers,
+        json={"base_revision": created["revision"]},
+    )
+    assert unavailable.status_code == 422
+    assert unavailable.json()["detail"] == "provider_secret_unavailable"
+    assert len(audits) == audit_count
+
+    current = repository.get(tenant_ref, created["provider_id"])
+    assert current.governance_state == "pending"
+
+
+def test_provider_governance_requires_owner_or_admin(monkeypatch) -> None:
+    client, _repository, _secrets, audits = _client(
+        monkeypatch,
+        roles={"ws-a": "viewer"},
+    )
+
+    response = client.post(
+        "/api/model-providers/provider_unknown/govern",
+        headers=trusted_headers(actor_id="viewer-a", tenant_id="tenant-a"),
+        json={"base_revision": 1},
+    )
+
+    assert response.status_code == 403
+    assert audits == []
+
+
 def test_owner_creates_masked_bedrock_provider(monkeypatch) -> None:
     client, _repository, secrets, audits = _client(monkeypatch)
     monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")

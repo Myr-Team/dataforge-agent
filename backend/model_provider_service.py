@@ -19,12 +19,15 @@ from .model_providers import (
     ModelProviderRecord,
     ProviderPatch,
     deepseek_api_endpoint,
+    provider_route_eligibility,
 )
 from .provider_connection_probe import DeepSeekConnectionProbe
 
 
 class ProviderConfigurationError(ValueError):
-    code = "provider_configuration_invalid"
+    def __init__(self, code: str = "provider_configuration_invalid") -> None:
+        self.code = str(code or "provider_configuration_invalid")
+        super().__init__(self.code)
 
 
 _SERVER_OWNED_PATCH_FIELDS = frozenset({
@@ -277,6 +280,30 @@ class ModelProviderService:
             actor_ref=actor_ref,
         )
         return updated.public_payload(secret_status=self._secret_status(updated))
+
+    def prepare_governance_patch(
+        self,
+        value: ModelProviderRecord,
+        *,
+        target_state: str,
+    ) -> ProviderPatch:
+        if target_state not in {"governed", "pending"}:
+            raise ProviderConfigurationError()
+        secret_status = self._secret_status(value)
+        if target_state == "governed":
+            eligibility = provider_route_eligibility(
+                value,
+                secret_status=secret_status,
+            )
+            if not eligibility["can_govern"] and not eligibility["selectable"]:
+                raise ProviderConfigurationError(str(eligibility["reason"]))
+        return ProviderPatch(
+            base_revision=value.revision,
+            governance_state=target_state,
+        )
+
+    def public_payload(self, value: ModelProviderRecord) -> dict[str, object]:
+        return value.public_payload(secret_status=self._secret_status(value))
 
     def _test_record(
         self,

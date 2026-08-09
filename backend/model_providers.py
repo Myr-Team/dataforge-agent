@@ -121,6 +121,10 @@ class ModelProviderRecord(BaseModel):
             },
         )
         payload["secret_status"] = secret_status
+        payload["route_eligibility"] = provider_route_eligibility(
+            self,
+            secret_status=secret_status,
+        )
         return payload
 
 
@@ -197,6 +201,49 @@ def deepseek_api_endpoint(value: str) -> str:
     return DEEPSEEK_API_ENDPOINT
 
 
+def provider_route_eligibility(
+    value: ModelProviderRecord,
+    *,
+    secret_status: SecretStatus,
+) -> dict[str, Any]:
+    supported_models = [
+        model
+        for model in value.available_models
+        if model.support_state == "supported"
+    ]
+    eligible_model_count = sum(bool(model.price_key) for model in supported_models)
+    reason: str | None = None
+    can_govern = False
+    selectable = False
+    state = "unavailable"
+    if secret_status != "stored":
+        reason = "provider_secret_unavailable"
+    elif value.provider_type != "deepseek":
+        reason = "provider_type_not_routable"
+    elif value.last_success_at is None:
+        reason = "connection_verification_required"
+    elif value.connection_state != "connected":
+        reason = "provider_connection_unavailable"
+    elif not supported_models:
+        reason = "supported_model_required"
+    elif eligible_model_count != len(supported_models):
+        reason = "official_pricing_required"
+    elif value.governance_state != "governed":
+        state = "governance_required"
+        reason = "governance_required"
+        can_govern = True
+    else:
+        state = "selectable"
+        selectable = True
+    return {
+        "state": state,
+        "selectable": selectable,
+        "can_govern": can_govern,
+        "reason": reason,
+        "eligible_model_count": eligible_model_count,
+    }
+
+
 def _https_endpoint(value: str) -> str:
     parsed = urlparse(str(value or "").strip())
     if (
@@ -224,4 +271,5 @@ __all__ = [
     "ProviderType",
     "PROVIDER_CONNECTION_STAGES",
     "deepseek_api_endpoint",
+    "provider_route_eligibility",
 ]

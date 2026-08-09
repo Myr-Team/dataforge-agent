@@ -146,6 +146,12 @@ class ProviderDisableBody(BaseModel):
     base_revision: int = Field(ge=1)
 
 
+class ProviderGovernanceBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_revision: int = Field(ge=1)
+
+
 class ProviderConfigurationPatchBody(BaseModel):
     """Owner-editable provider configuration only.
 
@@ -404,6 +410,79 @@ async def disable_model_provider(
                 base_revision=body.base_revision,
                 actor_ref=actor_ref,
             )
+    except Exception as exc:
+        raise _provider_error(exc)
+
+
+@router.post("/{provider_id}/govern")
+async def govern_model_provider(
+    provider_id: str,
+    body: ProviderGovernanceBody,
+    request: Request,
+) -> dict[str, object]:
+    return _transition_provider_governance(
+        provider_id,
+        body,
+        request,
+        target_state="governed",
+        reason_code="routing_governed",
+    )
+
+
+@router.post("/{provider_id}/suspend")
+async def suspend_model_provider_routing(
+    provider_id: str,
+    body: ProviderGovernanceBody,
+    request: Request,
+) -> dict[str, object]:
+    return _transition_provider_governance(
+        provider_id,
+        body,
+        request,
+        target_state="pending",
+        reason_code="routing_suspended",
+    )
+
+
+def _transition_provider_governance(
+    provider_id: str,
+    body: ProviderGovernanceBody,
+    request: Request,
+    *,
+    target_state: str,
+    reason_code: str,
+) -> dict[str, object]:
+    tenant_ref, actor_ref, _roles, audit_workspace = _context(request)
+    repository = get_model_provider_repository()
+    try:
+        with repository.mutation_guard(tenant_ref, provider_id):
+            provider = _provider_for_mutation(
+                repository,
+                tenant_ref,
+                provider_id,
+                base_revision=body.base_revision,
+            )
+            service = _service(repository)
+            patch = service.prepare_governance_patch(
+                provider,
+                target_state=target_state,
+            )
+            _audit_required(
+                request,
+                audit_workspace,
+                provider_id,
+                reason_code=reason_code,
+                provider_type=provider.provider_type,
+                display_name=provider.display_name,
+                region=provider.region,
+            )
+            updated = repository.update(
+                tenant_ref,
+                provider_id,
+                patch,
+                actor_ref=actor_ref,
+            )
+            return service.public_payload(updated)
     except Exception as exc:
         raise _provider_error(exc)
 
