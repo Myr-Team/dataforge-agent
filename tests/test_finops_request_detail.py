@@ -89,6 +89,7 @@ def test_request_detail_projects_friendly_application_evidence() -> None:
     )
 
     assert detail is not None
+    assert detail["request_ref"] == "req_aaaaaaaaaaaa"
     assert detail["display"] == {
         "name": "Commerce · 分析运行 · 7月24日 10:42",
         "operation": "分析运行",
