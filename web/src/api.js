@@ -361,6 +361,27 @@ export function loadLatestFinOpsRiskScan(filters = {}, options = {}) {
   return loadFinOpsResource("risk/scans/latest", filters, options);
 }
 
+export function loadFinOpsRiskScans(workspaceId, limit = 5, options = {}) {
+  const params = new URLSearchParams({
+    workspace_id: String(workspaceId || ""),
+    limit: String(Math.max(1, Math.min(Number(limit) || 5, 50))),
+  });
+  return request(`/api/finops/risk/scans?${params}`, options);
+}
+
+export function loadFinOpsRiskScan(scanRef, workspaceId, options = {}) {
+  const params = new URLSearchParams({ workspace_id: String(workspaceId || "") });
+  return request(
+    `/api/finops/risk/scans/${encodeURIComponent(scanRef)}?${params}`,
+    options,
+  );
+}
+
+export function loadServiceReadiness(workspaceId, options = {}) {
+  const params = new URLSearchParams({ workspace_id: String(workspaceId || "") });
+  return request(`/api/service-readiness?${params}`, options);
+}
+
 export function runFinOpsRiskScan(payload = {}, options = {}) {
   const clean = {
     workspace_id: payload.workspaceId ?? payload.workspace_id,

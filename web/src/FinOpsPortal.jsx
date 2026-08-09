@@ -35,6 +35,8 @@ import {
   loadFinOpsRequest,
   loadFinOpsRequests,
   loadFinOpsRiskDecision,
+  loadFinOpsRiskScan,
+  loadFinOpsRiskScans,
   loadLatestFinOpsRiskScan,
   loadFinOpsRoiDecision,
   loadFinOpsRoiEconomics,
@@ -1289,6 +1291,7 @@ export function FinOpsPortal({
     busy: false,
     error: "",
     scan: null,
+    history: [],
   });
   const [assistantState, setAssistantState] = useState({
     context: null,
@@ -1529,11 +1532,17 @@ export function FinOpsPortal({
     riskScanController.current?.abort();
     const controller = new AbortController();
     riskScanController.current = controller;
-    setRiskScanState({ loading: true, busy: false, error: "", scan: null });
+    setRiskScanState({ loading: true, busy: false, error: "", scan: null, history: [] });
     const load = async () => {
+      const historyPromise = loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal })
+        .catch((historyError) => {
+          if (historyError?.name === "AbortError") throw historyError;
+          return { items: [] };
+        });
       try {
         const scan = await loadLatestFinOpsRiskScan(query, { signal: controller.signal });
-        setRiskScanState({ loading: false, busy: false, error: "", scan });
+        const history = await historyPromise;
+        setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
       } catch (error) {
         if (error?.name === "AbortError") return;
         const initializeCurrentDemoScope = (
@@ -1546,7 +1555,8 @@ export function FinOpsPortal({
         if (initializeCurrentDemoScope) {
           try {
             const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
-            setRiskScanState({ loading: false, busy: false, error: "", scan });
+            const history = await loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal });
+            setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
             return;
           } catch (scanError) {
             if (scanError?.name === "AbortError") return;
@@ -1555,12 +1565,14 @@ export function FinOpsPortal({
               busy: false,
               error: scanError instanceof Error ? scanError.message : "风险扫描暂时无法执行",
               scan: null,
+              history: [],
             });
             return;
           }
         }
         if (error?.status === 404) {
-          setRiskScanState({ loading: false, busy: false, error: "", scan: null });
+          const history = await historyPromise;
+          setRiskScanState({ loading: false, busy: false, error: "", scan: null, history: history?.items || [] });
           return;
         }
         setRiskScanState({
@@ -1568,6 +1580,7 @@ export function FinOpsPortal({
           busy: false,
           error: error instanceof Error ? error.message : "最近扫描结果读取失败",
           scan: null,
+          history: [],
         });
       }
     };
@@ -1583,7 +1596,8 @@ export function FinOpsPortal({
     setRiskScanState((state) => ({ ...state, loading: false, busy: true, error: "" }));
     try {
       const scan = await runFinOpsRiskScan(query, { signal: controller.signal });
-      setRiskScanState({ loading: false, busy: false, error: "", scan });
+      const history = await loadFinOpsRiskScans(workspaceId, 6, { signal: controller.signal });
+      setRiskScanState({ loading: false, busy: false, error: "", scan, history: history?.items || [] });
       requestTabRefresh("risk", { force: true });
     } catch (error) {
       if (error?.name === "AbortError") return;
@@ -1595,6 +1609,25 @@ export function FinOpsPortal({
       }));
     }
   }, [query, requestTabRefresh, riskScanState.busy, workspaceId]);
+
+  const selectRiskScan = useCallback(async (scanRef) => {
+    if (!workspaceId || !scanRef || riskScanState.loading || riskScanState.busy) return;
+    riskScanController.current?.abort();
+    const controller = new AbortController();
+    riskScanController.current = controller;
+    setRiskScanState((state) => ({ ...state, loading: true, error: "" }));
+    try {
+      const scan = await loadFinOpsRiskScan(scanRef, workspaceId, { signal: controller.signal });
+      setRiskScanState((state) => ({ ...state, loading: false, scan }));
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+      setRiskScanState((state) => ({
+        ...state,
+        loading: false,
+        error: error instanceof Error ? error.message : "历史扫描读取失败",
+      }));
+    }
+  }, [riskScanState.busy, riskScanState.loading, workspaceId]);
   const loadRoiDialogData = useCallback(async () => {
     roiDialogController.current?.abort();
     const controller = new AbortController();
@@ -2263,6 +2296,8 @@ export function FinOpsPortal({
             scanBusy={riskScanState.busy}
             scanError={riskScanState.error}
             onRunScan={runRiskScan}
+            scanHistory={riskScanState.history}
+            onSelectScan={selectRiskScan}
           />
         ) : null}
       </section>

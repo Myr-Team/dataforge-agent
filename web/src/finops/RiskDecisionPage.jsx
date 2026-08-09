@@ -12,7 +12,7 @@ import {
   Wrench,
 } from "lucide-react";
 
-import { riskDecisionView, riskScanView } from "../finopsDecisionViewModel.js";
+import { riskDecisionView, riskScanHistoryView, riskScanView } from "../finopsDecisionViewModel.js";
 import { OpportunityPortfolio, RiskMatrix } from "./DecisionCharts.jsx";
 
 
@@ -159,8 +159,9 @@ function scanTimeLabel(value) {
 }
 
 
-function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAsk }) {
+function RiskScanWorkbench({ scan, history, loading, busy, error, onRun, onSelectScan, onEvidence, onAsk }) {
   const view = riskScanView(scan);
+  const historyItems = riskScanHistoryView({ items: history });
   const summaryItems = [
     ["检查规则", view.summary.evaluated, "条"],
     ["需关注", view.summary.triggered, "项"],
@@ -185,6 +186,27 @@ function RiskScanWorkbench({ scan, loading, busy, error, onRun, onEvidence, onAs
         </div>
       </header>
       {error ? <div className="finops-risk-scan-error" role="alert"><AlertTriangle size={14} />{error}</div> : null}
+      {historyItems.length ? (
+        <div className="finops-risk-scan-history">
+          <header><span>最近扫描</span><small>每次结果独立保存，可回看当时的样本与证据覆盖</small></header>
+          <ol>
+            {historyItems.map((item) => (
+              <li key={item.scanRef}>
+                <button
+                  type="button"
+                  className={item.scanRef === view.scanRef ? "active" : ""}
+                  aria-pressed={item.scanRef === view.scanRef}
+                  disabled={item.status === "running" || loading}
+                  onClick={() => onSelectScan?.(item.scanRef)}
+                >
+                  <span><b>{scanTimeLabel(item.finishedAt || item.startedAt)}</b><small>{item.summary}</small></span>
+                  <StatusBadge status={item.status === "completed" ? "observed" : item.status}>{item.statusLabel}</StatusBadge>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      ) : null}
       {view.isAvailable ? (
         <>
           <div className="finops-risk-scan-summary" aria-label="扫描摘要">
@@ -343,6 +365,8 @@ export function RiskDecisionPage({
   scanBusy = false,
   scanError = "",
   onRunScan = null,
+  scanHistory = [],
+  onSelectScan = null,
 }) {
   if (loading && !payload) return <RiskLoadingShell />;
   if (error && !payload) {
@@ -396,10 +420,12 @@ export function RiskDecisionPage({
 
       <RiskScanWorkbench
         scan={scan}
+        history={scanHistory}
         loading={scanLoading}
         busy={scanBusy}
         error={scanError}
         onRun={onRunScan}
+        onSelectScan={onSelectScan}
         onEvidence={onEvidence}
         onAsk={onAsk}
       />

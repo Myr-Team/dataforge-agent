@@ -989,6 +989,35 @@ export function riskScanView(payload) {
 }
 
 
+export function riskScanHistoryView(payload) {
+  return records(payload?.items).flatMap((item) => {
+    const scanRef = boundedText(item.scan_ref, 48);
+    const status = boundedText(item.status, 24);
+    if (!scanRef || !["completed", "failed", "running"].includes(status)) return [];
+    const triggered = nonNegativeNumber(item.rules_triggered) ?? 0;
+    const samples = nonNegativeNumber(item.request_sample_count) ?? 0;
+    const coverage = nonNegativeNumber(item.evidence_coverage_pct);
+    const statusLabel = status === "completed"
+      ? "已完成"
+      : status === "running" ? "扫描中" : "未完成";
+    const summary = status === "completed"
+      ? `${triggered} 项需关注 · ${samples} 次请求 · 证据覆盖 ${coverage === null ? "待确认" : `${formatNumber(coverage, 2)}%`}`
+      : status === "running" ? "正在读取当前授权范围的运行证据" : "扫描未完成，可重新执行";
+    return [{
+      scanRef,
+      status,
+      statusLabel,
+      summary,
+      startedAt: boundedText(item.started_at, 40),
+      finishedAt: boundedText(item.finished_at, 40),
+      triggered,
+      samples,
+      coverage,
+    }];
+  }).slice(0, 12);
+}
+
+
 function safeScalar(value) {
   if (typeof value === "boolean") return value;
   const number = finiteNumber(value);

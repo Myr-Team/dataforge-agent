@@ -1828,12 +1828,87 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           ? (isCostQuestion ? ["价目覆盖率如何影响成本可信度？", "哪些模型最适合优先优化？"] : ["与上一周期相比如何？"])
           : [],
       };
+    } else if (path === "/api/service-readiness") {
+      body = {
+        workspace_id: "demo-corpus",
+        generated_at: "2026-08-09T02:00:00Z",
+        groups: {
+          identity: { label: "身份与权限", items: [
+            { key: "signed_in_identity", label: "登录身份", status: "ready", details: { role: "owner", source: "entra" } },
+            { key: "group_governance", label: "群组权限解析", status: "ready", details: { state: "resolved" } },
+          ] },
+          data: { label: "数据服务", items: [
+            { key: "blob", label: "工作区文件", status: "ready", details: { state: "ok", latency_ms: 12 } },
+            { key: "search", label: "知识检索", status: "ready", details: { state: "ok", latency_ms: 18 } },
+            { key: "cache", label: "查询缓存", status: "ready", details: { status: "ok", elapsed_ms: 3 } },
+          ] },
+          ai: { label: "AI 服务", items: [
+            { key: "foundry", label: "主模型服务", status: "ready", details: { state: "ok", latency_ms: 42 } },
+            { key: "external_models", label: "外部模型", status: "degraded", details: { configured: 1, connected: 0, governed: 0 } },
+          ] },
+          finops: { label: "成本与治理", items: [
+            { key: "ledger", label: "运营账本", status: "ready", details: { persistence: "durable" } },
+            { key: "pricing", label: "模型计价", status: "ready", details: { catalog_entries: 12, mapping_count: 5 } },
+            { key: "risk_scan", label: "风险扫描", status: "ready", details: { rules_evaluated: 7, rules_triggered: 7, evidence_coverage_pct: 100 } },
+          ] },
+          background_jobs: { label: "后台任务", items: [
+            { key: "finops_apim_reconciliation", label: "入口调用对账", status: "ready", last_completed_at: "2026-08-09T01:58:00Z", details: { rows_observed: 146, rows_written: 12, age_seconds: 120 } },
+            { key: "finops_rollup", label: "运营指标聚合", status: "ready", last_completed_at: "2026-08-09T01:55:00Z", details: { rows_observed: 146, rows_written: 48, age_seconds: 300 } },
+            { key: "finops_retention", label: "数据保留清理", status: "not_run", last_completed_at: null, details: {} },
+          ] },
+        },
+      };
     } else if (path === "/api/finops/risk/scans/latest") {
       body = riskScanPayload();
+    } else if (path === "/api/finops/risk/scans" && request.method() === "GET") {
+      const latest = riskScanPayload();
+      body = {
+        items: [
+          {
+            scan_ref: latest.scan_ref,
+            status: latest.status,
+            policy_revision: latest.policy_revision,
+            ledger_revision: latest.ledger_revision,
+            rule_count: latest.rules_evaluated,
+            rules_triggered: latest.rules_triggered,
+            rules_clear: latest.rules_clear,
+            rules_insufficient: latest.rules_insufficient,
+            rules_unavailable: 0,
+            request_sample_count: latest.request_sample_count,
+            evidence_bound_findings: 7,
+            evidence_coverage_pct: latest.evidence_coverage_pct,
+            started_at: latest.started_at,
+            finished_at: latest.finished_at,
+          },
+          {
+            scan_ref: "rscan_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            status: "completed",
+            rule_count: 7,
+            rules_triggered: 4,
+            rules_clear: 3,
+            rules_insufficient: 0,
+            rules_unavailable: 0,
+            request_sample_count: 132,
+            evidence_bound_findings: 7,
+            evidence_coverage_pct: 100,
+            started_at: "2026-08-02T02:30:00Z",
+            finished_at: "2026-08-02T02:30:01Z",
+          },
+        ],
+        count: 2,
+        workspace_id: "demo-corpus",
+      };
     } else if (path === "/api/finops/risk/scans" && request.method() === "POST") {
       status = 201;
       control.riskScanRuns += 1;
       body = riskScanPayload();
+    } else if (/^\/api\/finops\/risk\/scans\/rscan_[a-f0-9]+$/.test(path)) {
+      body = {
+        ...riskScanPayload(),
+        scan_ref: path.split("/").at(-1),
+        started_at: "2026-08-02T02:30:00Z",
+        finished_at: "2026-08-02T02:30:01Z",
+      };
     } else if (path === "/api/finops/roi/decision") {
       body = roiDecisionPayload;
     } else if (path === "/api/finops/risk/decision") {

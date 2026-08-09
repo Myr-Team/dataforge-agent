@@ -173,6 +173,10 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(page.getByText("判定规则", { exact: true })).toBeVisible();
   await expect(page.locator(".finops-risk-scan-rules")).toBeHidden();
   await expect(page.locator(".finops-risk-scan-summary")).toContainText("146");
+  await expect(page.locator(".finops-risk-scan-history").getByRole("button")).toHaveCount(2);
+  const olderScan = page.locator(".finops-risk-scan-history").getByRole("button").nth(1);
+  await olderScan.click();
+  await expect(olderScan).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("heading", { name: "风险矩阵" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "优化组合" })).toBeVisible();
   await expect(page.getByRole("list", { name: "风险优先事项" }).getByRole("button")).toHaveCount(4);
@@ -767,4 +771,18 @@ test("settings opens the same persisted Agent model configuration", async ({ pag
     fallback_route_id: "analysis",
   });
   await expect(page.locator(".side-drawer.wide")).toBeVisible();
+  await page.getByRole("button", { name: "服务状态" }).click();
+  await expect(page.getByRole("heading", { name: "关键服务状态" })).toBeVisible();
+  await expect(page.getByText("当前可用")).toBeVisible();
+  await expect(page.getByText("入口调用对账")).toBeVisible();
+  await expect(page.getByText("尚未运行")).toBeVisible();
+  await expect.poll(() => calls.filter((call) => call.path === "/api/service-readiness").length).toBe(1);
+  const readinessText = await page.locator(".service-readiness-page").innerText();
+  expect(readinessText).not.toMatch(/subscription|tenant_id|endpoint|secret|resource_id/i);
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "settings-service-readiness-desktop.png"),
+    fullPage: true,
+  });
 });

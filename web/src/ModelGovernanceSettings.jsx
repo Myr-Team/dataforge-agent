@@ -1,14 +1,16 @@
 import React, { useState } from "react";
-import { Bot, KeyRound, ShieldCheck } from "lucide-react";
+import { Activity, Bot, KeyRound, ShieldCheck } from "lucide-react";
 
 import { IdentityAccessPage } from "./IdentityAccessPage.jsx";
 import { ModelRoutingPage } from "./ModelRoutingPage.jsx";
 import { ProviderConnectionsPage } from "./ProviderConnectionsPage.jsx";
+import { ServiceReadinessPage } from "./ServiceReadinessPage.jsx";
 
 const TABS = [
   { id: "agents", label: "Agent 模型", icon: Bot },
   { id: "providers", label: "模型提供商", icon: KeyRound },
   { id: "identity", label: "身份与访问", icon: ShieldCheck },
+  { id: "readiness", label: "服务状态", icon: Activity },
 ];
 
 export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
@@ -36,6 +38,7 @@ export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState
         {tab === "agents" ? <ModelRoutingPage workspaceId={workspaceId} embedded /> : null}
         {tab === "providers" ? <ProviderConnectionsPage /> : null}
         {tab === "identity" ? <IdentityAccessPage workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} /> : null}
+        {tab === "readiness" ? <ServiceReadinessPage workspaceId={workspaceId} /> : null}
       </div>
     </div>
   );

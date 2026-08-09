@@ -144,7 +144,7 @@ async def service_readiness(
         _dependency_item("工具连接", "mcp", details),
         _dependency_item("语音服务", "speech", details),
         _dependency_item("内容安全", "content_safety", details),
-        {"key": "external_models", "label": "外部模型", **provider_status(tenant_ref)},
+        {"key": "external_models", "label": "外部模型", **_as_item_status(provider_status(tenant_ref))},
     ]
     finops_items = [
         {

@@ -8,6 +8,7 @@ import { createServer } from "vite";
 import {
   remediationDraftView,
   riskDecisionView,
+  riskScanHistoryView,
   riskScanView,
   roiDecisionView,
 } from "./finopsDecisionViewModel.js";
@@ -82,6 +83,35 @@ test("risk scan view exposes all rule basis without leaking internal identities"
   assert.equal(view.readOnly, true);
   assert.equal(Object.hasOwn(view, "initiatedByRef"), false);
   assert.doesNotMatch(JSON.stringify(view), /actor-secret|run-private|arbitrary|hidden/);
+});
+
+test("risk scan history distinguishes completed failed and running scans", () => {
+  const view = riskScanHistoryView({
+    items: [
+      {
+        scan_ref: "rscan_completed",
+        status: "completed",
+        rules_triggered: 2,
+        rule_count: 7,
+        request_sample_count: 146,
+        evidence_coverage_pct: 85.71,
+        finished_at: "2026-08-09T02:30:01Z",
+      },
+      {
+        scan_ref: "rscan_failed",
+        status: "failed",
+        safe_error_category: "risk_scan_evaluation_failed",
+        started_at: "2026-08-08T02:30:00Z",
+      },
+      { scan_ref: "rscan_running", status: "running", started_at: "2026-08-09T03:00:00Z" },
+    ],
+  });
+
+  assert.equal(view.length, 3);
+  assert.deepEqual(view.map((item) => item.statusLabel), ["已完成", "未完成", "扫描中"]);
+  assert.equal(view[0].summary, "2 项需关注 · 146 次请求 · 证据覆盖 85.71%");
+  assert.equal(view[1].summary, "扫描未完成，可重新执行");
+  assert.doesNotMatch(JSON.stringify(view), /risk_scan_evaluation_failed/);
 });
 
 
