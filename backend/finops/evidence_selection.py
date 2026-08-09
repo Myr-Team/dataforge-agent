@@ -142,7 +142,7 @@ def _policy_evidence_candidates(
         )
         signal = lambda event: EvidenceSignal(
             metric="pricing_status",
-            value=event.estimated_cost.status,
+            value="unpriced",
             unit="status",
         )
     elif policy == "cache_hit_rate":

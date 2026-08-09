@@ -88,6 +88,11 @@ def test_policy_selectors_return_semantic_and_distinct_first_refs() -> None:
     assert selected["p95_latency"].items[0].signal.metric == "latency_ms"
     assert selected["error_rate"].items[0].status == "failed"
     assert selected["unpriced_requests"].items[0].cost_status == "unavailable"
+    assert selected["unpriced_requests"].items[0].signal.model_dump() == {
+        "metric": "pricing_status",
+        "value": "unpriced",
+        "unit": "status",
+    }
     assert selected["cache_hit_rate"].items[0].cache_state == "miss"
     assert selected["token_spike"].items[0].signal.value == 31_000
     assert selected["apim_coverage"].items[0].signal.value == "unmanaged"
