@@ -800,8 +800,9 @@ def _permission_scope(
 
 
 def _window(from_value: str | None, to_value: str | None) -> tuple[str, str]:
-    now = datetime.now(timezone.utc).replace(microsecond=0)
-    end = _parse_time(to_value) if to_value else now
+    now = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+    default_end = now.replace(minute=(now.minute // 5) * 5)
+    end = _parse_time(to_value) if to_value else default_end
     start = _parse_time(from_value) if from_value else end - timedelta(days=30)
     if start > end or end - start > timedelta(days=90):
         raise ValueError("FinOps query window must be ordered and no longer than 90 days")
