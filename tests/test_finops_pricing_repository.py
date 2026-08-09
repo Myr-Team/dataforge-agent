@@ -47,10 +47,13 @@ def test_price_mapping_delete_restores_unpriced_and_is_tenant_scoped() -> None:
     )
 
     # Deleting a mapping in another tenant must not touch tenant-a's row.
-    assert repository.delete("tenant-b", "gpt-5.6-terra") is False
+    assert repository.delete("tenant-b", "gpt-5.6-terra", base_revision=1) is False
     assert repository.get("tenant-a", "gpt-5.6-terra") is not None
 
-    assert repository.delete("tenant-a", "gpt-5.6-terra") is True
+    with pytest.raises(PriceMappingConflict):
+        repository.delete("tenant-a", "gpt-5.6-terra", base_revision=2)
+
+    assert repository.delete("tenant-a", "gpt-5.6-terra", base_revision=1) is True
     assert repository.get("tenant-a", "gpt-5.6-terra") is None
     # A subsequent create starts a fresh revision sequence.
     restored = repository.upsert(

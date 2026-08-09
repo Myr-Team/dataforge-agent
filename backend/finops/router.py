@@ -15,6 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, R
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 try:
+    from ..audit_store import record_audit_event
     from .. import cache_store
     from ..identity import actor_from_request, is_trusted_tenant_identity
     from ..foundry_client import run_agent
@@ -30,6 +31,7 @@ try:
         workspace_model_policy_scope,
     )
 except ImportError:
+    from audit_store import record_audit_event
     import cache_store
     from identity import actor_from_request, is_trusted_tenant_identity
     from foundry_client import run_agent
@@ -3285,13 +3287,79 @@ def _require_admin_scope(
         raise HTTPException(status_code=403, detail="workspace access denied for finops.write")
 
 
-def _require_tenant_owner(roles: Mapping[str, str]) -> None:
-    """Tenant-level pricing writes require Owner across every authorized workspace."""
-    if not roles or not all(role == "owner" for role in roles.values()):
+def _configured_oid_set(name: str) -> set[str]:
+    return {
+        value.strip().lower()
+        for value in re.split(r"[,;\s]+", str(os.environ.get(name) or ""))
+        if value.strip()
+    }
+
+
+def _tenant_pricing_capability(
+    *,
+    actor: Mapping[str, Any],
+    roles: Mapping[str, str],
+) -> tuple[bool, str]:
+    actor_id = str(actor.get("actor_id") or "").strip().lower()
+    if actor_id and actor_id in _configured_oid_set("DF_FINOPS_TENANT_OWNER_OIDS"):
+        return True, "entra_tenant_pricing_admin"
+    if roles and all(role == "owner" for role in roles.values()):
+        return True, "all_workspaces_owner"
+    return False, "read_only"
+
+
+def _require_tenant_pricing_admin(
+    *,
+    actor: Mapping[str, Any],
+    roles: Mapping[str, str],
+) -> str:
+    can_manage, source = _tenant_pricing_capability(actor=actor, roles=roles)
+    if not can_manage:
         raise HTTPException(
             status_code=403,
-            detail="official price mapping requires owner",
+            detail="official price mapping requires tenant pricing admin",
         )
+    return source
+
+
+def _pricing_audit_workspace(
+    roles: Mapping[str, str],
+    workspace_id: str,
+) -> str:
+    selected = str(workspace_id or "").strip()
+    if selected not in roles:
+        raise HTTPException(
+            status_code=403,
+            detail="workspace access denied for finops.pricing.write",
+        )
+    return selected
+
+
+def _pricing_audit_required(
+    request: Request,
+    *,
+    workspace_id: str,
+    deployment: str,
+    revision: int,
+) -> None:
+    resource_id = f"{str(deployment).strip()}:{int(revision)}"
+    try:
+        record_audit_event(
+            actor_from_request(request, fallback=False),
+            "model_price_mapping.write",
+            {
+                "workspace_id": workspace_id,
+                "resource_type": "model_price_mapping",
+                "resource_id": resource_id,
+            },
+            result="allowed",
+            reason_code="authorized",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit persistence is required",
+        ) from exc
 
 
 def _require_tenant_admin(roles: Mapping[str, str]) -> None:
@@ -3653,11 +3721,19 @@ async def official_pricing_catalog(request: Request) -> dict[str, Any]:
 
 @router.get("/pricing/mappings")
 async def official_pricing_mappings(request: Request) -> dict[str, Any]:
-    tenant_ref, _, _ = _pricing_read_context(request)
+    tenant_ref, _, roles = _pricing_read_context(request)
+    actor = actor_from_request(request, fallback=False)
+    can_manage, authorization_source = _tenant_pricing_capability(
+        actor=actor,
+        roles=roles,
+    )
     items = get_finops_price_mapping_repository().list(tenant_ref)
     return {
         "items": [item.model_dump(mode="json") for item in items],
         "count": len(items),
+        "scope": "tenant",
+        "can_manage": can_manage,
+        "authorization_source": authorization_source,
     }
 
 
@@ -3666,9 +3742,12 @@ async def update_official_pricing_mapping(
     deployment: str,
     body: PriceMappingUpdateRequest,
     request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
 ) -> dict[str, Any]:
     tenant_ref, actor_ref, roles = _pricing_read_context(request)
-    _require_tenant_owner(roles)
+    actor = actor_from_request(request, fallback=False)
+    _require_tenant_pricing_admin(actor=actor, roles=roles)
+    audit_workspace = _pricing_audit_workspace(roles, workspace_id)
     catalog = load_official_price_catalog()
     price = catalog.get(body.official_price_key)
     if price is None:
@@ -3691,6 +3770,12 @@ async def update_official_pricing_mapping(
         mapping_revision=body.base_revision + 1,
         updated_by_ref=actor_ref,
     )
+    _pricing_audit_required(
+        request,
+        workspace_id=audit_workspace,
+        deployment=deployment,
+        revision=mapping.mapping_revision,
+    )
     try:
         saved = get_finops_price_mapping_repository().upsert(
             mapping,
@@ -3710,10 +3795,27 @@ async def update_official_pricing_mapping(
 async def delete_official_pricing_mapping(
     deployment: str,
     request: Request,
+    workspace_id: str = Query(..., min_length=1, max_length=160),
+    base_revision: int = Query(..., ge=1),
 ) -> Response:
     tenant_ref, _, roles = _pricing_read_context(request)
-    _require_tenant_owner(roles)
-    deleted = get_finops_price_mapping_repository().delete(tenant_ref, deployment)
+    actor = actor_from_request(request, fallback=False)
+    _require_tenant_pricing_admin(actor=actor, roles=roles)
+    audit_workspace = _pricing_audit_workspace(roles, workspace_id)
+    _pricing_audit_required(
+        request,
+        workspace_id=audit_workspace,
+        deployment=deployment,
+        revision=base_revision,
+    )
+    try:
+        deleted = get_finops_price_mapping_repository().delete(
+            tenant_ref,
+            deployment,
+            base_revision=base_revision,
+        )
+    except PriceMappingConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     if not deleted:
         raise HTTPException(
             status_code=404,

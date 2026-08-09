@@ -900,9 +900,13 @@ export async function loadFinOpsOfficialPriceMappings() {
 
 export async function updateFinOpsOfficialPriceMapping(
   deployment,
-  { officialPriceKey, baseRevision = 0 },
+  { workspaceId, officialPriceKey, baseRevision = 0 },
 ) {
-  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+  const query = new URLSearchParams({
+    workspace_id: String(workspaceId || "").trim(),
+  });
+  if (!query.get("workspace_id")) throw new Error("workspaceId is required");
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}?${query.toString()}`, {
     method: "PUT",
     body: JSON.stringify({
       official_price_key: String(officialPriceKey || ""),
@@ -911,8 +915,16 @@ export async function updateFinOpsOfficialPriceMapping(
   });
 }
 
-export async function deleteFinOpsOfficialPriceMapping(deployment) {
-  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}`, {
+export async function deleteFinOpsOfficialPriceMapping(
+  deployment,
+  { workspaceId, baseRevision },
+) {
+  const query = new URLSearchParams({
+    workspace_id: String(workspaceId || "").trim(),
+    base_revision: String(Number.isInteger(baseRevision) ? baseRevision : 0),
+  });
+  if (!query.get("workspace_id")) throw new Error("workspaceId is required");
+  return request(`/api/finops/pricing/mappings/${encodeURIComponent(deployment)}?${query.toString()}`, {
     method: "DELETE",
   });
 }

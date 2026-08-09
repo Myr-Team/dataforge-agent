@@ -1321,6 +1321,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           mapping_revision: 1,
         }],
         count: 1,
+        scope: "tenant",
+        can_manage: true,
+        authorization_source: "entra_tenant_pricing_admin",
       };
     } else if (path === "/api/finops/requests") {
       body = {

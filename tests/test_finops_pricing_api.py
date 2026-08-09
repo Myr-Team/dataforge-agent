@@ -16,12 +16,14 @@ def _client(
     *,
     role: str = "owner",
     roles: dict[str, str] | None = None,
+    audit_events: list[dict] | None = None,
 ) -> TestClient:
     repository = InMemoryPriceMappingRepository()
     monkeypatch.setenv("DF_WEB_PROXY_SECRET", "test-proxy-secret")
     monkeypatch.setenv("DF_FINOPS_HMAC_SECRET", "finops-test-secret")
     monkeypatch.setenv("DF_FINOPS_READ_ENABLED", "1")
     monkeypatch.setenv("DF_FINOPS_SQL_ENABLED", "0")
+    monkeypatch.delenv("DF_FINOPS_TENANT_OWNER_OIDS", raising=False)
     monkeypatch.setattr(
         finops_router,
         "get_finops_price_mapping_repository",
@@ -34,6 +36,19 @@ def _client(
     )
     monkeypatch.setattr(finops_router, "_tenant_ref", lambda _actor: "tenantref-a")
     monkeypatch.setattr(finops_router, "_actor_ref", lambda _actor: "actorref-a")
+    captured = audit_events if audit_events is not None else []
+    monkeypatch.setattr(
+        finops_router,
+        "record_audit_event",
+        lambda actor, action, resource, **metadata: captured.append(
+            {
+                "actor": actor,
+                "action": action,
+                "resource": resource,
+                **metadata,
+            }
+        ) or {"event_id": "event_test"},
+    )
     return TestClient(app)
 
 
@@ -50,7 +65,7 @@ def test_pricing_catalog_and_owner_mapping_round_trip(monkeypatch) -> None:
 
     catalog = client.get("/api/finops/pricing/catalog", headers=headers)
     created = client.put(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
         headers=headers,
         json={
             "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -81,7 +96,7 @@ def test_pricing_mapping_rejects_arbitrary_rate_and_stale_revision(monkeypatch) 
 
     monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
-    url = "/api/finops/pricing/mappings/gpt-5.6-terra"
+    url = "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a"
     body = {
         "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
         "base_revision": 0,
@@ -99,7 +114,7 @@ def test_pricing_mapping_write_requires_owner(monkeypatch) -> None:
     client = _client(monkeypatch, role="member")
 
     response = client.put(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
         headers=trusted_headers(actor_id="member-a", tenant_id="tenant-a"),
         json={
             "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -120,7 +135,7 @@ def test_pricing_mapping_delete_removes_wrong_mapping(monkeypatch) -> None:
 
     monkeypatch.setattr(finops_router, "get_finops_cache_namespace", _Namespace)
     headers = trusted_headers(actor_id="owner-a", tenant_id="tenant-a")
-    url = "/api/finops/pricing/mappings/gpt-5.6-terra"
+    url = "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a"
 
     client.put(
         url,
@@ -130,8 +145,9 @@ def test_pricing_mapping_delete_removes_wrong_mapping(monkeypatch) -> None:
             "base_revision": 0,
         },
     )
-    deleted = client.delete(url, headers=headers)
-    missing = client.delete(url, headers=headers)
+    delete_url = f"{url}&base_revision=1"
+    deleted = client.delete(delete_url, headers=headers)
+    missing = client.delete(delete_url, headers=headers)
     mappings = client.get("/api/finops/pricing/mappings", headers=headers)
 
     assert deleted.status_code == 204
@@ -147,7 +163,7 @@ def test_pricing_mapping_delete_requires_owner(monkeypatch) -> None:
     client = _client(monkeypatch, role="admin")
 
     response = client.delete(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a&base_revision=1",
         headers=trusted_headers(actor_id="admin-a", tenant_id="tenant-a"),
     )
 
@@ -160,7 +176,7 @@ def test_pricing_mapping_requires_owner_across_all_workspaces(monkeypatch) -> No
     client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "member"})
 
     response = client.put(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a&base_revision=1",
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
         json={
             "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -175,7 +191,7 @@ def test_pricing_mapping_delete_requires_owner_across_all_workspaces(monkeypatch
     client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "admin"})
 
     response = client.delete(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a&base_revision=1",
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
     )
 
@@ -229,7 +245,7 @@ def test_pricing_mapping_rejects_incompatible_deployment(monkeypatch) -> None:
     )
 
     response = client.put(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
         json={
             "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -250,7 +266,7 @@ def test_pricing_mapping_allows_observed_model_deployment(monkeypatch) -> None:
     )
 
     response = client.put(
-        "/api/finops/pricing/mappings/gpt-5.6-terra",
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
         headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
         json={
             "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
@@ -259,3 +275,76 @@ def test_pricing_mapping_allows_observed_model_deployment(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+
+
+def test_pricing_mapping_contract_exposes_tenant_management_capability(monkeypatch) -> None:
+    client = _client(monkeypatch, roles={"ws-a": "owner", "ws-b": "member"})
+    monkeypatch.setenv("DF_FINOPS_TENANT_OWNER_OIDS", "owner-a,other-owner")
+
+    response = client.get(
+        "/api/finops/pricing/mappings",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["scope"] == "tenant"
+    assert response.json()["can_manage"] is True
+    assert response.json()["authorization_source"] == "entra_tenant_pricing_admin"
+
+
+def test_configured_tenant_pricing_admin_can_write_with_workspace_audit_scope(monkeypatch) -> None:
+    audit_events: list[dict] = []
+    client = _client(
+        monkeypatch,
+        roles={"ws-a": "admin", "ws-b": "member"},
+        audit_events=audit_events,
+    )
+    monkeypatch.setenv("DF_FINOPS_TENANT_OWNER_OIDS", "owner-a")
+
+    response = client.put(
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+
+    assert response.status_code == 200
+    assert audit_events == [
+        {
+            "actor": audit_events[0]["actor"],
+            "action": "model_price_mapping.write",
+            "resource": {
+                "workspace_id": "ws-a",
+                "resource_type": "model_price_mapping",
+                "resource_id": "gpt-5.6-terra:1",
+            },
+            "result": "allowed",
+            "reason_code": "authorized",
+        }
+    ]
+
+
+def test_pricing_mapping_write_fails_closed_when_audit_is_unavailable(monkeypatch) -> None:
+    client = _client(monkeypatch)
+
+    def _raise_audit(*_args, **_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(finops_router, "record_audit_event", _raise_audit)
+    response = client.put(
+        "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+        json={
+            "official_price_key": "azure-openai:gpt-5.1:global-standard:global",
+            "base_revision": 0,
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Audit persistence is required"
+    assert client.get(
+        "/api/finops/pricing/mappings",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    ).json()["count"] == 0

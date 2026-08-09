@@ -331,3 +331,29 @@ test("model setting callbacks run only after a successful write", async () => {
     await server.close();
   }
 });
+
+
+test("price mapping failures are translated without exposing backend payloads", async () => {
+  const server = await import("vite").then(({ createServer }) => createServer({
+    appType: "custom",
+    logLevel: "silent",
+    server: { middlewareMode: true, hmr: false, ws: false },
+  }));
+  try {
+    const { priceMappingErrorMessage } = await server.ssrLoadModule("/src/ModelRoutingPage.jsx");
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("raw denied"), { status: 403 })),
+      "当前账号可查看价目，但没有组织级管理权限。",
+    );
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("raw conflict"), { status: 409 })),
+      "价目已被其他管理员更新，已重新加载最新版本。",
+    );
+    assert.equal(
+      priceMappingErrorMessage(Object.assign(new Error("Audit persistence is required"), { status: 503 })),
+      "审计记录暂时无法保存，请稍后重试。",
+    );
+  } finally {
+    await server.close();
+  }
+});

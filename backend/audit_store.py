@@ -55,6 +55,7 @@ ALLOWED_ACTIONS = frozenset(
         "model_provider.manage",
         "entra_group_mapping.manage",
         "roi.scenario.write",
+        "model_price_mapping.write",
     }
 )
 ALLOWED_RESOURCE_TYPES = frozenset(
@@ -62,6 +63,7 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         "workspace", "file", "connector", "analysis", "message", "task", "artifact", "outcome", "invitation",
         "member", "experiment", "model_routing_policy", "model_price_card", "roi_scenario", "model_provider",
         "entra_group_mapping",
+        "model_price_mapping",
     }
 )
 ALLOWED_RESULTS = frozenset({"allowed", "denied", "failed"})

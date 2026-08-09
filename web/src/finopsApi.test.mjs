@@ -477,6 +477,7 @@ test("official pricing APIs use the server-owned catalog and typed mapping body"
     await loadFinOpsOfficialPriceCatalog();
     await loadFinOpsOfficialPriceMappings();
     await updateFinOpsOfficialPriceMapping("gpt-5.6-terra", {
+      workspaceId: "ws-a",
       officialPriceKey: "azure-openai:gpt-5.1:global-standard:global",
       baseRevision: 2,
     });
@@ -487,7 +488,7 @@ test("official pricing APIs use the server-owned catalog and typed mapping body"
   assert.deepEqual(calls.map((item) => item.url), [
     "/api/finops/pricing/catalog",
     "/api/finops/pricing/mappings",
-    "/api/finops/pricing/mappings/gpt-5.6-terra",
+    "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a",
   ]);
   assert.deepEqual(JSON.parse(calls[2].options.body), {
     official_price_key: "azure-openai:gpt-5.1:global-standard:global",
@@ -505,12 +506,15 @@ test("deleting a wrong mapping issues a DELETE and tolerates a 204 body", async 
 
   let result;
   try {
-    result = await deleteFinOpsOfficialPriceMapping("gpt-5.6-terra");
+    result = await deleteFinOpsOfficialPriceMapping("gpt-5.6-terra", {
+      workspaceId: "ws-a",
+      baseRevision: 3,
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
 
-  assert.equal(calls[0].url, "/api/finops/pricing/mappings/gpt-5.6-terra");
+  assert.equal(calls[0].url, "/api/finops/pricing/mappings/gpt-5.6-terra?workspace_id=ws-a&base_revision=3");
   assert.equal(calls[0].method, "DELETE");
   assert.deepEqual(result, {});
 });
