@@ -7,7 +7,7 @@ import pytest
 from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQuery
 from backend.finops.rollups import aggregate_rollups
-from backend.finops.rollup_refresh import refresh_rollups
+from backend.finops.rollup_refresh import _safe_exception_chain, refresh_rollups
 from backend.finops.repository import InMemoryFinOpsRepository
 from backend.finops.sql_repository import FinOpsPersistenceError
 from backend.finops.sql_rollups import SqlFinOpsRollupRepository
@@ -274,3 +274,17 @@ def test_rollup_refresh_keeps_persistence_retries_bounded(monkeypatch: pytest.Mo
 
     assert sink.attempts == 3
     assert delays == [0.5, 1.5]
+
+
+def test_rollup_failure_diagnostics_expose_only_categories_and_sqlstate() -> None:
+    database_error = RuntimeError("40001", "credential-like detail must stay private")
+    wrapped = FinOpsPersistenceError("safe persistence category")
+    wrapped.__cause__ = database_error
+
+    diagnostics = _safe_exception_chain(wrapped)
+
+    assert diagnostics == [
+        {"category": "FinOpsPersistenceError"},
+        {"category": "RuntimeError", "sqlstate": "40001"},
+    ]
+    assert "credential-like" not in str(diagnostics)

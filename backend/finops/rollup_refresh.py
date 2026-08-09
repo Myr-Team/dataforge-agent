@@ -90,9 +90,11 @@ def _refresh_scope_with_retry(
 def main() -> int:
     status_service: JobRunService | None = None
     status_record = None
+    stage = "job_status_start"
     try:
         status_service = JobRunService(_job_status_repository())
         status_record = status_service.start("finops_rollup")
+        stage = "repository_setup"
         event_repository, rollup_repository = _repositories()
         now = datetime.now(timezone.utc).replace(microsecond=0)
         hours = _bounded_int(
@@ -104,10 +106,12 @@ def main() -> int:
         start = now - timedelta(hours=hours)
         from_value = _iso(start)
         to_value = _iso(now)
+        stage = "scope_discovery"
         scopes = event_repository.list_scopes(
             from_value=from_value,
             to_value=to_value,
         )
+        stage = "rollup_refresh"
         result = refresh_rollups(
             event_repository=event_repository,
             rollup_repository=rollup_repository,
@@ -115,6 +119,7 @@ def main() -> int:
             from_value=from_value,
             to_value=to_value,
         )
+        stage = "job_status_succeed"
         status_service.succeed(
             status_record,
             rows_observed=int(result.get("event_count") or 0),
@@ -128,7 +133,17 @@ def main() -> int:
                 status_service.fail(status_record, error=exc)
             except Exception:
                 pass
-        print(json.dumps({"status": "failed", "category": type(exc).__name__}, separators=(",", ":")))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": stage,
+                    "category": type(exc).__name__,
+                    "causes": _safe_exception_chain(exc),
+                },
+                separators=(",", ":"),
+            )
+        )
         return 1
     print(json.dumps({"status": "completed", **result}, separators=(",", ":")))
     return 0
@@ -166,6 +181,23 @@ def _bounded_int(value: str | None, *, default: int, minimum: int, maximum: int)
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_exception_chain(error: BaseException) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and len(items) < 6 and id(current) not in seen:
+        seen.add(id(current))
+        item = {"category": type(current).__name__[:64]}
+        for value in getattr(current, "args", ()):
+            candidate = str(value).strip().upper()
+            if len(candidate) == 5 and candidate.isalnum():
+                item["sqlstate"] = candidate
+                break
+        items.append(item)
+        current = current.__cause__ or current.__context__
+    return items
 
 
 if __name__ == "__main__":
