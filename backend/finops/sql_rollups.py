@@ -22,7 +22,7 @@ class SqlFinOpsRollupRepository:
         daily: list[FinOpsRollup],
     ) -> None:
         for item in [*hourly, *daily]:
-            if item.tenant_ref != tenant_ref:
+            if item.tenant_ref.strip().casefold() != tenant_ref.strip().casefold():
                 raise ValueError("rollup tenant scope mismatch")
         with self._transaction() as cursor:
             cursor.execute(

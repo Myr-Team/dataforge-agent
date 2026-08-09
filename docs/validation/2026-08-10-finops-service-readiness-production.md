@@ -59,14 +59,18 @@ DataForge FinOps 当前版本已部署到新环境并切换 100% 生产流量。
 以下作业均已更新到最终 Backend 镜像并手动执行成功：
 
 - `job-dataforge-finops-apim`（每 5 分钟）。
-- `job-dataforge-finops-rollup`（每 15 分钟）。
+- `job-dataforge-finops-rollup`（每小时 02/17/32/47 分，避开 5 分钟对账写入窗口）。
 - `job-dataforge-finops-retention`（每日 02:00）。
 
 门户不直接向业务用户展示底层网关产品名称，界面统一使用“统一入口”“治理覆盖”等业务表达。
 
+生产收口复核发现 Rollup 出现 SQLSTATE `23000` 完整性约束失败。根因为请求维度标识只有大小写差异时，Python 会形成两组聚合，而 Azure SQL 的默认主键比较不区分大小写。修复后 tenant、workspace、department、Agent 与模型部署标识在聚合前按 SQL 比较语义规范化，tenant 范围校验也使用同一比较规则；同时保留调度错峰和 0.5 / 1.5 秒的有界持久化重试。
+
+根因修复镜像在生产数据上完成两次验收：手工 Rollup 成功；随后 19:32 UTC 的真实计划执行成功，并与仍在收尾的手工执行重叠约 19 秒。持续失败仍会在三次尝试后退出并保留安全的阶段、异常类别、SQLSTATE 和约束名称，不记录 SQL 正文、身份或密钥。
+
 ## 回归结果
 
-- Python：`1841 passed, 1 skipped`。
+- Python：`1846 passed, 1 skipped`。
 - Node：`307 passed`。
 - Vite：构建成功（1,795 modules；仅保留既有大 chunk 警告）。
 - Playwright：`63 passed`，使用独立端口运行，未复用陈旧 preview。

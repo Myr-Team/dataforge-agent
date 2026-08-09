@@ -2,13 +2,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from .rollups import aggregate_rollups
-from .sql_repository import SqlFinOpsRepository
+from .sql_repository import FinOpsPersistenceError, SqlFinOpsRepository
 from .sql_rollups import SqlFinOpsRollupRepository
 from .job_status import JobRunService, SqlJobRunRepository
+
+
+_ROLLUP_RETRY_DELAYS_SECONDS = (0.5, 1.5)
+_SAFE_CONSTRAINT_NAME = re.compile(r"\b(?:PK|UQ|CK|FK)_[A-Za-z0-9_]{1,60}\b", re.IGNORECASE)
 
 
 def refresh_rollups(
@@ -29,19 +35,13 @@ def refresh_rollups(
     for tenant_ref, workspace_ids in scopes.items():
         if not tenant_ref or not workspace_ids:
             continue
-        events = event_repository.list_events(
+        events, hourly, daily = _refresh_scope_with_retry(
+            event_repository=event_repository,
+            rollup_repository=rollup_repository,
             tenant_ref=tenant_ref,
             workspace_ids=tuple(workspace_ids),
             from_value=from_value,
             to_value=to_value,
-        )
-        hourly, daily = aggregate_rollups(events)
-        rollup_repository.replace(
-            tenant_ref=tenant_ref,
-            from_value=from_value,
-            to_value=to_value,
-            hourly=hourly,
-            daily=daily,
         )
         totals["scope_count"] += 1
         totals["event_count"] += len(events)
@@ -56,12 +56,47 @@ def refresh_rollups(
     return totals
 
 
+def _refresh_scope_with_retry(
+    *,
+    event_repository: Any,
+    rollup_repository: Any,
+    tenant_ref: str,
+    workspace_ids: tuple[str, ...],
+    from_value: str,
+    to_value: str,
+) -> tuple[list[Any], list[Any], list[Any]]:
+    for attempt in range(len(_ROLLUP_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            events = event_repository.list_events(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                from_value=from_value,
+                to_value=to_value,
+            )
+            hourly, daily = aggregate_rollups(events)
+            rollup_repository.replace(
+                tenant_ref=tenant_ref,
+                from_value=from_value,
+                to_value=to_value,
+                hourly=hourly,
+                daily=daily,
+            )
+            return events, hourly, daily
+        except FinOpsPersistenceError:
+            if attempt >= len(_ROLLUP_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_ROLLUP_RETRY_DELAYS_SECONDS[attempt])
+    raise AssertionError("unreachable")
+
+
 def main() -> int:
     status_service: JobRunService | None = None
     status_record = None
+    stage = "job_status_start"
     try:
         status_service = JobRunService(_job_status_repository())
         status_record = status_service.start("finops_rollup")
+        stage = "repository_setup"
         event_repository, rollup_repository = _repositories()
         now = datetime.now(timezone.utc).replace(microsecond=0)
         hours = _bounded_int(
@@ -73,10 +108,12 @@ def main() -> int:
         start = now - timedelta(hours=hours)
         from_value = _iso(start)
         to_value = _iso(now)
+        stage = "scope_discovery"
         scopes = event_repository.list_scopes(
             from_value=from_value,
             to_value=to_value,
         )
+        stage = "rollup_refresh"
         result = refresh_rollups(
             event_repository=event_repository,
             rollup_repository=rollup_repository,
@@ -84,6 +121,7 @@ def main() -> int:
             from_value=from_value,
             to_value=to_value,
         )
+        stage = "job_status_succeed"
         status_service.succeed(
             status_record,
             rows_observed=int(result.get("event_count") or 0),
@@ -97,7 +135,17 @@ def main() -> int:
                 status_service.fail(status_record, error=exc)
             except Exception:
                 pass
-        print(json.dumps({"status": "failed", "category": type(exc).__name__}, separators=(",", ":")))
+        print(
+            json.dumps(
+                {
+                    "status": "failed",
+                    "stage": stage,
+                    "category": type(exc).__name__,
+                    "causes": _safe_exception_chain(exc),
+                },
+                separators=(",", ":"),
+            )
+        )
         return 1
     print(json.dumps({"status": "completed", **result}, separators=(",", ":")))
     return 0
@@ -135,6 +183,25 @@ def _bounded_int(value: str | None, *, default: int, minimum: int, maximum: int)
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _safe_exception_chain(error: BaseException) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and len(items) < 6 and id(current) not in seen:
+        seen.add(id(current))
+        item = {"category": type(current).__name__[:64]}
+        for value in getattr(current, "args", ()):
+            candidate = str(value).strip().upper()
+            if len(candidate) == 5 and candidate.isalnum():
+                item["sqlstate"] = candidate
+            constraint = _SAFE_CONSTRAINT_NAME.search(str(value))
+            if constraint is not None:
+                item["constraint"] = constraint.group(0)
+        items.append(item)
+        current = current.__cause__ or current.__context__
+    return items
 
 
 if __name__ == "__main__":
