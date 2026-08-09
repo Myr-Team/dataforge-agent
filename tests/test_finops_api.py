@@ -871,6 +871,34 @@ def test_finops_assistant_binds_model_input_to_selected_policy_evidence(
             ),
         ]
     )
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": f"req_latency_higher_{index}",
+                    "occurred_at": datetime(
+                        2026,
+                        7,
+                        24,
+                        5 + index,
+                        0,
+                        tzinfo=timezone.utc,
+                    ),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "agent_id": "df-coordinator",
+                    "deployment": "gpt-5-mini",
+                    "status": "succeeded",
+                    "latency_ms": 10_000 + index,
+                    "tokens": TokenUsage(input=10, output=2, total=12),
+                    "estimated_cost": {"amount": 0.001, "status": "estimated"},
+                    "evidence_state": "observed",
+                }
+            )
+            for index in range(4)
+        ]
+    )
     model_inputs: list[str] = []
 
     def runner(_agent_id: str, payload: str, **_kwargs: object) -> dict[str, object]:

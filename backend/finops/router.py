@@ -1267,20 +1267,24 @@ async def assistant_query(
                 detail="Operations AI conversation expired",
             ) from exc
     events = query_service.events(query)
+    requested_refs = set(context.evidence_refs)
+    selection_events = (
+        [event for event in events if event.request_ref in requested_refs]
+        if requested_refs
+        else events
+    )
     selected = (
-        select_policy_evidence(events, context.policy_type, limit=3)
+        select_policy_evidence(selection_events, context.policy_type, limit=3)
         if context.policy_type
         else select_metric_evidence(
-            events,
+            selection_events,
             _assistant_evidence_metric(context.metric_id),
             limit=3,
         )
     )
-    requested_refs = set(context.evidence_refs)
     selected_refs = {
         item.request_ref
         for item in selected.items
-        if not requested_refs or item.request_ref in requested_refs
     }
     selected_items = [event for event in events if event.request_ref in selected_refs]
     evidence_payload = build_finops_assistant_input(
