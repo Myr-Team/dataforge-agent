@@ -59,14 +59,16 @@ DataForge FinOps 当前版本已部署到新环境并切换 100% 生产流量。
 以下作业均已更新到最终 Backend 镜像并手动执行成功：
 
 - `job-dataforge-finops-apim`（每 5 分钟）。
-- `job-dataforge-finops-rollup`（每 15 分钟）。
+- `job-dataforge-finops-rollup`（每小时 02/17/32/47 分，避开 5 分钟对账写入窗口）。
 - `job-dataforge-finops-retention`（每日 02:00）。
 
 门户不直接向业务用户展示底层网关产品名称，界面统一使用“统一入口”“治理覆盖”等业务表达。
 
+生产收口复核发现 Rollup 在与 5 分钟对账作业同一整点启动时存在间歇性 SQL 持久化竞争。修复采用双层保护：调度错峰，以及对单租户事实读取与 Rollup 替换增加 0.5 / 1.5 秒的有界重试。新镜像下同时手工启动对账与 Rollup，两项均执行成功；持续失败仍会在三次尝试后退出并保留失败状态，不会无限重试。
+
 ## 回归结果
 
-- Python：`1841 passed, 1 skipped`。
+- Python：`1843 passed, 1 skipped`。
 - Node：`307 passed`。
 - Vite：构建成功（1,795 modules；仅保留既有大 chunk 警告）。
 - Playwright：`63 passed`，使用独立端口运行，未复用陈旧 preview。
