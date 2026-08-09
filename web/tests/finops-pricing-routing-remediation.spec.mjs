@@ -261,6 +261,12 @@ test("connected DeepSeek is explicitly governed before selection and shows offic
 
   await openProviderSettings(page);
   await expect(page.getByText("连接与计价已就绪，可纳入 Agent 模型路由。")).toBeVisible();
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "deepseek-provider-governance-desktop.png"),
+    fullPage: true,
+  });
   await page.getByRole("button", { name: "纳入模型路由" }).click();
   await expect(page.getByText("已进入 Agent 模型路由", { exact: true })).toBeVisible();
   expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/govern"))).toBe(true);
@@ -272,4 +278,9 @@ test("connected DeepSeek is explicitly governed before selection and shows offic
   await expect(page.getByText("$0.0028", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("$0.14", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("$0.28", { exact: true }).first()).toBeVisible();
+  await page.getByText("$0.0028", { exact: true }).first().scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: path.join(outputDir, "deepseek-model-routing-pricing-desktop.png"),
+    fullPage: false,
+  });
 });
