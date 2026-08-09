@@ -1094,3 +1094,38 @@ BEGIN
     );
 END;
 GO
+
+IF OBJECT_ID(N'df_finops.job_run_status', N'U') IS NULL
+BEGIN
+    CREATE TABLE df_finops.job_run_status (
+        job_name NVARCHAR(48) NOT NULL,
+        execution_ref NVARCHAR(64) NOT NULL,
+        run_status NVARCHAR(16) NOT NULL,
+        started_at DATETIME2(7) NOT NULL,
+        completed_at DATETIME2(7) NULL,
+        safe_error_category NVARCHAR(64) NULL,
+        rows_observed INT NOT NULL
+            CONSTRAINT DF_finops_job_run_rows_observed DEFAULT (0),
+        rows_written INT NOT NULL
+            CONSTRAINT DF_finops_job_run_rows_written DEFAULT (0),
+        source_freshness_at DATETIME2(7) NULL,
+        CONSTRAINT PK_finops_job_run_status
+            PRIMARY KEY (job_name, execution_ref),
+        CONSTRAINT CK_finops_job_run_status_name CHECK (
+            job_name IN (
+                N'finops_apim_reconciliation',
+                N'finops_rollup',
+                N'finops_retention'
+            )
+        ),
+        CONSTRAINT CK_finops_job_run_status_state CHECK (
+            run_status IN (N'running', N'succeeded', N'failed')
+        ),
+        CONSTRAINT CK_finops_job_run_status_counts CHECK (
+            rows_observed >= 0 AND rows_written >= 0
+        )
+    );
+    CREATE INDEX IX_finops_job_run_status_latest
+        ON df_finops.job_run_status (job_name, started_at DESC);
+END;
+GO

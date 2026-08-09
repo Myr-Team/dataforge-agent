@@ -11,6 +11,7 @@ from .apim_collector import (
     summarize_gateway_only_errors,
 )
 from .sql_repository import SqlFinOpsRepository
+from .job_status import JobRunService, SqlJobRunRepository
 
 
 def run_apim_backfill(
@@ -79,7 +80,11 @@ def run_apim_backfill(
 
 
 def main() -> int:
+    status_service: JobRunService | None = None
+    status_record = None
     try:
+        status_service = JobRunService(_job_status_repository())
+        status_record = status_service.start("finops_apim_reconciliation")
         secret = _required("DF_FINOPS_HMAC_SECRET")
         logs_workspace_id = _required("DF_AZURE_MONITOR_LOGS_WORKSPACE_ID")
         repository = _sql_repository()
@@ -104,7 +109,19 @@ def main() -> int:
             price_mapping_repository=_price_mapping_repository(),
             gateway_unmatched_repository=_gateway_unmatched_repository(),
         )
+        status_service.succeed(
+            status_record,
+            rows_observed=int(result.get("apim_observations") or 0),
+            rows_written=int(result.get("reconciled_events") or 0)
+            + int(result.get("gateway_only_persisted_buckets") or 0),
+            source_freshness_at=to_value,
+        )
     except Exception as exc:
+        if status_service is not None and status_record is not None:
+            try:
+                status_service.fail(status_record, error=exc)
+            except Exception:
+                pass
         print(
             json.dumps(
                 {"status": "failed", "category": type(exc).__name__},
@@ -122,6 +139,16 @@ def _sql_repository() -> SqlFinOpsRepository:
     except ImportError:
         from lineage_sql import build_lineage_sql_connection_factory
     return SqlFinOpsRepository(connection_factory=build_lineage_sql_connection_factory())
+
+
+def _job_status_repository() -> SqlJobRunRepository:
+    try:
+        from ..lineage_sql import build_lineage_sql_connection_factory
+    except ImportError:
+        from lineage_sql import build_lineage_sql_connection_factory
+    return SqlJobRunRepository(
+        connection_factory=build_lineage_sql_connection_factory()
+    )
 
 
 def _price_mapping_repository() -> Any:

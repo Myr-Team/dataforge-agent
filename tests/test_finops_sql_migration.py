@@ -120,6 +120,14 @@ def test_member_budget_period_check_has_a_guarded_existing_table_upgrade() -> No
     assert "add constraint ck_finops_budget_alert_period" in upgrade
 
 
+def test_job_run_status_schema_is_additive() -> None:
+    schema = SCHEMA_PATH.read_text(encoding="utf-8").lower()
+
+    assert "if object_id(n'df_finops.job_run_status', n'u') is null" in schema
+    assert "create table df_finops.job_run_status" in schema
+    assert "drop table df_finops.job_run_status" not in schema
+
+
 def test_finops_schema_contains_remediation_tables() -> None:
     sql = SCHEMA_PATH.read_text(encoding="utf-8")
     lowered = sql.lower()
