@@ -50,4 +50,3 @@ def test_auth_session_does_not_accept_untrusted_browser_identity(monkeypatch) ->
         "identity_provider": "microsoft_entra",
         "identity_source": "unavailable",
     }
-

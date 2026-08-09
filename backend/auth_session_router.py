@@ -31,4 +31,3 @@ def auth_session(request: Request) -> dict[str, Any]:
         "identity_provider": "microsoft_entra",
         "identity_source": "trusted_proxy",
     }
-

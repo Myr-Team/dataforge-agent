@@ -89,4 +89,3 @@ def test_actor_runtime_ignores_untrusted_or_disabled_identity(monkeypatch) -> No
 
     assert runtime.routes == ()
     assert runtime.connections == ()
-

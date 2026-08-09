@@ -99,4 +99,3 @@ def test_service_readiness_marks_never_run_jobs_without_fabrication(monkeypatch)
     jobs = response.json()["groups"]["background_jobs"]["items"]
     assert all(item["status"] == "not_run" for item in jobs)
     assert all(item["last_completed_at"] is None for item in jobs)
-

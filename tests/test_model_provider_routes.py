@@ -83,4 +83,3 @@ def test_provider_routes_keep_pending_or_unpriced_models_visible_but_disabled() 
     assert unpriced.public["selectable"] is False
     assert unpriced.public["pricing_state"] == "unpriced"
     assert unpriced.public["unavailable_reason"] == "official_pricing_required"
-

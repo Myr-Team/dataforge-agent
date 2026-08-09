@@ -58,4 +58,3 @@ def test_job_history_is_bounded_and_ordered() -> None:
     history = repository.list("finops_apim_reconciliation", limit=2)
     assert len(history) == 2
     assert history[0].started_at > history[1].started_at
-

@@ -148,4 +148,3 @@
 - [ ] After candidate evidence passes, enable `DF_EXTERNAL_PROVIDER_ROUTING_ENABLED=1` on the candidate only, repeat the runtime checks, then switch production traffic to the verified revisions.
 - [ ] Re-run production smoke tests with the real Entra session and verify the previous Azure route remains a rollback target.
 - [ ] Commit acceptance documentation as `docs: record DeepSeek and Entra production acceptance`, push the branch, and report the commit/PR/production revision links.
-
