@@ -445,7 +445,7 @@ def test_cache_key_changes_with_tenant_and_permission_scope_without_leaking_them
 def test_cache_key_uses_current_decision_schema_version() -> None:
     key = _cache_key("roi_decision", _query(), {}, "0")
 
-    assert key.startswith("finops:query:v3:")
+    assert key.startswith("finops:query:v4:")
 
 
 def test_query_cache_never_caches_internal_event_objects() -> None:
