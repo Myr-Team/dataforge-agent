@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from backend.finops.models import FinOpsRequestEvent
 from backend.finops.query import FinOpsQuery
 from backend.finops.rollups import aggregate_rollups
 from backend.finops.rollup_refresh import refresh_rollups
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.sql_repository import FinOpsPersistenceError
 from backend.finops.sql_rollups import SqlFinOpsRollupRepository
 from test_finops_sql import RecordingConnection
 
@@ -208,3 +211,66 @@ def test_rollup_refresh_invokes_budget_hook_only_after_success_and_isolates_fail
 
     assert calls == ["rollup", "budget:tenant-a"]
     assert result["scope_count"] == 1
+
+
+def test_rollup_refresh_retries_a_transient_persistence_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    events = InMemoryFinOpsRepository()
+    events.upsert_events(
+        [_event("req_aaaaaaaaaaaa", 1, status="succeeded", total_tokens=10, cost=0.001, latency_ms=100)]
+    )
+
+    class FlakyRollupSink:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def replace(self, **_kwargs: object) -> None:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise FinOpsPersistenceError("transient write contention")
+
+    delays: list[float] = []
+    monkeypatch.setattr("backend.finops.rollup_refresh.time.sleep", delays.append)
+    sink = FlakyRollupSink()
+
+    result = refresh_rollups(
+        event_repository=events,
+        rollup_repository=sink,
+        scopes={"tenant-a": ("ws-a",)},
+        from_value="2026-07-24T02:00:00Z",
+        to_value="2026-07-24T03:00:00Z",
+    )
+
+    assert result["scope_count"] == 1
+    assert sink.attempts == 2
+    assert delays == [0.5]
+
+
+def test_rollup_refresh_keeps_persistence_retries_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    events = InMemoryFinOpsRepository()
+    events.upsert_events(
+        [_event("req_aaaaaaaaaaaa", 1, status="succeeded", total_tokens=10, cost=0.001, latency_ms=100)]
+    )
+
+    class FailedRollupSink:
+        def __init__(self) -> None:
+            self.attempts = 0
+
+        def replace(self, **_kwargs: object) -> None:
+            self.attempts += 1
+            raise FinOpsPersistenceError("persistent write failure")
+
+    delays: list[float] = []
+    monkeypatch.setattr("backend.finops.rollup_refresh.time.sleep", delays.append)
+    sink = FailedRollupSink()
+
+    with pytest.raises(FinOpsPersistenceError):
+        refresh_rollups(
+            event_repository=events,
+            rollup_repository=sink,
+            scopes={"tenant-a": ("ws-a",)},
+            from_value="2026-07-24T02:00:00Z",
+            to_value="2026-07-24T03:00:00Z",
+        )
+
+    assert sink.attempts == 3
+    assert delays == [0.5, 1.5]

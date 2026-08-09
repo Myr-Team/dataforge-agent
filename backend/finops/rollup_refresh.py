@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from .rollups import aggregate_rollups
-from .sql_repository import SqlFinOpsRepository
+from .sql_repository import FinOpsPersistenceError, SqlFinOpsRepository
 from .sql_rollups import SqlFinOpsRollupRepository
 from .job_status import JobRunService, SqlJobRunRepository
+
+
+_ROLLUP_RETRY_DELAYS_SECONDS = (0.5, 1.5)
 
 
 def refresh_rollups(
@@ -29,19 +33,13 @@ def refresh_rollups(
     for tenant_ref, workspace_ids in scopes.items():
         if not tenant_ref or not workspace_ids:
             continue
-        events = event_repository.list_events(
+        events, hourly, daily = _refresh_scope_with_retry(
+            event_repository=event_repository,
+            rollup_repository=rollup_repository,
             tenant_ref=tenant_ref,
             workspace_ids=tuple(workspace_ids),
             from_value=from_value,
             to_value=to_value,
-        )
-        hourly, daily = aggregate_rollups(events)
-        rollup_repository.replace(
-            tenant_ref=tenant_ref,
-            from_value=from_value,
-            to_value=to_value,
-            hourly=hourly,
-            daily=daily,
         )
         totals["scope_count"] += 1
         totals["event_count"] += len(events)
@@ -54,6 +52,39 @@ def refresh_rollups(
                 # Alert processing is explicitly isolated from truthful rollups.
                 pass
     return totals
+
+
+def _refresh_scope_with_retry(
+    *,
+    event_repository: Any,
+    rollup_repository: Any,
+    tenant_ref: str,
+    workspace_ids: tuple[str, ...],
+    from_value: str,
+    to_value: str,
+) -> tuple[list[Any], list[Any], list[Any]]:
+    for attempt in range(len(_ROLLUP_RETRY_DELAYS_SECONDS) + 1):
+        try:
+            events = event_repository.list_events(
+                tenant_ref=tenant_ref,
+                workspace_ids=workspace_ids,
+                from_value=from_value,
+                to_value=to_value,
+            )
+            hourly, daily = aggregate_rollups(events)
+            rollup_repository.replace(
+                tenant_ref=tenant_ref,
+                from_value=from_value,
+                to_value=to_value,
+                hourly=hourly,
+                daily=daily,
+            )
+            return events, hourly, daily
+        except FinOpsPersistenceError:
+            if attempt >= len(_ROLLUP_RETRY_DELAYS_SECONDS):
+                raise
+            time.sleep(_ROLLUP_RETRY_DELAYS_SECONDS[attempt])
+    raise AssertionError("unreachable")
 
 
 def main() -> int:
