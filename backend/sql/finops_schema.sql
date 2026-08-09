@@ -1002,7 +1002,9 @@ BEGIN
         rules_triggered INT NOT NULL,
         rules_clear INT NOT NULL,
         rules_insufficient INT NOT NULL,
+        rules_unavailable INT NOT NULL,
         request_sample_count INT NOT NULL,
+        evidence_bound_findings INT NOT NULL,
         evidence_coverage_pct DECIMAL(7, 4) NOT NULL,
         started_at DATETIME2(7) NOT NULL,
         finished_at DATETIME2(7) NULL,
@@ -1021,7 +1023,9 @@ BEGIN
             AND rules_triggered >= 0
             AND rules_clear >= 0
             AND rules_insufficient >= 0
+            AND rules_unavailable >= 0
             AND request_sample_count >= 0
+            AND evidence_bound_findings >= 0
         ),
         CONSTRAINT CK_finops_risk_scan_coverage CHECK (
             evidence_coverage_pct >= 0 AND evidence_coverage_pct <= 100
@@ -1031,6 +1035,22 @@ BEGIN
         ON df_finops.risk_scan (
             tenant_ref, workspace_id, scope_fingerprint, started_at DESC
         );
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.risk_scan', N'rules_unavailable') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.risk_scan
+        ADD rules_unavailable INT NOT NULL
+            CONSTRAINT DF_finops_risk_scan_rules_unavailable DEFAULT (0)');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.risk_scan', N'evidence_bound_findings') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.risk_scan
+        ADD evidence_bound_findings INT NOT NULL
+            CONSTRAINT DF_finops_risk_scan_evidence_bound_findings DEFAULT (0)');
 END;
 GO
 

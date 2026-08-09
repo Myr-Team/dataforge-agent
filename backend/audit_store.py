@@ -56,6 +56,7 @@ ALLOWED_ACTIONS = frozenset(
         "entra_group_mapping.manage",
         "roi.scenario.write",
         "model_price_mapping.write",
+        "finops_risk_scan.run",
     }
 )
 ALLOWED_RESOURCE_TYPES = frozenset(
@@ -64,6 +65,7 @@ ALLOWED_RESOURCE_TYPES = frozenset(
         "member", "experiment", "model_routing_policy", "model_price_card", "roi_scenario", "model_provider",
         "entra_group_mapping",
         "model_price_mapping",
+        "finops_risk_scan",
     }
 )
 ALLOWED_RESULTS = frozenset({"allowed", "denied", "failed"})

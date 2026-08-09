@@ -95,7 +95,9 @@ class FinOpsRiskScan(BaseModel):
     rules_triggered: int = Field(ge=0)
     rules_clear: int = Field(ge=0)
     rules_insufficient: int = Field(ge=0)
+    rules_unavailable: int = Field(ge=0)
     request_sample_count: int = Field(ge=0)
+    evidence_bound_findings: int = Field(ge=0)
     evidence_coverage_pct: float = Field(ge=0, le=100)
     findings: list[RiskScanFinding]
     started_at: str
@@ -115,6 +117,13 @@ class RiskScanRepository(Protocol):
         workspace_id: str,
         scope_fingerprint: str,
     ) -> FinOpsRiskScan | None: ...
+
+    def list(
+        self,
+        tenant_ref: str,
+        workspace_id: str,
+        limit: int,
+    ) -> list[FinOpsRiskScan]: ...
 
 
 class InMemoryRiskScanRepository:
@@ -150,6 +159,24 @@ class InMemoryRiskScanRepository:
             return None
         return max(candidates, key=lambda item: (item.started_at, item.scan_ref))
 
+    def list(
+        self,
+        tenant_ref: str,
+        workspace_id: str,
+        limit: int,
+    ) -> list[FinOpsRiskScan]:
+        with self._lock:
+            candidates = [
+                item.model_copy(deep=True)
+                for (tenant, _), item in self._items.items()
+                if tenant == tenant_ref and item.scope.workspace_id == workspace_id
+            ]
+        candidates.sort(
+            key=lambda item: (item.started_at, item.scan_ref),
+            reverse=True,
+        )
+        return candidates[: max(1, min(int(limit), 50))]
+
 
 class RiskScanService:
     """Run and persist a deterministic, read-only FinOps rules evaluation."""
@@ -167,42 +194,74 @@ class RiskScanService:
         ledger_revision: str,
         initiated_by_ref: str,
         now: datetime | None = None,
+        scan_ref: str | None = None,
     ) -> FinOpsRiskScan:
         timestamp = _as_utc(now or datetime.now(timezone.utc))
         started_at = _iso(timestamp)
-        detected = {
-            item.policy_type: item for item in evaluate_default_anomalies(evaluation)
-        }
-        findings = _evaluate_rule_basis(
-            evaluation,
-            detected=detected,
-            rule_revision=policy_revision,
-        )
-        available = sum(item.status != "unavailable" for item in findings)
-        scan = FinOpsRiskScan(
-            scan_ref=f"rscan_{uuid.uuid4().hex}",
+        reference = scan_ref or f"rscan_{uuid.uuid4().hex}"
+        running = FinOpsRiskScan(
+            scan_ref=reference,
             tenant_ref=tenant_ref,
             scope=scope,
             scope_fingerprint=scope.fingerprint(),
-            status="completed",
+            status="running",
             policy_revision=policy_revision,
             ledger_revision=ledger_revision,
-            rules_evaluated=len(findings),
-            rules_triggered=sum(item.status == "triggered" for item in findings),
-            rules_clear=sum(item.status == "clear" for item in findings),
-            rules_insufficient=sum(
-                item.status == "insufficient_data" for item in findings
-            ),
+            rules_evaluated=0,
+            rules_triggered=0,
+            rules_clear=0,
+            rules_insufficient=0,
+            rules_unavailable=0,
             request_sample_count=len(evaluation.events),
-            evidence_coverage_pct=round(available / len(findings) * 100, 2)
-            if findings
-            else 0,
-            findings=findings,
+            evidence_bound_findings=0,
+            evidence_coverage_pct=0,
+            findings=[],
             started_at=started_at,
-            finished_at=started_at,
+            finished_at=None,
             initiated_by_ref=initiated_by_ref,
         )
-        return self._repository.save(scan)
+        self._repository.save(running)
+        try:
+            detected = {
+                item.policy_type: item for item in evaluate_default_anomalies(evaluation)
+            }
+            findings = _bind_representative_evidence(
+                _evaluate_rule_basis(
+                    evaluation,
+                    detected=detected,
+                    rule_revision=policy_revision,
+                ),
+                evaluation.events,
+            )
+            evidence_bound = sum(bool(item.evidence_refs) for item in findings)
+            completed = running.model_copy(
+                update={
+                    "status": "completed",
+                    "rules_evaluated": len(findings),
+                    "rules_triggered": sum(item.status == "triggered" for item in findings),
+                    "rules_clear": sum(item.status == "clear" for item in findings),
+                    "rules_insufficient": sum(item.status == "insufficient_data" for item in findings),
+                    "rules_unavailable": sum(item.status == "unavailable" for item in findings),
+                    "evidence_bound_findings": evidence_bound,
+                    "evidence_coverage_pct": round(evidence_bound / len(findings) * 100, 2) if findings else 0,
+                    "findings": findings,
+                    "finished_at": started_at,
+                }
+            )
+        except Exception:
+            failed = running.model_copy(
+                update={
+                    "status": "failed",
+                    "finished_at": started_at,
+                    "safe_error_category": "risk_scan_evaluation_failed",
+                }
+            )
+            try:
+                self._repository.save(failed)
+            except Exception:
+                pass
+            raise
+        return self._repository.save(completed)
 
     def latest(
         self,
@@ -215,6 +274,71 @@ class RiskScanService:
             scope.workspace_id,
             scope.fingerprint(),
         )
+
+    def get(self, *, tenant_ref: str, scan_ref: str) -> FinOpsRiskScan | None:
+        return self._repository.get(tenant_ref, scan_ref)
+
+    def list(
+        self,
+        *,
+        tenant_ref: str,
+        workspace_id: str,
+        limit: int = 5,
+    ) -> list[FinOpsRiskScan]:
+        return self._repository.list(tenant_ref, workspace_id, limit)
+
+
+def _bind_representative_evidence(
+    findings: list[RiskScanFinding],
+    events: list,
+) -> list[RiskScanFinding]:
+    return [
+        finding
+        if finding.evidence_refs
+        else finding.model_copy(
+            update={"evidence_refs": _representative_refs(events, finding.policy_type)}
+        )
+        for finding in findings
+    ]
+
+
+def _representative_refs(events: list, policy_type: RiskPolicyType) -> list[str]:
+    recent = sorted(
+        events,
+        key=lambda event: (event.occurred_at, event.request_ref),
+        reverse=True,
+    )
+    if policy_type == "error_rate":
+        candidates = [event for event in recent if event.status == "failed"] or recent
+    elif policy_type == "p95_latency":
+        candidates = sorted(
+            [event for event in recent if event.latency_ms is not None],
+            key=lambda event: (int(event.latency_ms or 0), event.occurred_at),
+            reverse=True,
+        ) or recent
+    elif policy_type == "daily_cost_budget":
+        candidates = sorted(
+            [event for event in recent if event.estimated_cost.amount is not None],
+            key=lambda event: (float(event.estimated_cost.amount or 0), event.occurred_at),
+            reverse=True,
+        ) or recent
+    elif policy_type == "token_spike":
+        candidates = sorted(
+            [event for event in recent if event.tokens.total is not None],
+            key=lambda event: (int(event.tokens.total or 0), event.occurred_at),
+            reverse=True,
+        ) or recent
+    elif policy_type == "apim_coverage":
+        candidates = [event for event in recent if event.gateway_coverage != "apim_governed"] or recent
+    elif policy_type == "unpriced_requests":
+        candidates = [event for event in recent if event.estimated_cost.amount is None] or recent
+    else:
+        candidates = [
+            event
+            for event in recent
+            if event.cache.eligible is True and event.cache.state in {"miss", "bypassed"}
+        ] or [event for event in recent if event.cache.eligible is True] or recent
+    return list(dict.fromkeys(event.request_ref for event in candidates[:3]))
 
 
 def _evaluate_rule_basis(

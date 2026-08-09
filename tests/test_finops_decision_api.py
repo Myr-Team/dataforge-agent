@@ -339,6 +339,24 @@ def test_owner_can_run_and_reload_a_persisted_read_only_risk_scan(
     assert latest.status_code == 200, latest.text
     assert latest.json()["scan_ref"] == body["scan_ref"]
 
+    history = client.get(
+        "/api/finops/risk/scans",
+        params={"workspace_id": "ws-a", "limit": 5},
+        headers=owner_headers,
+    )
+    assert history.status_code == 200, history.text
+    assert history.json()["items"][0]["scan_ref"] == body["scan_ref"]
+    assert history.json()["items"][0]["rule_count"] == 7
+
+    detail = client.get(
+        f"/api/finops/risk/scans/{body['scan_ref']}",
+        params={"workspace_id": "ws-a"},
+        headers=owner_headers,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["scan_ref"] == body["scan_ref"]
+    assert len(detail.json()["findings"]) == 7
+
 
 def test_latest_risk_scan_keeps_persisted_evidence_until_it_expires(
     client: TestClient,
@@ -489,9 +507,39 @@ def test_member_cannot_run_or_read_risk_scans(
         params=payload,
         headers=member_headers,
     )
+    history = client.get(
+        "/api/finops/risk/scans",
+        params={"workspace_id": "ws-a"},
+        headers=member_headers,
+    )
 
     assert created.status_code == 403
     assert latest.status_code == 403
+    assert history.status_code == 403
+
+
+def test_risk_scan_fails_closed_when_audit_persistence_is_unavailable(
+    client: TestClient,
+    owner_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scan_service = RiskScanService(InMemoryRiskScanRepository())
+    monkeypatch.setattr(finops_router, "get_finops_risk_scan_service", lambda: scan_service)
+    monkeypatch.setattr(
+        finops_router,
+        "record_audit_event",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("audit unavailable")),
+    )
+
+    response = client.post(
+        "/api/finops/risk/scans",
+        json={"workspace_id": "ws-a"},
+        headers=owner_headers,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Audit persistence is required"
+    assert scan_service.list(tenant_ref="tenant-a", workspace_id="ws-a", limit=5) == []
 
 
 def test_metric_evidence_endpoint_returns_subject_specific_bounded_requests(

@@ -5,6 +5,7 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from statistics import median
@@ -2073,6 +2074,27 @@ def _public_risk_scan(
     }
 
 
+def _public_risk_scan_summary(scan: FinOpsRiskScan) -> dict[str, Any]:
+    return {
+        "scan_ref": scan.scan_ref,
+        "workspace_id": scan.scope.workspace_id,
+        "status": scan.status,
+        "policy_revision": scan.policy_revision,
+        "ledger_revision": scan.ledger_revision,
+        "rule_count": scan.rules_evaluated,
+        "rules_triggered": scan.rules_triggered,
+        "rules_clear": scan.rules_clear,
+        "rules_insufficient": scan.rules_insufficient,
+        "rules_unavailable": scan.rules_unavailable,
+        "request_sample_count": scan.request_sample_count,
+        "evidence_bound_findings": scan.evidence_bound_findings,
+        "evidence_coverage_pct": scan.evidence_coverage_pct,
+        "started_at": scan.started_at,
+        "finished_at": scan.finished_at,
+        "safe_error_category": scan.safe_error_category,
+    }
+
+
 def _scan_finding_evidence(
     finding: RiskScanFinding,
     events: list[FinOpsRequestEvent],
@@ -2116,6 +2138,69 @@ def _risk_scan_context(
     return service, query, service.events(query)
 
 
+def _risk_scan_read_scope(
+    request: Request,
+    workspace_id: str,
+) -> tuple[str, dict[str, str]]:
+    tenant_ref, _, roles = _pricing_read_context(request)
+    if roles.get(workspace_id) not in {"owner", "admin"}:
+        raise HTTPException(
+            status_code=403,
+            detail="risk scan requires admin or owner",
+        )
+    return tenant_ref, roles
+
+
+def _risk_scan_audit_required(
+    request: Request,
+    *,
+    workspace_id: str,
+    scan_ref: str,
+) -> None:
+    try:
+        record_audit_event(
+            actor_from_request(request, fallback=False),
+            "finops_risk_scan.run",
+            {
+                "workspace_id": workspace_id,
+                "resource_type": "finops_risk_scan",
+                "resource_id": scan_ref,
+            },
+            result="allowed",
+            reason_code="authorized",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Audit persistence is required",
+        ) from exc
+
+
+@router.get("/risk/scans")
+async def list_risk_scans(
+    request: Request,
+    workspace_id: str = Query(min_length=1, max_length=160),
+    limit: int = Query(default=5, ge=1, le=50),
+) -> dict[str, Any]:
+    tenant_ref, _ = _risk_scan_read_scope(request, workspace_id)
+    try:
+        items = get_finops_risk_scan_service().list(
+            tenant_ref=tenant_ref,
+            workspace_id=workspace_id,
+            limit=limit,
+        )
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
+    return {
+        "items": [_public_risk_scan_summary(item) for item in items],
+        "count": len(items),
+        "workspace_id": workspace_id,
+    }
+
+
 @router.post("/risk/scans", status_code=201)
 async def run_risk_scan(
     body: RiskScanCreateRequest,
@@ -2133,6 +2218,12 @@ async def run_risk_scan(
             model=body.model,
         )
         actor = actor_from_request(request, fallback=False)
+        scan_ref = f"rscan_{uuid.uuid4().hex}"
+        _risk_scan_audit_required(
+            request,
+            workspace_id=body.workspace_id,
+            scan_ref=scan_ref,
+        )
         scan = get_finops_risk_scan_service().run(
             tenant_ref=query.tenant_ref,
             scope=_risk_scan_scope(query),
@@ -2143,6 +2234,7 @@ async def run_risk_scan(
             policy_revision=_risk_policy_revision(query.tenant_ref),
             ledger_revision=_risk_ledger_revision(events),
             initiated_by_ref=_actor_ref(actor),
+            scan_ref=scan_ref,
         )
         _bump_finops_domains(
             query.tenant_ref,
@@ -2191,6 +2283,42 @@ async def latest_risk_scan(
             scope=_risk_scan_scope(query),
         )
         if scan is None:
+            raise HTTPException(status_code=404, detail="risk scan not found")
+        return _public_risk_scan(scan, events=events)
+    except HTTPException:
+        raise
+    except FinOpsPersistenceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="risk scan persistence is unavailable",
+        ) from exc
+
+
+@router.get("/risk/scans/{scan_ref}")
+async def risk_scan_detail(
+    scan_ref: str,
+    request: Request,
+    workspace_id: str = Query(min_length=1, max_length=160),
+) -> dict[str, Any]:
+    tenant_ref, _ = _risk_scan_read_scope(request, workspace_id)
+    try:
+        scan = get_finops_risk_scan_service().get(
+            tenant_ref=tenant_ref,
+            scan_ref=scan_ref,
+        )
+        if scan is None or scan.scope.workspace_id != workspace_id:
+            raise HTTPException(status_code=404, detail="risk scan not found")
+        _service, query, events = _risk_scan_context(
+            request,
+            from_value=scan.scope.from_value,
+            to_value=scan.scope.to_value,
+            department_id=scan.scope.department_id,
+            workspace_id=workspace_id,
+            agent_id=scan.scope.agent_id,
+            actor_ref=scan.scope.actor_ref,
+            model=scan.scope.model,
+        )
+        if query.tenant_ref != tenant_ref:
             raise HTTPException(status_code=404, detail="risk scan not found")
         return _public_risk_scan(scan, events=events)
     except HTTPException:

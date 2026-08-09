@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
+import backend.finops.risk_scans as risk_scans
 from backend.finops.anomalies import AnomalyEvaluationInput
 from backend.finops.models import FinOpsRequestEvent
 from backend.finops.risk_scans import (
@@ -165,3 +168,86 @@ def test_scan_service_has_no_governance_action_execution_dependency() -> None:
 
     assert not hasattr(service, "execute")
     assert not hasattr(service, "governance_actions")
+
+
+def test_scan_persists_running_before_completed_and_lists_history() -> None:
+    class RecordingRepository(InMemoryRiskScanRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.statuses: list[str] = []
+
+        def save(self, value):
+            self.statuses.append(value.status)
+            return super().save(value)
+
+    repository = RecordingRepository()
+    service = RiskScanService(repository)
+    first = service.run(
+        tenant_ref="tenant-a",
+        scope=_scope(),
+        evaluation=AnomalyEvaluationInput(events=[_event(1)]),
+        policy_revision="policy-7",
+        ledger_revision="ledger-41",
+        initiated_by_ref="actor-admin",
+        now=_NOW,
+    )
+    second = service.run(
+        tenant_ref="tenant-a",
+        scope=_scope(),
+        evaluation=AnomalyEvaluationInput(events=[_event(2)]),
+        policy_revision="policy-8",
+        ledger_revision="ledger-42",
+        initiated_by_ref="actor-admin",
+        now=_NOW + timedelta(minutes=1),
+    )
+
+    assert repository.statuses == ["running", "completed", "running", "completed"]
+    assert service.list(tenant_ref="tenant-a", workspace_id="ws-a", limit=5) == [second, first]
+    assert service.list(tenant_ref="tenant-b", workspace_id="ws-a", limit=5) == []
+
+
+def test_scan_persists_safe_failed_state_when_evaluation_raises(monkeypatch) -> None:
+    repository = InMemoryRiskScanRepository()
+    service = RiskScanService(repository)
+    monkeypatch.setattr(
+        risk_scans,
+        "evaluate_default_anomalies",
+        lambda _evaluation: (_ for _ in ()).throw(RuntimeError("secret provider detail")),
+    )
+
+    with pytest.raises(RuntimeError, match="secret provider detail"):
+        service.run(
+            tenant_ref="tenant-a",
+            scope=_scope(),
+            evaluation=AnomalyEvaluationInput(events=[_event(1)]),
+            policy_revision="policy-7",
+            ledger_revision="ledger-42",
+            initiated_by_ref="actor-admin",
+            now=_NOW,
+            scan_ref="rscan_00000000000000000000000000000001",
+        )
+
+    failed = repository.get("tenant-a", "rscan_00000000000000000000000000000001")
+    assert failed is not None
+    assert failed.status == "failed"
+    assert failed.safe_error_category == "risk_scan_evaluation_failed"
+    assert "secret" not in failed.model_dump_json()
+
+
+def test_scan_coverage_counts_bound_request_evidence_not_available_rules() -> None:
+    events = [_event(index) for index in range(20)]
+    scan = RiskScanService(InMemoryRiskScanRepository()).run(
+        tenant_ref="tenant-a",
+        scope=_scope(),
+        evaluation=AnomalyEvaluationInput(events=events),
+        policy_revision="policy-7",
+        ledger_revision="ledger-42",
+        initiated_by_ref="actor-admin",
+        now=_NOW,
+    )
+
+    assert scan.rules_evaluated == 7
+    assert scan.rules_unavailable == 2
+    assert scan.evidence_bound_findings == 7
+    assert scan.evidence_coverage_pct == 100
+    assert all(finding.evidence_refs for finding in scan.findings)
