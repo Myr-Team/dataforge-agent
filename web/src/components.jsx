@@ -182,13 +182,18 @@ export function accountViewModel(user = {}, authState = "local") {
   const suppliedName = String(user?.name || "").trim();
   const suppliedEmail = String(user?.email || "").trim();
   const name = suppliedName || "当前账户";
-  const email = suppliedEmail || "账号信息暂不可用";
+  const unavailable = authState === "unavailable" || authState === "pending";
+  const email = suppliedEmail || (unavailable ? "身份信息暂不可用" : "账号信息暂不可用");
   const initial = Array.from(suppliedName || suppliedEmail)[0]?.toUpperCase() || "U";
   return {
     initial,
     name,
     email,
-    authLabel: authState === "authenticated" ? "已通过 Microsoft Entra 登录" : "本地预览身份",
+    authLabel: authState === "authenticated"
+      ? "已通过 Microsoft Entra 登录"
+      : unavailable
+        ? "Microsoft Entra 身份待恢复"
+        : "本地预览身份",
   };
 }
 

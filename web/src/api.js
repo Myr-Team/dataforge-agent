@@ -119,6 +119,14 @@ async function request(path, options = {}) {
 
 export const apiFetch = request;
 
+export async function loadAuthSession(endpoint = "/api/auth/session") {
+  return request(endpoint, {
+    headers: { Accept: "application/json" },
+    credentials: "same-origin",
+    timeoutMs: 8000,
+  });
+}
+
 
 async function probeEasyAuthSession() {
   if (typeof window === "undefined") return { authenticated: null };

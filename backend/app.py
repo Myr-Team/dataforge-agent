@@ -40,6 +40,7 @@ try:
     from .audit_store import record_audit_event
     from .artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
     from .artifact_registry import ArtifactPersistenceError, get_artifact
+    from .auth_session_router import router as auth_session_router
     from .task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from .blob_store import download_artifact
     from .conversation_store import get_conversation, list_conversations
@@ -98,6 +99,7 @@ except ImportError:
     from audit_store import record_audit_event
     from artifact_jobs import ArtifactJobPersistenceError, create_artifact_job, get_artifact_job, list_artifact_jobs, recover_prepared_artifact_tasks, retry_artifact_task, run_artifact_job
     from artifact_registry import ArtifactPersistenceError, get_artifact
+    from auth_session_router import router as auth_session_router
     from task_store import TaskPersistenceError, cancel_requested, claim_task, create_task, get_task, list_tasks, request_cancel, update_task
     from blob_store import download_artifact
     from conversation_store import get_conversation, list_conversations
@@ -198,6 +200,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(data_workbench_router)
+app.include_router(auth_session_router)
 app.include_router(control_plane_router)
 app.include_router(finops_router)
 app.include_router(member_budget_router)
