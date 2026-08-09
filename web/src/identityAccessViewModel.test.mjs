@@ -1,7 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { identityAccessViewModel, identityGroupSearchViewModel } from "./identityAccessViewModel.js";
+import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionViewModel } from "./identityAccessViewModel.js";
+
+test("trusted Entra session explains the current workspace role without exposing internal ids", () => {
+  const view = identitySessionViewModel({
+    authState: "authenticated",
+    user: {
+      name: "傅先生",
+      email: "demo.admin@example.com",
+      identityProvider: "microsoft_entra",
+      identitySource: "trusted_proxy",
+      oid: "must-not-surface",
+    },
+    access: {
+      allowed: true,
+      role: "owner",
+      reason_code: "owner_match",
+      tenant_ref: "must-not-surface",
+    },
+  });
+
+  assert.equal(view.trusted, true);
+  assert.equal(view.displayName, "傅先生");
+  assert.equal(view.identityLabel, "Microsoft Entra ID");
+  assert.equal(view.roleLabel, "工作区所有者");
+  assert.equal(view.authorizationLabel, "工作区创建者授权");
+  assert.equal(JSON.stringify(view).includes("must-not-surface"), false);
+});
+
+test("unavailable production identity never falls back to a local demo label", () => {
+  const view = identitySessionViewModel({ authState: "unavailable", user: {}, access: null });
+
+  assert.equal(view.trusted, false);
+  assert.equal(view.displayName, "身份信息暂不可用");
+  assert.equal(view.identityLabel, "等待可信登录信息");
+  assert.equal(view.roleLabel, "尚未核验");
+});
 
 test("identity access uses friendly group names and workspace-scoped mappings", () => {
   const view = identityAccessViewModel({

@@ -17,6 +17,42 @@ function permission(value) {
   };
 }
 
+const SESSION_ROLE_LABELS = {
+  owner: "工作区所有者",
+  admin: "工作区管理员",
+  editor: "工作区编辑者",
+  viewer: "工作区查看者",
+};
+
+const AUTHORIZATION_LABELS = {
+  owner_match: "工作区创建者授权",
+  member_match: "显式成员授权",
+  group_match: "Entra 组映射授权",
+  demo_tenant_owner: "演示租户所有者授权",
+  role_denied: "当前操作超出角色权限",
+  tenant_mismatch: "登录租户与工作区不匹配",
+  identity_missing: "未取得可信登录身份",
+  membership_missing: "未匹配成员或 Entra 组",
+};
+
+export function identitySessionViewModel({ user = {}, authState = "unavailable", access = null } = {}) {
+  const trusted = authState === "authenticated"
+    && text(user.identityProvider) === "microsoft_entra"
+    && text(user.identitySource) === "trusted_proxy";
+  const role = trusted && access?.allowed === true ? text(access.role) : "";
+  const reason = trusted ? text(access?.reason_code) : "identity_missing";
+  return {
+    trusted,
+    displayName: trusted ? text(user.name) || "DataForge 用户" : "身份信息暂不可用",
+    email: trusted ? text(user.email) : "",
+    identityLabel: trusted ? "Microsoft Entra ID" : "等待可信登录信息",
+    identitySourceLabel: trusted ? "由 Easy Auth 验证" : "未使用本地身份代替",
+    roleLabel: role ? SESSION_ROLE_LABELS[role] || "工作区成员" : "尚未核验",
+    accessAllowed: trusted && access?.allowed === true,
+    authorizationLabel: AUTHORIZATION_LABELS[reason] || "服务端授权策略",
+  };
+}
+
 export function identityAccessViewModel(payload = {}, workspaceId = "") {
   const rows = Array.isArray(payload.mappings) ? payload.mappings : [];
   const mappings = rows

@@ -1302,6 +1302,7 @@ export function App() {
             onOpenConversation={openConversation}
             tasks={tasks}
             user={user}
+            authState={authState}
             settingsInitialTab={settingsInitialTab}
             onWorkspaceDataChanged={() => refreshDashboard(workspaceId)}
             onOpenTaskCenter={() => setTaskDrawerOpen(true)}

@@ -11,7 +11,7 @@ const TABS = [
   { id: "identity", label: "身份与访问", icon: ShieldCheck },
 ];
 
-export function ModelGovernanceSettings({ workspaceId = "" }) {
+export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
   const [tab, setTab] = useState("agents");
   return (
     <div className="model-governance-settings" data-testid="model-governance-settings">
@@ -35,7 +35,7 @@ export function ModelGovernanceSettings({ workspaceId = "" }) {
       <div className="model-governance-body">
         {tab === "agents" ? <ModelRoutingPage workspaceId={workspaceId} embedded /> : null}
         {tab === "providers" ? <ProviderConnectionsPage /> : null}
-        {tab === "identity" ? <IdentityAccessPage workspaceId={workspaceId} /> : null}
+        {tab === "identity" ? <IdentityAccessPage workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} /> : null}
       </div>
     </div>
   );

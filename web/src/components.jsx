@@ -613,6 +613,7 @@ function WorkbenchMainInner({
   onAppendUpload,
   tasks,
   user,
+  authState,
   settingsInitialTab,
   onWorkspaceDataChanged,
   onOpenTaskCenter,
@@ -692,7 +693,7 @@ function WorkbenchMainInner({
     );
   }
   if (resolvedView === "settings") {
-    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} initialTab={settingsInitialTab} />;
+    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsInitialTab} />;
   }
   if (["members", "lineage", "monitor", "model-routing"].includes(resolvedView)) {
     return (
@@ -3212,7 +3213,7 @@ function governanceIsoWindow(value) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function SettingsCenter({ dashboard, observability, user, initialTab = "about", governanceOnly = false }) {
+function SettingsCenter({ dashboard, observability, user, authState = "unavailable", workspaceAccess = null, initialTab = "about", governanceOnly = false }) {
   const health = dashboard?.health || {};
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
   const [tab, setTab] = useState(() => governanceOnly ? "governance" : "about");
@@ -3990,7 +3991,7 @@ function SettingsCenter({ dashboard, observability, user, initialTab = "about", 
         wide={settingsDrawer === "models"}
       >
         {settingsDrawer === "models"
-          ? <ModelGovernanceSettings workspaceId={workspaceId} />
+          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} />
           : (
             <div className="settings-info-drawer">
               {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}
