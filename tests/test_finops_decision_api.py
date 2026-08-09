@@ -825,6 +825,58 @@ def test_risk_decision_returns_policy_specific_evidence_sets(
     )
 
 
+def test_risk_evidence_sets_diversify_overlapping_policy_samples() -> None:
+    events = [
+        FinOpsRequestEvent.model_validate(
+            {
+                "request_ref": f"req_overlap_{index:012d}",
+                "occurred_at": datetime(2026, 7, 24, 2, index, tzinfo=timezone.utc),
+                "call_class": "model",
+                "tenant_ref": "tenant-a",
+                "workspace_id": "ws-a",
+                "status": "succeeded",
+                "latency_ms": 10_000 - index * 100,
+                "tokens": {"total": 10_000 - index * 100},
+                "gateway_coverage": "apim_governed",
+                "estimated_cost": {
+                    "amount": 1 - index / 100,
+                    "currency": "USD",
+                    "status": "estimated",
+                },
+                "evidence_state": "observed",
+            }
+        )
+        for index in range(8)
+    ]
+    shared_refs = [event.request_ref for event in events[:5]]
+    opportunities = [
+        {
+            "opportunity_id": f"opp-{policy_type}",
+            "policy_type": policy_type,
+            "title": policy_type,
+            "evidence_refs": shared_refs,
+        }
+        for policy_type in ("p95_latency", "token_spike", "daily_cost_budget")
+    ]
+
+    evidence_sets = finops_router._risk_evidence_sets(events, opportunities)
+
+    fingerprints = {
+        tuple(sorted(item.request_ref for item in evidence_set.items))
+        for evidence_set in evidence_sets
+    }
+    assert len(fingerprints) == len(opportunities)
+    assert all(evidence_set.items for evidence_set in evidence_sets)
+    assert {
+        evidence_set.policy_type: evidence_set.items[0].signal.metric
+        for evidence_set in evidence_sets
+    } == {
+        "p95_latency": "latency_ms",
+        "token_spike": "tokens_total",
+        "daily_cost_budget": "estimated_cost",
+    }
+
+
 def _managed_finding(
     *,
     anomaly_id: str,

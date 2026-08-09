@@ -8,6 +8,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from statistics import median
 from typing import Any, Iterator, Literal, Mapping, Sequence
 from urllib.parse import quote, urlparse
@@ -52,6 +53,7 @@ from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
 from .evidence_selection import (
     EvidenceSet,
+    policy_evidence_candidates,
     select_metric_evidence,
     select_policy_evidence,
 )
@@ -2024,15 +2026,30 @@ def _risk_evidence_sets(
 ) -> list[EvidenceSet]:
     by_ref = {event.request_ref: event for event in events}
     result: list[EvidenceSet] = []
+    fingerprints: set[tuple[str, ...]] = set()
     for opportunity in opportunities:
         requested_refs = [
             str(value)
             for value in opportunity.get("evidence_refs") or []
             if str(value) in by_ref
         ]
-        candidates = [by_ref[ref] for ref in requested_refs] if requested_refs else events
         policy_type = str(opportunity.get("policy_type") or "")
-        selected = select_policy_evidence(candidates, policy_type, limit=3)
+        ranked = policy_evidence_candidates(events, policy_type)
+        ranked_by_ref = {event.request_ref: event for event in ranked}
+        candidates = [
+            ranked_by_ref[ref]
+            for ref in requested_refs
+            if ref in ranked_by_ref
+        ]
+        candidates.extend(
+            event for event in ranked if event.request_ref not in requested_refs
+        )
+        candidates = list({event.request_ref: event for event in candidates}.values())[:12]
+        selected = _distinct_policy_evidence_set(
+            candidates,
+            policy_type,
+            fingerprints,
+        )
         result.append(
             selected.model_copy(
                 update={
@@ -2042,6 +2059,32 @@ def _risk_evidence_sets(
             )
         )
     return result
+
+
+def _distinct_policy_evidence_set(
+    candidates: list[FinOpsRequestEvent],
+    policy_type: str,
+    fingerprints: set[tuple[str, ...]],
+) -> EvidenceSet:
+    sample_size = min(3, len(candidates))
+    if sample_size == 0:
+        return select_policy_evidence([], policy_type, limit=3)
+    fallback: EvidenceSet | None = None
+    for indexes in combinations(range(len(candidates)), sample_size):
+        selected = select_policy_evidence(
+            [candidates[index] for index in indexes],
+            policy_type,
+            limit=sample_size,
+        )
+        if fallback is None:
+            fallback = selected
+        fingerprint = tuple(sorted(item.request_ref for item in selected.items))
+        if fingerprint and fingerprint not in fingerprints:
+            fingerprints.add(fingerprint)
+            return selected
+    assert fallback is not None
+    fingerprints.add(tuple(sorted(item.request_ref for item in fallback.items)))
+    return fallback
 
 
 def _risk_evidence_summaries(evidence_sets: list[EvidenceSet]) -> list[dict[str, Any]]:
