@@ -197,6 +197,20 @@ def test_candidate_acceptance_requires_complete_numeric_display_data() -> None:
     assert summary["request_detail_complete"] is True
 
 
+def test_candidate_acceptance_allows_the_available_analysis_route_as_fallback() -> None:
+    payloads = _payloads()
+    payloads["model_routing"]["routes"][1] = {
+        "id": "default",
+        "deployment": "gpt-5.1",
+    }
+    for assignment in payloads["model_routing"]["policy"]["agent_assignments"].values():
+        assignment["fallback_route_id"] = "default"
+
+    summary = summarize_candidate_payloads(payloads)
+
+    assert summary["model_routing"]["operations_analysts_on_terra"] is True
+
+
 def test_candidate_acceptance_rejects_equal_chart_values() -> None:
     payloads = _payloads()
     for item in payloads["bootstrap"]["trend"]["items"]:

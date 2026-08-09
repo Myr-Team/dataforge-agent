@@ -296,11 +296,13 @@ def summarize_candidate_payloads(payloads: Mapping[str, Any]) -> dict[str, Any]:
     )
     for agent_id in ("df-finops-analyst", "df-roi-analyst"):
         assignment = _mapping(assignments.get(agent_id), f"{agent_id} assignment")
+        fallback_route_id = str(assignment.get("fallback_route_id") or "").strip()
         if (
             assignment.get("primary_route_id") != "terra"
-            or assignment.get("fallback_route_id") != "analysis"
             or routes.get("terra") != "gpt-5.6-terra"
-            or not routes.get("analysis")
+            or not fallback_route_id
+            or fallback_route_id == "terra"
+            or not routes.get(fallback_route_id)
         ):
             raise CandidateAcceptanceError(
                 "operations analyst routing is not Terra-first"
