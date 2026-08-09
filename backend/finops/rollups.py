@@ -53,11 +53,11 @@ def _aggregate(
         )
         key = (
             bucket_at,
-            event.tenant_ref,
-            event.department_id or "unassigned",
-            event.workspace_id,
-            event.agent_id or "unrecorded",
-            event.deployment or event.model or "unrecorded",
+            _sql_dimension(event.tenant_ref, "unassigned"),
+            _sql_dimension(event.department_id, "unassigned"),
+            _sql_dimension(event.workspace_id, "unassigned"),
+            _sql_dimension(event.agent_id, "unrecorded"),
+            _sql_dimension(event.deployment or event.model, "unrecorded"),
         )
         grouped[key].append(event)
 
@@ -108,6 +108,10 @@ def _aggregate(
             item.model_deployment,
         ),
     )
+
+
+def _sql_dimension(value: str | None, fallback: str) -> str:
+    return str(value or fallback).strip().casefold()
 
 
 def _nearest_rank(values: list[int], fraction: float) -> int | None:

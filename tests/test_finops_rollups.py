@@ -90,6 +90,46 @@ def test_rollups_preserve_cache_counts_and_avoided_tokens() -> None:
     assert hourly[0].cache_avoided_tokens == 60
 
 
+def test_rollups_collapse_identifier_case_variants_before_sql_persistence() -> None:
+    first = _event(
+        "req_aaaaaaaaaaaa",
+        1,
+        status="succeeded",
+        total_tokens=100,
+        cost=0.004,
+        latency_ms=100,
+    )
+    variant_payload = _event(
+        "req_bbbbbbbbbbbb",
+        2,
+        status="succeeded",
+        total_tokens=200,
+        cost=0.006,
+        latency_ms=200,
+    ).model_dump(mode="python")
+    variant_payload.update(
+        {
+            "tenant_ref": "TENANT-A",
+            "department_id": "UNASSIGNED",
+            "workspace_id": "WS-A",
+            "agent_id": "COORDINATOR",
+            "deployment": "GPT-5-MINI",
+        }
+    )
+    variant = FinOpsRequestEvent.model_validate(variant_payload)
+
+    hourly, daily = aggregate_rollups([first, variant])
+
+    assert len(hourly) == len(daily) == 1
+    assert hourly[0].request_count == 2
+    assert hourly[0].total_tokens == 300
+    assert hourly[0].estimated_cost == 0.01
+    assert hourly[0].tenant_ref == "tenant-a"
+    assert hourly[0].workspace_id == "ws-a"
+    assert hourly[0].agent_id == "coordinator"
+    assert hourly[0].model_deployment == "gpt-5-mini"
+
+
 def test_sql_rollup_repository_replaces_only_requested_tenant_window() -> None:
     connection = RecordingConnection()
     repository = SqlFinOpsRollupRepository(connection_factory=lambda: connection)
@@ -110,6 +150,24 @@ def test_sql_rollup_repository_replaces_only_requested_tenant_window() -> None:
     assert any("finops:insert-hour-rollup" in operation for operation in operations)
     assert any("finops:delete-day-rollups" in operation for operation in operations)
     assert any("finops:insert-day-rollup" in operation for operation in operations)
+
+
+def test_sql_rollup_repository_accepts_casefolded_tenant_scope() -> None:
+    connection = RecordingConnection()
+    repository = SqlFinOpsRollupRepository(connection_factory=lambda: connection)
+    hourly, daily = aggregate_rollups(
+        [_event("req_aaaaaaaaaaaa", 1, status="succeeded", total_tokens=10, cost=0.001, latency_ms=100)]
+    )
+
+    repository.replace(
+        tenant_ref="TENANT-A",
+        from_value="2026-07-24T02:00:00Z",
+        to_value="2026-07-24T03:00:00Z",
+        hourly=hourly,
+        daily=daily,
+    )
+
+    assert connection.commits == 1
 
 
 def test_sql_rollup_read_is_tenant_workspace_and_window_scoped() -> None:
@@ -277,7 +335,11 @@ def test_rollup_refresh_keeps_persistence_retries_bounded(monkeypatch: pytest.Mo
 
 
 def test_rollup_failure_diagnostics_expose_only_categories_and_sqlstate() -> None:
-    database_error = RuntimeError("40001", "credential-like detail must stay private")
+    database_error = RuntimeError(
+        "23000",
+        "Violation of PRIMARY KEY constraint 'PK_finops_request_rollup_hour'; "
+        "credential-like detail must stay private",
+    )
     wrapped = FinOpsPersistenceError("safe persistence category")
     wrapped.__cause__ = database_error
 
@@ -285,6 +347,10 @@ def test_rollup_failure_diagnostics_expose_only_categories_and_sqlstate() -> Non
 
     assert diagnostics == [
         {"category": "FinOpsPersistenceError"},
-        {"category": "RuntimeError", "sqlstate": "40001"},
+        {
+            "category": "RuntimeError",
+            "sqlstate": "23000",
+            "constraint": "PK_finops_request_rollup_hour",
+        },
     ]
     assert "credential-like" not in str(diagnostics)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -13,6 +14,7 @@ from .job_status import JobRunService, SqlJobRunRepository
 
 
 _ROLLUP_RETRY_DELAYS_SECONDS = (0.5, 1.5)
+_SAFE_CONSTRAINT_NAME = re.compile(r"\b(?:PK|UQ|CK|FK)_[A-Za-z0-9_]{1,60}\b", re.IGNORECASE)
 
 
 def refresh_rollups(
@@ -194,7 +196,9 @@ def _safe_exception_chain(error: BaseException) -> list[dict[str, str]]:
             candidate = str(value).strip().upper()
             if len(candidate) == 5 and candidate.isalnum():
                 item["sqlstate"] = candidate
-                break
+            constraint = _SAFE_CONSTRAINT_NAME.search(str(value))
+            if constraint is not None:
+                item["constraint"] = constraint.group(0)
         items.append(item)
         current = current.__cause__ or current.__context__
     return items
