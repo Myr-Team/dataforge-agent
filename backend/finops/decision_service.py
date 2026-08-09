@@ -45,6 +45,20 @@ def _refs(values: Any, limit: int = 20) -> list[str]:
     ][:limit]
 
 
+def _request_refs(values: Any, limit: int = 20) -> list[str]:
+    refs: list[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        ref = str(value or "").strip()
+        if not _REQUEST_REF.fullmatch(ref) or ref in seen:
+            continue
+        seen.add(ref)
+        refs.append(ref)
+        if len(refs) >= limit:
+            break
+    return refs
+
+
 def _source_ids(values: Any, limit: int = 300) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
@@ -192,7 +206,7 @@ def _maturity(funnel: list[dict[str, Any]]) -> dict[str, Any]:
             "unit": raw.get("unit") or "", "status": status,
             "evidence_count": max(0, int(raw.get("evidence_count") or 0)),
             "evidence_gap": str(raw.get("evidence_gap") or ""),
-            "evidence_refs": _refs(raw.get("evidence_refs")), "complete": complete,
+            "evidence_refs": _request_refs(raw.get("evidence_refs")), "complete": complete,
         })
     return {"score_pct": score, "formula_revision": "roi-evidence-maturity-v1", "stages": stages}
 

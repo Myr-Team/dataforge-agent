@@ -169,6 +169,44 @@ def test_roi_decision_preserves_counts_and_gaps_when_request_mapping_is_missing(
         assert "请求级证据" in stage["evidence_gap"]
 
 
+def test_roi_maturity_never_leaks_run_or_outcome_ids_as_openable_evidence() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [
+                {
+                    "id": "output",
+                    "value": 1,
+                    "status": "observed",
+                    "evidence_refs": ["run-output", "outcome-output", "event_output"],
+                }
+            ],
+            "scenarios": [],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 0}, "observed_run_ids": []},
+        cost_value={
+            "artifact_count": 1,
+            "outcome_evidence": {
+                "status": "not_recorded",
+                "outcome_event_ids": [],
+                "verified_outcome_event_ids": [],
+            },
+        },
+        unit_trend=[],
+        request_refs_by_run={},
+        artifact_run_ids=["run-output"],
+        artifact_source_count=1,
+    )
+
+    output = next(
+        stage
+        for stage in result["evidence_maturity"]["stages"]
+        if stage["id"] == "output"
+    )
+    assert output["evidence_refs"] == []
+    assert "请求级证据" in output["evidence_gap"]
+
+
 def test_roi_decision_marks_output_incomplete_when_one_artifact_lacks_source_lineage() -> None:
     result = build_roi_decision(
         economics={
