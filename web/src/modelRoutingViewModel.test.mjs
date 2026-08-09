@@ -5,6 +5,7 @@ import {
   MODEL_AGENT_ROLES,
   MODEL_EXECUTION_KINDS,
   modelRoutingViewModel,
+  officialPricePresentation,
 } from "./modelRoutingViewModel.js";
 
 test("model routing view exposes allowlisted routes and owner-managed price-card state", () => {
@@ -72,4 +73,52 @@ test("model settings expose the stable DataForge and operations analyst roles", 
 test("configured follow-up uses the stable chat capability", () => {
   const followUp = MODEL_EXECUTION_KINDS.find((item) => item.id === "follow_up");
   assert.equal(followUp?.capability, "chat");
+});
+
+test("dynamic provider routes preserve server-owned availability and labels", () => {
+  const view = modelRoutingViewModel({
+    routes: [{
+      id: "ds_primary_flash",
+      deployment: "deepseek-v4-flash",
+      model_id: "deepseek-v4-flash",
+      provider_id: "provider_primary",
+      provider_type: "deepseek",
+      provider_label: "DeepSeek 原厂",
+      label: "DeepSeek V4 Flash",
+      capabilities: ["chat", "analysis"],
+      official_price_key: "deepseek:deepseek-v4-flash:official",
+      pricing_state: "priced",
+      health_state: "connected",
+      governance_state: "pending",
+      selectable: false,
+      unavailable_reason: "governance_required",
+    }],
+  });
+
+  assert.equal(view.routes[0].providerLabel, "DeepSeek 原厂");
+  assert.equal(view.routes[0].selectable, false);
+  assert.equal(view.routes[0].unavailableReason, "governance_required");
+  assert.equal(view.routes[0].unavailableLabel, "需先纳入模型路由");
+  assert.equal(view.routes[0].officialPriceKey, "deepseek:deepseek-v4-flash:official");
+});
+
+test("DeepSeek official price presentation shows cache hit, miss and output rates", () => {
+  const price = officialPricePresentation({
+    provider: "deepseek",
+    display_name: "DeepSeek V4 Flash",
+    currency: "USD",
+    cached_input_per_million: "0.0028",
+    input_per_million: "0.14",
+    output_per_million: "0.28",
+    revision: "deepseek-2026-07-28-v1",
+    source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
+  });
+
+  assert.equal(price.label, "DeepSeek V4 Flash · 缓存命中 $0.0028 / 未命中 $0.14 / 输出 $0.28");
+  assert.deepEqual(price.rates, [
+    { label: "缓存命中", value: "$0.0028", unit: "/ 百万 Token" },
+    { label: "缓存未命中", value: "$0.14", unit: "/ 百万 Token" },
+    { label: "输出", value: "$0.28", unit: "/ 百万 Token" },
+  ]);
+  assert.equal(price.revision, "deepseek-2026-07-28-v1");
 });

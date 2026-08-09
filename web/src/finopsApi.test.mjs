@@ -12,6 +12,7 @@ import {
   disableMemberBudget,
   disableIdentityGroupMapping,
   disableModelProvider,
+  governModelProvider,
   loadFinOpsBootstrap,
   loadFinOpsRemediationDraft,
   loadFinOpsRemediationDrafts,
@@ -33,6 +34,7 @@ import {
   promoteFinOpsRemediationDraft,
   reviewFinOpsRemediationDraft,
   rotateModelProviderSecret,
+  suspendModelProvider,
   saveMemberBudget,
   saveMemberBudgetNotification,
   sendMemberBudgetTestEmail,
@@ -660,6 +662,8 @@ test("provider management uses typed endpoints and revisioned writes", async () 
       api_key: "test-key-marker",
     });
     await rotateModelProviderSecret("provider/a", "rotated-key-marker", 4);
+    await governModelProvider("provider/a", 5);
+    await suspendModelProvider("provider/a", 6);
     await disableModelProvider("provider/a", 5);
   } finally {
     globalThis.fetch = originalFetch;
@@ -669,10 +673,14 @@ test("provider management uses typed endpoints and revisioned writes", async () 
     "/api/model-providers",
     "/api/model-providers",
     "/api/model-providers/provider%2Fa/rotate-secret",
+    "/api/model-providers/provider%2Fa/govern",
+    "/api/model-providers/provider%2Fa/suspend",
     "/api/model-providers/provider%2Fa/disable",
   ]);
   assert.equal(JSON.parse(calls[2].options.body).base_revision, 4);
   assert.equal(JSON.parse(calls[3].options.body).base_revision, 5);
+  assert.equal(JSON.parse(calls[4].options.body).base_revision, 6);
+  assert.equal(JSON.parse(calls[5].options.body).base_revision, 5);
 });
 
 test("Bedrock create sends credentials once", async () => {

@@ -20,6 +20,46 @@ function text(value) {
   return String(value || "").trim();
 }
 
+const ROUTE_UNAVAILABLE_LABELS = {
+  governance_required: "需先纳入模型路由",
+  official_pricing_required: "需先关联官方价格",
+  provider_secret_unavailable: "需重新录入安全凭据",
+  connection_verification_required: "需先完成连接检测",
+  provider_connection_unavailable: "连接异常，暂不可选",
+  supported_model_required: "暂无受支持模型",
+  provider_type_not_routable: "当前仅用于连接验证",
+};
+
+function money(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return "—";
+  return `$${amount.toLocaleString("en-US", { maximumFractionDigits: 6 })}`;
+}
+
+export function officialPricePresentation(raw = {}) {
+  const provider = text(raw.provider);
+  const displayName = text(raw.display_name) || text(raw.official_model) || "官方价格";
+  const input = money(raw.input_per_million);
+  const output = money(raw.output_per_million);
+  const cached = raw.cached_input_per_million === null || raw.cached_input_per_million === undefined
+    ? ""
+    : money(raw.cached_input_per_million);
+  const rates = [];
+  if (cached) rates.push({ label: "缓存命中", value: cached, unit: "/ 百万 Token" });
+  rates.push({ label: cached ? "缓存未命中" : "输入", value: input, unit: "/ 百万 Token" });
+  rates.push({ label: "输出", value: output, unit: "/ 百万 Token" });
+  const rateLabel = provider === "deepseek" && cached
+    ? `缓存命中 ${cached} / 未命中 ${input} / 输出 ${output}`
+    : `${cached ? `缓存 ${cached} / ` : ""}输入 ${input} / 输出 ${output}`;
+  return {
+    label: `${displayName} · ${rateLabel}`,
+    rates,
+    currency: text(raw.currency) || "USD",
+    revision: text(raw.revision),
+    sourceUrl: text(raw.source_url),
+  };
+}
+
 function assignment(raw = {}) {
   return {
     primaryRouteId: text(raw.primary_route_id),
@@ -31,16 +71,28 @@ export function modelRoutingViewModel(payload = {}) {
   const rawRoutes = Array.isArray(payload.routes) ? payload.routes : [];
   const routes = rawRoutes
     .filter((route) => route && typeof route === "object" && text(route.id))
-    .map((route) => ({
-      id: text(route.id),
-      deployment: text(route.deployment),
-      modelId: text(route.model_id) || text(route.deployment),
-      providerId: text(route.provider_id) || "azure-foundry",
-      providerType: text(route.provider_type) || "azure_foundry",
-      providerLabel: text(route.provider_type) === "deepseek" ? "DeepSeek" : "Azure Foundry",
-      label: text(route.label) || text(route.id),
-      capabilities: Array.isArray(route.capabilities) ? route.capabilities.map(text).filter(Boolean) : [],
-    }));
+    .map((route) => {
+      const providerType = text(route.provider_type) || "azure_foundry";
+      const unavailableReason = text(route.unavailable_reason);
+      return {
+        id: text(route.id),
+        deployment: text(route.deployment),
+        modelId: text(route.model_id) || text(route.deployment),
+        providerId: text(route.provider_id) || "azure-foundry",
+        providerType,
+        providerLabel: text(route.provider_label)
+          || (providerType === "deepseek" ? "DeepSeek 原厂" : "Azure Foundry"),
+        label: text(route.label) || text(route.id),
+        capabilities: Array.isArray(route.capabilities) ? route.capabilities.map(text).filter(Boolean) : [],
+        officialPriceKey: text(route.official_price_key),
+        pricingState: text(route.pricing_state),
+        healthState: text(route.health_state),
+        governanceState: text(route.governance_state),
+        selectable: route.selectable !== false,
+        unavailableReason,
+        unavailableLabel: ROUTE_UNAVAILABLE_LABELS[unavailableReason] || "暂不可选",
+      };
+    });
   const rawAssignments = payload?.policy?.assignments || {};
   const assignments = Object.fromEntries(MODEL_EXECUTION_KINDS.map((kind) => [kind.id, assignment(rawAssignments[kind.id])]));
   const rawAgentAssignments = payload?.policy?.agent_assignments || {};

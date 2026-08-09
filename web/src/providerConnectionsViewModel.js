@@ -42,6 +42,20 @@ const STAGE_LABELS = {
 
 const GENERIC_SAFE_ERROR = "连接状态异常，请检查配置后重试。";
 
+const ROUTE_REASON_LABELS = {
+  governance_required: "连接与计价已就绪，可纳入 Agent 模型路由。",
+  provider_secret_unavailable: "需重新录入安全凭据后才能纳入模型路由。",
+  connection_verification_required: "请先完成连接检测，再纳入模型路由。",
+  provider_connection_unavailable: "连接异常，当前不可纳入模型路由。",
+  supported_model_required: "尚未发现可用于 Agent 的受支持模型。",
+  official_pricing_required: "仍有模型缺少官方计价，暂不可纳入路由。",
+  provider_type_not_routable: "当前提供商仅用于连接验证，暂不参与 Agent 路由。",
+};
+
+function lifecycleStep(id, label, state, detail) {
+  return { id, label, state, detail };
+}
+
 function text(value) {
   return String(value || "").trim();
 }
@@ -79,6 +93,26 @@ export function providerConnectionsViewModel(payload = {}) {
       const models = Array.isArray(item.available_models)
         ? item.available_models.map(providerModel).filter((model) => model.id)
         : [];
+      const hasEligibility = item.route_eligibility && typeof item.route_eligibility === "object";
+      const eligibility = hasEligibility
+        ? item.route_eligibility
+        : {};
+      const legacySelectable = text(item.provider_type) !== "aws_bedrock"
+        && connectionState === "connected"
+        && governanceState === "governed"
+        && models.some((model) => model.supportState === "supported");
+      const routeSelectable = hasEligibility ? eligibility.selectable === true : legacySelectable;
+      const canGovern = eligibility.can_govern === true;
+      const routeReason = text(eligibility.reason);
+      const pricedModels = models.filter((model) => model.supportState === "supported" && model.priceKey).length;
+      const connectionReady = connectionState === "connected";
+      const discoveryReady = models.some((model) => model.supportState === "supported") && pricedModels > 0;
+      const lifecycle = [
+        lifecycleStep("credential", "安全凭据", secretStatus === "stored" ? "complete" : "current", secretStatus === "stored" ? "已保存" : "待录入"),
+        lifecycleStep("connection", "连接验证", connectionReady ? "complete" : secretStatus === "stored" ? "current" : "pending", connectionReady ? "已通过" : "待检测"),
+        lifecycleStep("pricing", "模型与计价", discoveryReady ? "complete" : connectionReady ? "current" : "pending", discoveryReady ? `${pricedModels} 个已计价模型` : "待同步"),
+        lifecycleStep("governance", "路由治理", routeSelectable ? "complete" : canGovern ? "current" : "pending", routeSelectable ? "已纳管" : canGovern ? "可纳管" : "待就绪"),
+      ];
       return {
         providerId: text(item.provider_id),
         providerType: text(item.provider_type),
@@ -116,10 +150,17 @@ export function providerConnectionsViewModel(payload = {}) {
           ? SAFE_ERROR_LABELS[text(item.safe_error_category)] || GENERIC_SAFE_ERROR
           : "",
         models,
-        canAssign: text(item.provider_type) !== "aws_bedrock"
-          && connectionState === "connected"
-          && governanceState === "governed"
-          && models.some((model) => model.supportState === "supported"),
+        routeSelectable,
+        canGovern,
+        eligibleModelCount: Number.isInteger(eligibility.eligible_model_count)
+          ? eligibility.eligible_model_count
+          : pricedModels,
+        routeReason,
+        routeReasonLabel: ROUTE_REASON_LABELS[routeReason]
+          || (routeSelectable ? "已进入 Agent 模型路由，可在模型分配中选择。" : "尚未满足模型路由条件。"),
+        governanceAction: canGovern ? "govern" : routeSelectable ? "suspend" : "none",
+        lifecycle,
+        canAssign: text(item.provider_type) !== "aws_bedrock" && routeSelectable,
       };
     });
   return {

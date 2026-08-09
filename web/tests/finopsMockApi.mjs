@@ -1177,7 +1177,47 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         existing.revision += 1;
       }
       body = { provider_id: providerId };
+    } else if (/^\/api\/model-providers\/[^/]+\/(govern|suspend)$/.test(path)) {
+      const [, , , encodedProviderId, action] = path.split("/");
+      const providerId = decodeURIComponent(encodedProviderId);
+      const existing = control.providerItems.find((item) => item.provider_id === providerId);
+      if (!existing) {
+        status = 404;
+        body = { detail: "provider not found" };
+      } else {
+        const governed = action === "govern";
+        existing.governance_state = governed ? "governed" : "pending";
+        existing.revision += 1;
+        existing.route_eligibility = {
+          state: governed ? "selectable" : "governance_required",
+          selectable: governed,
+          can_govern: !governed,
+          reason: governed ? null : "governance_required",
+          eligible_model_count: existing.available_models.filter((model) => model.support_state === "supported" && model.price_key).length,
+        };
+        body = { provider_id: providerId, revision: existing.revision };
+      }
     } else if (path === "/api/workspaces/demo-corpus/governance/model-routing") {
+      const providerRoutes = control.providerItems
+        .filter((item) => item.provider_type === "deepseek")
+        .flatMap((item) => item.available_models
+          .filter((model) => ["supported", "unpriced"].includes(model.support_state))
+          .map((model) => ({
+            id: `ds_${item.provider_id}_${model.model_id}`,
+            deployment: model.model_id,
+            model_id: model.model_id,
+            provider_id: item.provider_id,
+            provider_type: "deepseek",
+            provider_label: item.display_name,
+            label: model.display_name,
+            capabilities: model.capabilities,
+            official_price_key: model.price_key,
+            pricing_state: model.price_key ? "priced" : "unpriced",
+            health_state: item.connection_state,
+            governance_state: item.governance_state,
+            selectable: item.route_eligibility?.selectable === true && Boolean(model.price_key),
+            unavailable_reason: model.price_key ? item.route_eligibility?.reason : "official_pricing_required",
+          })));
       body = {
         workspace_id: "demo-corpus",
         default_route: "analysis",
@@ -1194,6 +1234,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             label: "GPT-5.6 Terra",
             capabilities: ["analysis", "chat"],
           },
+          ...providerRoutes,
         ],
         policy: {
           revision: 3,
@@ -1256,6 +1297,18 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             output_per_million: 6,
             cached_input_per_million: 0.1,
             source_url: "https://prices.azure.com/api/retail/prices",
+          },
+          {
+            price_key: "deepseek:deepseek-v4-flash:official",
+            provider: "deepseek",
+            official_model: "deepseek-v4-flash",
+            display_name: "DeepSeek V4 Flash",
+            currency: "USD",
+            input_per_million: 0.14,
+            output_per_million: 0.28,
+            cached_input_per_million: 0.0028,
+            revision: "deepseek-2026-07-28-v1",
+            source_url: "https://api-docs.deepseek.com/quick_start/pricing/",
           },
         ],
         count: 4,

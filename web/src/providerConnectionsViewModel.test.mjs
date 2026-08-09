@@ -153,3 +153,37 @@ test("Bedrock remains outside Agent assignment and never exposes unknown error c
   assert.equal(view.items[0].safeErrorLabel, "连接状态异常，请检查配置后重试。");
   assert.equal(JSON.stringify(view).includes("untrusted-marker-category"), false);
 });
+
+test("verified pending DeepSeek exposes an explicit audited governance action", () => {
+  const view = providerConnectionsViewModel({
+    items: [{
+      provider_id: "provider_pending",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      connection_state: "connected",
+      governance_state: "pending",
+      secret_status: "stored",
+      revision: 4,
+      route_eligibility: {
+        state: "governance_required",
+        selectable: false,
+        can_govern: true,
+        reason: "governance_required",
+        eligible_model_count: 2,
+      },
+      available_models: [{
+        model_id: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        support_state: "supported",
+        price_key: "deepseek:deepseek-v4-flash:official",
+      }],
+    }],
+  });
+  const item = view.items[0];
+
+  assert.equal(item.routeSelectable, false);
+  assert.equal(item.canGovern, true);
+  assert.equal(item.governanceAction, "govern");
+  assert.equal(item.routeReasonLabel, "连接与计价已就绪，可纳入 Agent 模型路由。");
+  assert.deepEqual(item.lifecycle.map((step) => step.state), ["complete", "complete", "complete", "current"]);
+});

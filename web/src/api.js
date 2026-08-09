@@ -789,6 +789,20 @@ export async function testModelProvider(providerId) {
   });
 }
 
+export async function governModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/govern`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
+export async function suspendModelProvider(providerId, baseRevision) {
+  return request(`/api/model-providers/${encodeURIComponent(providerId)}/suspend`, {
+    method: "POST",
+    body: JSON.stringify({ base_revision: Number(baseRevision || 0) }),
+  });
+}
+
 export async function rotateModelProviderSecret(providerId, credentials, baseRevision) {
   const body = typeof credentials === "string"
     ? { api_key: credentials, base_revision: Number(baseRevision || 0) }

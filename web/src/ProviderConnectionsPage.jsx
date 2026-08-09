@@ -8,14 +8,17 @@ import {
   Power,
   RefreshCw,
   RotateCcw,
+  Route,
   ShieldCheck,
 } from "lucide-react";
 
 import {
   createModelProvider,
   disableModelProvider,
+  governModelProvider,
   loadModelProviders,
   rotateModelProviderSecret,
+  suspendModelProvider,
   testModelProvider,
 } from "./api.js";
 import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
@@ -247,6 +250,54 @@ export function ProviderConnectionsPage() {
               ) : null}
               {item.safeErrorLabel ? (
                 <div className="provider-safe-error"><CircleAlert size={14} />{item.safeErrorLabel}</div>
+              ) : null}
+              {!item.isBedrock ? (
+                <div className="provider-route-readiness">
+                  <ol aria-label={`${item.name} 接入进度`}>
+                    {item.lifecycle.map((step, index) => (
+                      <li className={step.state} key={step.id}>
+                        <span>{step.state === "complete" ? <CheckCircle2 size={13} /> : index + 1}</span>
+                        <div><b>{step.label}</b><small>{step.detail}</small></div>
+                      </li>
+                    ))}
+                  </ol>
+                  <div className={`provider-route-callout ${item.routeSelectable ? "ready" : item.canGovern ? "action" : "waiting"}`}>
+                    <Route size={15} />
+                    <div>
+                      <b>{item.routeSelectable ? "已进入 Agent 模型路由" : item.canGovern ? "等待管理员纳管" : "模型路由尚未就绪"}</b>
+                      <span>{item.routeReasonLabel}</span>
+                    </div>
+                    {item.governanceAction === "govern" ? (
+                      <button
+                        type="button"
+                        className="primary-button provider-govern-button"
+                        disabled={Boolean(busy)}
+                        onClick={() => runAction(
+                          `govern:${item.providerId}`,
+                          () => governModelProvider(item.providerId, item.revision),
+                          `${item.name} 已纳入模型路由，可在模型分配中选择。`,
+                        )}
+                      >
+                        {busy === `govern:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <ShieldCheck size={14} />}
+                        纳入模型路由
+                      </button>
+                    ) : item.governanceAction === "suspend" ? (
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={Boolean(busy)}
+                        onClick={() => runAction(
+                          `suspend:${item.providerId}`,
+                          () => suspendModelProvider(item.providerId, item.revision),
+                          `${item.name} 已暂停进入新模型路由，现有配置需在模型分配中复核。`,
+                        )}
+                      >
+                        {busy === `suspend:${item.providerId}` ? <Loader2 className="spin" size={14} /> : <Power size={14} />}
+                        暂停路由
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
               ) : null}
               {item.isBedrock ? (
                 <>

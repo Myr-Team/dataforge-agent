@@ -227,3 +227,49 @@ test("missing DeepSeek credential is re-entered without exposing secret material
   expect(await page.locator("body").innerText()).not.toContain(keyMarker);
   expect(await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain(keyMarker);
 });
+
+test("connected DeepSeek is explicitly governed before selection and shows official cache pricing", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls, {
+    providerItems: [{
+      provider_id: "provider_deepseek",
+      provider_type: "deepseek",
+      display_name: "DeepSeek 原厂",
+      base_url: "https://api.deepseek.com",
+      connection_state: "connected",
+      governance_state: "pending",
+      secret_status: "stored",
+      connection_stage: "completed",
+      last_success_at: new Date().toISOString(),
+      revision: 4,
+      route_eligibility: {
+        state: "governance_required",
+        selectable: false,
+        can_govern: true,
+        reason: "governance_required",
+        eligible_model_count: 1,
+      },
+      available_models: [{
+        model_id: "deepseek-v4-flash",
+        display_name: "DeepSeek V4 Flash",
+        capabilities: ["analysis", "chat"],
+        support_state: "supported",
+        price_key: "deepseek:deepseek-v4-flash:official",
+      }],
+    }],
+  });
+
+  await openProviderSettings(page);
+  await expect(page.getByText("连接与计价已就绪，可纳入 Agent 模型路由。")).toBeVisible();
+  await page.getByRole("button", { name: "纳入模型路由" }).click();
+  await expect(page.getByText("已进入 Agent 模型路由", { exact: true })).toBeVisible();
+  expect(calls.some((call) => call.method === "POST" && call.path.endsWith("/govern"))).toBe(true);
+
+  await page.getByRole("button", { name: "Agent 模型" }).click();
+  const defaultModel = page.getByLabel("默认模型");
+  await expect(defaultModel.locator("optgroup[label='DeepSeek 原厂'] option")).toHaveText(/DeepSeek V4 Flash/);
+  await expect(page.getByText("缓存命中", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.0028", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.14", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("$0.28", { exact: true }).first()).toBeVisible();
+});
