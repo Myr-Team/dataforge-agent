@@ -71,6 +71,10 @@ _PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_mod
 _WORKSPACE_POLICY_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_model_policy_scope", default=None)
 _WORKSPACE_PRICE_CARD_SCOPE: ContextVar[dict[str, Any] | None] = ContextVar("dataforge_workspace_price_card_scope", default=None)
 _MANUAL_ROUTE_SCOPE: ContextVar[str | None] = ContextVar("dataforge_manual_model_route_scope", default=None)
+_MODEL_ROUTE_REGISTRY_SCOPE: ContextVar[tuple[ModelRoute, ...] | None] = ContextVar(
+    "dataforge_model_route_registry_scope",
+    default=None,
+)
 
 
 def list_allowed_model_routes() -> list[ModelRoute]:
@@ -139,7 +143,7 @@ def resolve_text_route(*, capability: str = "chat") -> ModelRoute:
     required = str(capability or "chat").strip().lower()
     routes = [
         route
-        for route in list_allowed_model_routes()
+        for route in _current_model_routes()
         if required in route.capabilities and _runtime_route_enabled(route)
     ]
     if not routes:
@@ -161,7 +165,7 @@ def _routes_for_capability(capability: str) -> list[ModelRoute]:
     required = str(capability or "chat").strip().lower()
     return [
         route
-        for route in list_allowed_model_routes()
+        for route in _current_model_routes()
         if required in route.capabilities and _runtime_route_enabled(route)
     ]
 
@@ -192,7 +196,7 @@ def _pick_route(
 
 def _allowlisted_route(route_id: str, *, capability: str) -> ModelRoute | None:
     normalized = str(route_id or "").strip().lower()
-    for route in list_allowed_model_routes():
+    for route in _current_model_routes():
         if (
             route.route_id == normalized
             and str(capability or "").strip().lower() in route.capabilities
@@ -424,16 +428,24 @@ def workspace_model_policy_scope(
     policy: Mapping[str, Any] | None = None,
     price_card: Mapping[str, Any] | None = None,
     manual_route_id: str | None = None,
+    routes: list[ModelRoute] | tuple[ModelRoute, ...] | None = None,
 ) -> Iterator[None]:
     policy_token = _WORKSPACE_POLICY_SCOPE.set(dict(policy) if isinstance(policy, Mapping) else None)
     price_token = _WORKSPACE_PRICE_CARD_SCOPE.set(dict(price_card) if isinstance(price_card, Mapping) else None)
     manual_token = _MANUAL_ROUTE_SCOPE.set(str(manual_route_id).strip().lower() if manual_route_id else None)
+    routes_token = _MODEL_ROUTE_REGISTRY_SCOPE.set(tuple(routes) if routes is not None else None)
     try:
         yield None
     finally:
+        _MODEL_ROUTE_REGISTRY_SCOPE.reset(routes_token)
         _MANUAL_ROUTE_SCOPE.reset(manual_token)
         _WORKSPACE_PRICE_CARD_SCOPE.reset(price_token)
         _WORKSPACE_POLICY_SCOPE.reset(policy_token)
+
+
+def _current_model_routes() -> list[ModelRoute]:
+    scoped = _MODEL_ROUTE_REGISTRY_SCOPE.get()
+    return list(scoped) if scoped is not None else list_allowed_model_routes()
 
 
 def public_model_route_snapshot() -> dict[str, object]:

@@ -878,3 +878,34 @@ def test_public_model_route_snapshot_exposes_only_allowlisted_routes(monkeypatch
             }
         ],
     }
+
+
+def test_workspace_route_scope_can_select_a_tenant_resolved_external_route(monkeypatch) -> None:
+    monkeypatch.setenv("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED", "1")
+    azure = ModelRoute(
+        "default",
+        "gpt-5.1",
+        "GPT-5.1",
+        frozenset({"chat", "analysis"}),
+    )
+    deepseek = ModelRoute(
+        "ds_primary_flash",
+        "deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        frozenset({"chat", "analysis"}),
+        provider_id="provider_primary",
+        provider_type="deepseek",
+        model_id="deepseek-v4-flash",
+    )
+    policy = {
+        "revision": 4,
+        "assignments": {
+            "full_analysis": {"primary_route_id": "ds_primary_flash"},
+        },
+    }
+
+    with workspace_model_policy_scope(policy=policy, routes=[azure, deepseek]):
+        selected = select_text_route_record("full_analysis")
+
+    assert selected.route == deepseek
+    assert selected.policy_revision == 4

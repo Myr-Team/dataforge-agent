@@ -7,6 +7,7 @@ import pytest
 import backend.control_plane as control_plane
 from backend.app import app
 from backend.model_policy import ModelRoute
+from backend.model_provider_routes import ProviderRouteCandidate
 from fastapi.testclient import TestClient
 
 
@@ -145,3 +146,92 @@ def test_model_routing_endpoint_denies_non_owner(client: TestClient, monkeypatch
 
     assert response.status_code == 403
     assert response.json()["detail"] == "workspace permission denied for model_routing.read"
+
+
+def _deepseek_candidate(*, selectable: bool = True) -> ProviderRouteCandidate:
+    route = ModelRoute(
+        "ds_primary_flash",
+        "deepseek-v4-flash",
+        "DeepSeek V4 Flash",
+        frozenset({"chat", "analysis"}),
+        provider_id="provider_primary",
+        provider_type="deepseek",
+        model_id="deepseek-v4-flash",
+    )
+    return ProviderRouteCandidate(
+        route=route,
+        public={
+            "id": route.route_id,
+            "deployment": route.deployment,
+            "model_id": route.model_id,
+            "provider_id": route.provider_id,
+            "provider_type": route.provider_type,
+            "provider_label": "DeepSeek 原厂",
+            "label": route.label,
+            "capabilities": sorted(route.capabilities),
+            "official_price_key": "deepseek:deepseek-v4-flash:official",
+            "pricing_state": "priced",
+            "health_state": "connected",
+            "governance_state": "governed" if selectable else "pending",
+            "selectable": selectable,
+            "unavailable_reason": None if selectable else "governance_required",
+        },
+    )
+
+
+def test_model_routing_lists_and_accepts_tenant_dynamic_provider_route(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved: dict[str, object] = {}
+    _routing_env(monkeypatch, {"workspace_id": "ws-model"}, saved)
+    monkeypatch.setattr(
+        control_plane,
+        "_dynamic_model_route_candidates",
+        lambda _request: [_deepseek_candidate()],
+    )
+
+    listed = client.get("/api/workspaces/ws-model/governance/model-routing")
+    updated = client.put(
+        "/api/workspaces/ws-model/governance/model-routing",
+        json={
+            "assignments": {
+                "full_analysis": {"primary_route_id": "ds_primary_flash"},
+            },
+        },
+    )
+
+    deepseek = next(route for route in listed.json()["routes"] if route.get("provider_type") == "deepseek")
+    assert deepseek["provider_label"] == "DeepSeek 原厂"
+    assert deepseek["selectable"] is True
+    assert updated.status_code == 200
+    assert saved["model_routing_policy"]["assignments"]["full_analysis"]["primary_route_id"] == "ds_primary_flash"
+
+
+def test_model_routing_shows_but_rejects_unavailable_provider_route(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    saved: dict[str, object] = {}
+    _routing_env(monkeypatch, {"workspace_id": "ws-model"}, saved)
+    monkeypatch.setattr(
+        control_plane,
+        "_dynamic_model_route_candidates",
+        lambda _request: [_deepseek_candidate(selectable=False)],
+    )
+
+    listed = client.get("/api/workspaces/ws-model/governance/model-routing")
+    rejected = client.put(
+        "/api/workspaces/ws-model/governance/model-routing",
+        json={
+            "assignments": {
+                "full_analysis": {"primary_route_id": "ds_primary_flash"},
+            },
+        },
+    )
+
+    deepseek = next(route for route in listed.json()["routes"] if route.get("provider_type") == "deepseek")
+    assert deepseek["selectable"] is False
+    assert deepseek["unavailable_reason"] == "governance_required"
+    assert rejected.status_code == 400
+    assert "model_routing_policy" not in saved
