@@ -233,8 +233,8 @@ test("settings home uses the workspace administrator role for notification autho
 
 test("test email response accepts only safe public categories", () => {
   assert.deepEqual(
-    safeTestEmailResult({ state: "sent", sent_at: "2026-07-29T01:00:00Z", safe_error_category: null }),
-    { state: "sent", label: "测试邮件已发送" },
+    safeTestEmailResult({ state: "accepted", accepted_at: "2026-08-10T01:00:00Z", safe_error_category: null }),
+    { state: "accepted", label: "邮件服务已接受，等待投递确认" },
   );
   assert.deepEqual(
     safeTestEmailResult({ state: "failed", safe_error_category: "permission_required", operation_id: "secret-op" }),

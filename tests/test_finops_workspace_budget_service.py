@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from backend.finops.acs_email import EmailDeliveryResult
 from backend.finops.budget_subjects import BudgetSubject, budget_subject_ref
+from backend.finops.email_delivery_monitor import EmailDeliveryEvidence
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.member_budget_service import MemberBudgetService
 
@@ -31,10 +32,31 @@ class _Sender:
         assert operation_id
         self.recipients.append(message.recipient)
         return EmailDeliveryResult(
-            state="sent",
+            state="accepted",
             sent_at=NOW,
             safe_error_category=None,
+            provider_message_id="c15701f8-5df7-4fd3-8efc-f9c8af147c13",
         )
+
+
+class _DeliveredMonitor:
+    def lookup(self, provider_message_id: str) -> EmailDeliveryEvidence:
+        assert provider_message_id == "c15701f8-5df7-4fd3-8efc-f9c8af147c13"
+        return EmailDeliveryEvidence(state="delivered", observed_at=NOW)
+
+
+class _PendingMonitor:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def lookup(self, provider_message_id: str) -> EmailDeliveryEvidence:
+        self.calls += 1
+        return EmailDeliveryEvidence(state="pending")
+
+
+class _UnexpectedMonitor:
+    def lookup(self, provider_message_id: str) -> EmailDeliveryEvidence:
+        raise AssertionError("terminal delivery states must not query Azure Monitor again")
 
 
 def _service() -> tuple[MemberBudgetService, InMemoryMemberBudgetRepository]:
@@ -134,8 +156,28 @@ def test_direct_email_must_be_tested_before_automatic_alerts_can_be_enabled() ->
     sender = _Sender()
     result = service.send_test_email(tenant_ref="tenant-safe", sender=sender)
 
-    assert result.state == "sent"
+    assert result.state == "accepted"
     assert sender.recipients == ["demo-admin@example.test"]
+    accepted = repository.get_notification_setting("tenant-safe")
+    assert accepted.last_test_delivery_state == "accepted"
+    assert accepted.test_email_succeeded_at is None
+
+    with pytest.raises(ValueError, match="test_email_required"):
+        service.save_notification(
+            tenant_ref="tenant-safe",
+            actor_ref="admin-safe",
+            payload={
+                "recipient_email": "demo-admin@example.test",
+                "enabled": True,
+                "base_revision": 1,
+            },
+        )
+
+    reconciled = service.get_notification(
+        tenant_ref="tenant-safe",
+        delivery_monitor=_DeliveredMonitor(),
+    )
+    assert reconciled["last_test_delivery_state"] == "delivered"
     assert repository.get_notification_setting("tenant-safe").test_email_succeeded_at == NOW
 
     enabled = service.save_notification(
@@ -148,3 +190,34 @@ def test_direct_email_must_be_tested_before_automatic_alerts_can_be_enabled() ->
         },
     )
     assert enabled["enabled"] is True
+
+
+def test_notification_delivery_lookup_is_throttled_and_terminal_state_is_cached() -> None:
+    service, repository = _service()
+    service.save_notification(
+        tenant_ref="tenant-safe",
+        actor_ref="admin-safe",
+        payload={
+            "recipient_email": "demo-admin@example.test",
+            "enabled": False,
+            "base_revision": 0,
+        },
+    )
+    service.send_test_email(tenant_ref="tenant-safe", sender=_Sender())
+
+    pending = _PendingMonitor()
+    service.get_notification(tenant_ref="tenant-safe", delivery_monitor=pending)
+    service.get_notification(tenant_ref="tenant-safe", delivery_monitor=pending)
+    assert pending.calls == 1
+
+    current = repository.get_notification_setting("tenant-safe")
+    repository.mark_notification_delivery(
+        "tenant-safe",
+        revision=current.revision,
+        state="pending",
+        checked_at=datetime.now(timezone.utc) - timedelta(seconds=61),
+        delivered_at=None,
+    )
+    service.get_notification(tenant_ref="tenant-safe", delivery_monitor=_DeliveredMonitor())
+    terminal = service.get_notification(tenant_ref="tenant-safe", delivery_monitor=_UnexpectedMonitor())
+    assert terminal["last_test_delivery_state"] == "delivered"

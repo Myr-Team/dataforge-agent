@@ -167,9 +167,9 @@ def test_sql_repository_saves_one_revisioned_notification_setting_with_ordered_p
     assert repository.save_notification_setting("tenant_safe", value, base_revision=0) == value
     calls = connection.cursor_value.calls
     assert calls[0][1] == ("tenant_safe",)
-    assert len(calls[1][1]) == 24
+    assert len(calls[1][1]) == 32
     assert calls[1][1][0] == "tenant_safe"
-    assert calls[1][1][11] == "tenant_safe"
+    assert calls[1][1][15] == "tenant_safe"
     assert connection.committed and not connection.rolled_back and connection.closed
 
 

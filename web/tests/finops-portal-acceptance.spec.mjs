@@ -463,7 +463,7 @@ test("mail settings configure and test use safe states", async ({ page }) => {
   await expect(page.getByText("邮件设置已保存")).toBeVisible();
 
   await page.getByRole("button", { name: "发送测试邮件" }).click();
-  await expect(page.getByText("测试邮件已发送")).toBeVisible();
+  await expect(page.getByText("邮件服务已接受，等待投递确认")).toBeVisible();
   const testCall = calls.find((call) => call.path === "/api/finops/notification-settings/test-email");
   expect(testCall).toBeTruthy();
   expect(testCall.body).toBe("{}");

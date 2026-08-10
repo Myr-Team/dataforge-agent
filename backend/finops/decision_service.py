@@ -34,6 +34,15 @@ _ANOMALY_ACTIONS = {
 _SCENARIO_RESULT_KEYS = (
     "monthly_benefit", "monthly_total_cost", "monthly_net_benefit", "roi_ratio", "payback_months", "formula_revision",
 )
+_SCENARIO_INPUT_UNITS = (
+    ("hours_saved", "每月节省工时", "小时/月"),
+    ("hourly_value", "小时价值", "currency"),
+    ("avoided_loss_or_revenue", "避免损失或新增收益", "currency"),
+    ("implementation_cost", "实施投入", "currency"),
+    ("monthly_fixed_cost", "月度固定运营成本", "currency/month"),
+    ("model_cost", "月度模型成本", "currency/month"),
+    ("evaluation_months", "评估周期", "月"),
+)
 _SOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{1,124}$")
 
@@ -110,11 +119,62 @@ def _append_gap(stage: dict[str, Any], message: str) -> None:
 
 def _safe_scenario(item: Mapping[str, Any]) -> dict[str, Any]:
     result = item.get("result") if isinstance(item.get("result"), Mapping) else {}
+    inputs = item.get("inputs") if isinstance(item.get("inputs"), Mapping) else {}
     scenario_id = str(item.get("scenario_id") or "").strip()
+    currency = str(inputs.get("currency") or result.get("currency") or "USD").strip().upper()
+    if not re.fullmatch(r"[A-Z]{3}", currency):
+        currency = "USD"
     return {
         "scenario_id": scenario_id[:80] if scenario_id.replace("-", "").replace("_", "").isalnum() else None,
+        "title": _bounded_text(item.get("title"), 120),
         "status": str(item.get("status") or "unavailable") if str(item.get("status") or "") in {"estimated", "observed", "verified", "partial", "unavailable", "not_recorded"} else "unavailable",
+        "inputs": {
+            key: value
+            for key in (item_key for item_key, _label, _unit in _SCENARIO_INPUT_UNITS)
+            if (value := _safe_nonnegative_number(inputs.get(key))) is not None
+        } | {"currency": currency},
         "result": {key: result.get(key) for key in _SCENARIO_RESULT_KEYS},
+    }
+
+
+def _safe_nonnegative_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _case_story(scenario: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not scenario:
+        return {}
+    inputs = scenario.get("inputs") if isinstance(scenario.get("inputs"), Mapping) else {}
+    currency = str(inputs.get("currency") or "USD")
+    assumptions = []
+    for key, label, unit_kind in _SCENARIO_INPUT_UNITS:
+        value = _safe_nonnegative_number(inputs.get(key))
+        if value is None:
+            continue
+        unit = currency if unit_kind == "currency" else f"{currency}/月" if unit_kind == "currency/month" else unit_kind
+        assumptions.append({"id": key, "label": label, "value": value, "unit": unit})
+    hours = _safe_nonnegative_number(inputs.get("hours_saved"))
+    hourly = _safe_nonnegative_number(inputs.get("hourly_value"))
+    avoided = _safe_nonnegative_number(inputs.get("avoided_loss_or_revenue"))
+    parts = []
+    if hours is not None:
+        parts.append(f"假设每月节省 {hours:g} 小时")
+    if hourly is not None:
+        parts.append(f"按 {hourly:g} {currency}/小时折算")
+    if avoided is not None:
+        parts.append(f"并计入 {avoided:g} {currency} 的避免损失或新增收益")
+    return {
+        "title": str(scenario.get("title") or "ROI 情景测算"),
+        "status": scenario.get("status") or "estimated",
+        "summary": "，".join(parts) + "。" if parts else "当前情景已保存，具体假设可在测算参数中查看。",
+        "assumptions": assumptions,
+        "boundary": "情景参数用于展示投入价值，业务结果验证前不计为已实现 ROI。",
     }
 
 
@@ -320,7 +380,7 @@ def build_roi_decision(
         {"id": "monthly_total_cost", "label": "AI 运营总投入", "value": -total_cost if isinstance(total_cost, (int, float)) and not isinstance(total_cost, bool) else None, "unit": "USD", "status": "estimated", "explanation": "价值桥中的成本扣减项。"},
         {"id": "monthly_net_benefit", "label": "月度净收益", "value": result.get("monthly_net_benefit"), "unit": "USD", "status": "estimated", "explanation": "月度收益减去 AI 运营总投入。"},
     ] if scenario else []
-    payload = {"decision": _roi_statement(scenario, dict(economics.get("verified_roi") or {})), "metrics": metrics,
+    payload = {"decision": _roi_statement(scenario, dict(economics.get("verified_roi") or {})), "case_story": _case_story(scenario), "metrics": metrics,
         "value_bridge": {"formula_revision": result.get("formula_revision"), "scenario_id": scenario.get("scenario_id") if scenario else None, "payback_months": result.get("payback_months"), "items": bridge_items},
         "evidence_maturity": _maturity(funnel), "unit_economics_trend": [_safe_trend(item) for item in unit_trend],
         "verified_roi": _safe_verified(economics.get("verified_roi")), "capability_explanation": _CAPABILITY_EXPLANATION,

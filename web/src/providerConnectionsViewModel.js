@@ -146,7 +146,7 @@ export function providerConnectionsViewModel(payload = {}) {
         revision: Number.isInteger(item.revision) ? item.revision : 0,
         lastTestedAt: text(item.last_tested_at),
         lastSuccessAt: text(item.last_success_at),
-        safeErrorLabel: text(item.safe_error_category)
+        safeErrorLabel: !(text(item.provider_type) === "deepseek" && connectionState === "connected") && text(item.safe_error_category)
           ? SAFE_ERROR_LABELS[text(item.safe_error_category)] || GENERIC_SAFE_ERROR
           : "",
         models,

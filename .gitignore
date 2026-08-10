@@ -23,6 +23,7 @@ generated-outputs/
 artifacts/
 tmp/
 workspaces/upload-*/
+workspaces/ws-*/
 *.log
 agents/.agents_state.json
 *.wav

@@ -77,22 +77,40 @@ test("configured follow-up uses the stable chat capability", () => {
 
 test("dynamic provider routes preserve server-owned availability and labels", () => {
   const view = modelRoutingViewModel({
-    routes: [{
-      id: "ds_primary_flash",
-      deployment: "deepseek-v4-flash",
-      model_id: "deepseek-v4-flash",
-      provider_id: "provider_primary",
-      provider_type: "deepseek",
-      provider_label: "DeepSeek 原厂",
-      label: "DeepSeek V4 Flash",
-      capabilities: ["chat", "analysis"],
-      official_price_key: "deepseek:deepseek-v4-flash:official",
-      pricing_state: "priced",
-      health_state: "connected",
-      governance_state: "pending",
-      selectable: false,
-      unavailable_reason: "governance_required",
-    }],
+    routes: [
+      {
+        id: "ds_primary_flash",
+        deployment: "deepseek-v4-flash",
+        model_id: "deepseek-v4-flash",
+        provider_id: "provider_primary",
+        provider_type: "deepseek",
+        provider_label: "DeepSeek 原厂",
+        label: "DeepSeek V4 Flash",
+        capabilities: ["chat", "analysis"],
+        official_price_key: "deepseek:deepseek-v4-flash:official",
+        pricing_state: "priced",
+        health_state: "connected",
+        governance_state: "pending",
+        selectable: false,
+        unavailable_reason: "governance_required",
+      },
+      {
+        id: "ds_primary_pro",
+        deployment: "deepseek-v4-pro",
+        model_id: "deepseek-v4-pro",
+        provider_id: "provider_primary",
+        provider_type: "deepseek",
+        provider_label: "DeepSeek 原厂",
+        label: "DeepSeek V4 Pro",
+        capabilities: ["chat", "analysis"],
+        official_price_key: "deepseek:deepseek-v4-pro:official",
+        pricing_state: "priced",
+        health_state: "connected",
+        governance_state: "pending",
+        selectable: false,
+        unavailable_reason: "governance_required",
+      },
+    ],
   });
 
   assert.equal(view.routes[0].providerLabel, "DeepSeek 原厂");
@@ -100,6 +118,12 @@ test("dynamic provider routes preserve server-owned availability and labels", ()
   assert.equal(view.routes[0].unavailableReason, "governance_required");
   assert.equal(view.routes[0].unavailableLabel, "需先纳入模型路由");
   assert.equal(view.routes[0].officialPriceKey, "deepseek:deepseek-v4-flash:official");
+  assert.deepEqual(view.governanceRemediations, [{
+    providerId: "provider_primary",
+    providerLabel: "DeepSeek 原厂",
+    routeCount: 2,
+    reason: "governance_required",
+  }]);
 });
 
 test("DeepSeek official price presentation shows cache hit, miss and output rates", () => {

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import math
 import re
@@ -8,12 +8,15 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .acs_email import AcsEmailSender, EmailDeliveryResult, EmailMessage, render_template, validate_template
+from .email_delivery_monitor import EmailDeliveryMonitor
 from .member_budget_repository import MemberBudgetRepository
 from .member_budgets import MemberBudget, MemberBudgetDraft, NotificationSetting
 from .member_directory import MemberDirectory, MemberMonthlyCost
 
 
 _EMAIL = re.compile(r"^[^@\s]{1,64}@[^@\s.]{1,190}(?:\.[^@\s.]{1,63})+$")
+_DELIVERY_RECHECK_AFTER = timedelta(seconds=60)
+_TERMINAL_DELIVERY_STATES = frozenset({"delivered", "bounced", "failed"})
 
 
 class _MemberCostReader(Protocol):
@@ -202,10 +205,36 @@ class MemberBudgetService:
             raise KeyError(budget_id)
         return self._repository.disable_budget(tenant_ref, budget_id, base_revision=base_revision, updated_by_ref=actor_ref)
 
-    def get_notification(self, *, tenant_ref: str) -> dict[str, Any] | None:
+    def get_notification(
+        self,
+        *,
+        tenant_ref: str,
+        delivery_monitor: EmailDeliveryMonitor | None = None,
+    ) -> dict[str, Any] | None:
         value = self._repository.get_notification_setting(tenant_ref)
         if value is None:
             return None
+        now = datetime.now(timezone.utc)
+        recently_checked = bool(
+            value.last_test_delivery_checked_at
+            and now - value.last_test_delivery_checked_at < _DELIVERY_RECHECK_AFTER
+        )
+        should_reconcile = bool(
+            delivery_monitor is not None
+            and value.last_test_message_id
+            and value.last_test_delivery_state not in _TERMINAL_DELIVERY_STATES
+            and not recently_checked
+        )
+        if should_reconcile:
+            evidence = delivery_monitor.lookup(value.last_test_message_id)
+            checked_at = datetime.now(timezone.utc)
+            value = self._repository.mark_notification_delivery(
+                tenant_ref,
+                revision=value.revision,
+                state=evidence.state,
+                checked_at=checked_at,
+                delivered_at=(evidence.observed_at or checked_at) if evidence.state == "delivered" else None,
+            )
         return _safe_notification(value)
 
     def save_notification(
@@ -262,6 +291,10 @@ class MemberBudgetService:
             body_template=body_template,
             enabled=enabled,
             test_email_succeeded_at=tested_at,
+            last_test_message_id=None if current is None or configuration_changed else current.last_test_message_id,
+            last_test_accepted_at=None if current is None or configuration_changed else current.last_test_accepted_at,
+            last_test_delivery_state="not_tested" if current is None or configuration_changed else current.last_test_delivery_state,
+            last_test_delivery_checked_at=None if current is None or configuration_changed else current.last_test_delivery_checked_at,
             revision=base_revision + 1,
             created_by_ref=current.created_by_ref if current else actor_ref,
             updated_by_ref=actor_ref,
@@ -338,11 +371,12 @@ class MemberBudgetService:
         )
         operation_id = str(uuid4())
         result = sender.send(message, operation_id=operation_id)
-        if result.state == "sent":
-            self._repository.mark_notification_tested(
+        if result.state == "accepted" and result.provider_message_id:
+            self._repository.mark_notification_test_accepted(
                 tenant_ref,
                 revision=setting.revision,
-                sent_at=result.sent_at or datetime.now(timezone.utc),
+                accepted_at=result.sent_at or datetime.now(timezone.utc),
+                message_id=result.provider_message_id,
             )
         return result
 

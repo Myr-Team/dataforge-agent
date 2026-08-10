@@ -33,7 +33,10 @@ def test_sender_uses_token_credential_plain_text_and_bounded_poll() -> None:
     class _Poller:
         def result(self, timeout: float):
             captured["timeout"] = timeout
-            return {"status": "Succeeded"}
+            return {
+                "status": "Succeeded",
+                "id": "22222222-2222-5222-8222-222222222222",
+            }
 
     class _Client:
         def begin_send(self, message, operation_id: str):
@@ -45,7 +48,8 @@ def test_sender_uses_token_credential_plain_text_and_bounded_poll() -> None:
         EmailMessage(recipient="admin@example.test", sender_display_name="DataForge", subject="[test] member budget", plain_text="test only"),
         operation_id="11111111-1111-5111-8111-111111111111",
     )
-    assert result.state == "sent"
+    assert result.state == "accepted"
+    assert result.provider_message_id == "22222222-2222-5222-8222-222222222222"
     assert captured["message"]["content"].get("html") is None
     assert captured["message"]["recipients"]["to"][0]["address"] == "admin@example.test"
     assert captured["timeout"] == 3
@@ -148,10 +152,23 @@ def test_test_sends_use_fresh_operation_ids() -> None:
     class _Sender:
         def send(self, _message, operation_id: str):
             operation_ids.append(operation_id)
-            return type("Result", (), {"state": "sent", "sent_at": now, "safe_error_category": None})()
+            return type(
+                "Result",
+                (),
+                {
+                    "state": "accepted",
+                    "sent_at": now,
+                    "safe_error_category": None,
+                    "provider_message_id": "22222222-2222-5222-8222-222222222222",
+                },
+            )()
 
     service = MemberBudgetService(repository, None, None)
     service.send_test_email(tenant_ref="tenant-safe", active_admins={"actor-safe": "admin@example.test"}, sender=_Sender())
     service.send_test_email(tenant_ref="tenant-safe", active_admins={"actor-safe": "admin@example.test"}, sender=_Sender())
     assert len(operation_ids) == 2
     assert operation_ids[0] != operation_ids[1]
+    setting = repository.get_notification_setting("tenant-safe")
+    assert setting is not None
+    assert setting.last_test_delivery_state == "accepted"
+    assert setting.test_email_succeeded_at is None

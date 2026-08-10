@@ -283,7 +283,9 @@ class SqlMemberBudgetRepository:
             row = cursor.execute(
                 """/* finops:get-notification-setting */
                 SELECT recipient_actor_ref, recipient_email, sender_display_name,
-                       subject_template, body_template, enabled, test_email_succeeded_at, revision,
+                       subject_template, body_template, enabled, test_email_succeeded_at,
+                       last_test_message_id, last_test_accepted_at,
+                       last_test_delivery_state, last_test_delivery_checked_at, revision,
                        created_by_ref, updated_by_ref, created_at, updated_at
                 FROM df_finops.notification_setting WHERE tenant_ref = ?""",
                 tenant_ref,
@@ -312,14 +314,18 @@ class SqlMemberBudgetRepository:
                     WHEN MATCHED THEN UPDATE SET
                         recipient_actor_ref = ?, recipient_email = ?, sender_display_name = ?,
                         subject_template = ?, body_template = ?, enabled = ?,
-                        test_email_succeeded_at = ?, revision = ?,
+                        test_email_succeeded_at = ?, last_test_message_id = ?,
+                        last_test_accepted_at = ?, last_test_delivery_state = ?,
+                        last_test_delivery_checked_at = ?, revision = ?,
                         updated_by_ref = ?, updated_at = ?
                     WHEN NOT MATCHED THEN INSERT (
                         tenant_ref, recipient_actor_ref, recipient_email, sender_display_name,
                         subject_template, body_template, enabled, test_email_succeeded_at,
+                        last_test_message_id, last_test_accepted_at,
+                        last_test_delivery_state, last_test_delivery_checked_at,
                         revision, created_by_ref,
                         updated_by_ref, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
                     tenant_ref,
                     value.recipient_actor_ref,
                     value.recipient_email,
@@ -328,6 +334,10 @@ class SqlMemberBudgetRepository:
                     value.body_template,
                     value.enabled,
                     value.test_email_succeeded_at,
+                    value.last_test_message_id,
+                    value.last_test_accepted_at,
+                    value.last_test_delivery_state,
+                    value.last_test_delivery_checked_at,
                     value.revision,
                     value.updated_by_ref,
                     value.updated_at,
@@ -339,6 +349,10 @@ class SqlMemberBudgetRepository:
                     value.body_template,
                     value.enabled,
                     value.test_email_succeeded_at,
+                    value.last_test_message_id,
+                    value.last_test_accepted_at,
+                    value.last_test_delivery_state,
+                    value.last_test_delivery_checked_at,
                     value.revision,
                     value.created_by_ref,
                     value.updated_by_ref,
@@ -351,22 +365,57 @@ class SqlMemberBudgetRepository:
             raise
         return value
 
-    def mark_notification_tested(
-        self, tenant_ref: str, *, revision: int, sent_at: datetime
+    def mark_notification_test_accepted(
+        self, tenant_ref: str, *, revision: int, accepted_at: datetime, message_id: str
     ) -> NotificationSetting:
         with self._transaction() as cursor:
             row = cursor.execute(
-                """/* finops:mark-notification-tested */
+                """/* finops:mark-notification-test-accepted */
                 UPDATE df_finops.notification_setting
-                SET test_email_succeeded_at = ?
+                SET last_test_message_id = ?, last_test_accepted_at = ?,
+                    last_test_delivery_state = N'accepted',
+                    last_test_delivery_checked_at = NULL,
+                    test_email_succeeded_at = NULL
                 OUTPUT inserted.recipient_actor_ref, inserted.recipient_email,
                        inserted.sender_display_name, inserted.subject_template,
                        inserted.body_template, inserted.enabled,
-                       inserted.test_email_succeeded_at, inserted.revision,
+                       inserted.test_email_succeeded_at, inserted.last_test_message_id,
+                       inserted.last_test_accepted_at, inserted.last_test_delivery_state,
+                       inserted.last_test_delivery_checked_at, inserted.revision,
                        inserted.created_by_ref, inserted.updated_by_ref,
                        inserted.created_at, inserted.updated_at
                 WHERE tenant_ref = ? AND revision = ?""",
-                sent_at,
+                message_id,
+                accepted_at,
+                tenant_ref,
+                revision,
+            ).fetchone()
+        if row is None:
+            raise MemberBudgetConflictError("notification setting revision conflict")
+        return _notification_from_row(row)
+
+    def mark_notification_delivery(
+        self, tenant_ref: str, *, revision: int, state: str,
+        checked_at: datetime, delivered_at: datetime | None
+    ) -> NotificationSetting:
+        with self._transaction() as cursor:
+            row = cursor.execute(
+                """/* finops:mark-notification-delivery */
+                UPDATE df_finops.notification_setting
+                SET last_test_delivery_state = ?, last_test_delivery_checked_at = ?,
+                    test_email_succeeded_at = ?
+                OUTPUT inserted.recipient_actor_ref, inserted.recipient_email,
+                       inserted.sender_display_name, inserted.subject_template,
+                       inserted.body_template, inserted.enabled,
+                       inserted.test_email_succeeded_at, inserted.last_test_message_id,
+                       inserted.last_test_accepted_at, inserted.last_test_delivery_state,
+                       inserted.last_test_delivery_checked_at, inserted.revision,
+                       inserted.created_by_ref, inserted.updated_by_ref,
+                       inserted.created_at, inserted.updated_at
+                WHERE tenant_ref = ? AND revision = ?""",
+                state,
+                checked_at,
+                delivered_at,
                 tenant_ref,
                 revision,
             ).fetchone()
@@ -646,11 +695,15 @@ def _notification_from_row(row: Any) -> NotificationSetting:
         body_template=_value(row, 4),
         enabled=bool(_value(row, 5)),
         test_email_succeeded_at=_utc_datetime(_value(row, 6)),
-        revision=_value(row, 7),
-        created_by_ref=_value(row, 8),
-        updated_by_ref=_value(row, 9),
-        created_at=_value(row, 10),
-        updated_at=_value(row, 11),
+        last_test_message_id=_value(row, 7),
+        last_test_accepted_at=_utc_datetime(_value(row, 8)),
+        last_test_delivery_state=_value(row, 9) or "not_tested",
+        last_test_delivery_checked_at=_utc_datetime(_value(row, 10)),
+        revision=_value(row, 11),
+        created_by_ref=_value(row, 12),
+        updated_by_ref=_value(row, 13),
+        created_at=_value(row, 14),
+        updated_at=_value(row, 15),
     )
 
 

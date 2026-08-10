@@ -42,8 +42,12 @@ class MemberBudgetRepository(Protocol):
     def save_notification_setting(
         self, tenant_ref: str, value: NotificationSetting, *, base_revision: int
     ) -> NotificationSetting: ...
-    def mark_notification_tested(
-        self, tenant_ref: str, *, revision: int, sent_at: datetime
+    def mark_notification_test_accepted(
+        self, tenant_ref: str, *, revision: int, accepted_at: datetime, message_id: str
+    ) -> NotificationSetting: ...
+    def mark_notification_delivery(
+        self, tenant_ref: str, *, revision: int, state: str,
+        checked_at: datetime, delivered_at: datetime | None
     ) -> NotificationSetting: ...
     def claim_alert(self, value: BudgetAlert) -> bool: ...
     def acquire_due_alert(
@@ -185,8 +189,8 @@ class InMemoryMemberBudgetRepository:
             self._notifications[tenant_ref] = value
         return value
 
-    def mark_notification_tested(
-        self, tenant_ref: str, *, revision: int, sent_at: datetime
+    def mark_notification_test_accepted(
+        self, tenant_ref: str, *, revision: int, accepted_at: datetime, message_id: str
     ) -> NotificationSetting:
         with self._lock:
             current = self._notifications.get(tenant_ref)
@@ -194,9 +198,35 @@ class InMemoryMemberBudgetRepository:
                 raise KeyError("notification_setting")
             if current.revision != revision:
                 raise MemberBudgetConflictError("notification setting revision conflict")
-            tested = current.model_copy(update={"test_email_succeeded_at": sent_at})
+            tested = current.model_copy(
+                update={
+                    "last_test_message_id": message_id,
+                    "last_test_accepted_at": accepted_at,
+                    "last_test_delivery_state": "accepted",
+                    "last_test_delivery_checked_at": None,
+                    "test_email_succeeded_at": None,
+                }
+            )
             self._notifications[tenant_ref] = tested
         return tested
+
+    def mark_notification_delivery(
+        self, tenant_ref: str, *, revision: int, state: str,
+        checked_at: datetime, delivered_at: datetime | None
+    ) -> NotificationSetting:
+        with self._lock:
+            current = self._notifications.get(tenant_ref)
+            if current is None or current.revision != revision:
+                raise MemberBudgetConflictError("notification setting revision conflict")
+            updated = current.model_copy(
+                update={
+                    "last_test_delivery_state": state,
+                    "last_test_delivery_checked_at": checked_at,
+                    "test_email_succeeded_at": delivered_at if state == "delivered" else None,
+                }
+            )
+            self._notifications[tenant_ref] = updated
+        return updated
 
     def claim_alert(self, value: BudgetAlert) -> bool:
         key = (value.tenant_ref, value.budget_id, value.period_key, value.threshold_pct)

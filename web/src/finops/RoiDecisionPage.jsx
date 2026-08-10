@@ -188,6 +188,23 @@ export function RoiDecisionPage({
         </div>
       </section>
 
+      {view.caseStory.title ? (
+        <section className="finops-decision-roi-case" aria-labelledby="finops-roi-case-title">
+          <div className="finops-decision-roi-case-copy">
+            <span className="finops-decision-eyebrow">演示案例</span>
+            <div><h2 id="finops-roi-case-title">{view.caseStory.title}</h2><DecisionBadge status={view.caseStory.status}>{view.caseStory.badge}</DecisionBadge></div>
+            <p>{view.caseStory.summary}</p>
+            <small>{view.caseStory.boundary}</small>
+          </div>
+          <div className="finops-decision-roi-case-assumptions" aria-label="业务假设">
+            <span>业务假设</span>
+            {view.caseStory.assumptions.map((item) => (
+              <dl key={item.id}><dt>{item.label}</dt><dd>{item.valueLabel}</dd></dl>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       <section className="finops-decision-roi-section" aria-labelledby="finops-roi-metrics-title">
         <header className="finops-decision-roi-section-head">
           <div><span>同一情景 · 同一统计窗口</span><h2 id="finops-roi-metrics-title">本期月度测算</h2></div>

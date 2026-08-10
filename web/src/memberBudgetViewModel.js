@@ -236,6 +236,9 @@ export function memberBudgetViewModel({
       enabled: notificationItem?.enabled === true,
       testEmailSucceededAt: text(notificationItem?.test_email_succeeded_at),
       testEmailReady: Boolean(text(notificationItem?.test_email_succeeded_at)),
+      testDeliveryState: text(notificationItem?.last_test_delivery_state) || "not_tested",
+      testAcceptedAt: text(notificationItem?.last_test_accepted_at),
+      testDeliveryCheckedAt: text(notificationItem?.last_test_delivery_checked_at),
       revision: Number.isInteger(notificationItem?.revision) ? notificationItem.revision : 0,
     },
   };
@@ -284,8 +287,8 @@ export function memberBudgetHomeSummaryViewModel(value = {}) {
 }
 
 export function safeTestEmailResult(value = {}) {
-  if (text(value?.state) === "sent" && !text(value?.safe_error_category)) {
-    return { state: "sent", label: "测试邮件已发送" };
+  if (text(value?.state) === "accepted" && !text(value?.safe_error_category)) {
+    return { state: "accepted", label: "邮件服务已接受，等待投递确认" };
   }
   const category = text(value?.safe_error_category);
   if (Object.hasOwn(SAFE_TEST_EMAIL_STATES, category)) {

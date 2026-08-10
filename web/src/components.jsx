@@ -23,6 +23,7 @@ import { finopsIntentHandlers } from "./finopsNavigation.js";
 import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
 import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
 import { memberBudgetHomeSummaryViewModel } from "./memberBudgetViewModel.js";
+import { EnterpriseIdentityPolicyModal } from "./EnterpriseIdentityPolicyModal.jsx";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -79,6 +80,7 @@ import {
   Search,
   Send,
   Settings2,
+  SlidersHorizontal,
   ShieldCheck,
   Sparkles,
   Star,
@@ -87,7 +89,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts, loadEnterpriseIdentityPolicy, updateEnterpriseIdentityPolicy } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -3228,6 +3230,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const [memberAction, setMemberAction] = useState("");
   const [memberNotice, setMemberNotice] = useState("");
   const [memberError, setMemberError] = useState("");
+  const [identityPolicy, setIdentityPolicy] = useState({ open: false, busy: false, error: "", domains: [] });
   const [inviteForm, setInviteForm] = useState({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
   const [directoryQuery, setDirectoryQuery] = useState("");
   const [directoryState, setDirectoryState] = useState({ connected: null, users: [], error: null });
@@ -3342,6 +3345,27 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       setMemberLoadError("成员与操作权限读取失败，请重试");
     } finally {
       if (requestVersion === memberRequestVersion.current) setMembersLoading(false);
+    }
+  };
+  const openIdentityPolicy = async () => {
+    if (!workspaceId || !memberPermissions.canManageMembers) return;
+    setIdentityPolicy({ open: true, busy: true, error: "", domains: [] });
+    try {
+      const payload = await loadEnterpriseIdentityPolicy(workspaceId);
+      setIdentityPolicy({ open: true, busy: false, error: "", domains: payload?.trusted_email_domains || [] });
+    } catch (error) {
+      setIdentityPolicy((current) => ({ ...current, busy: false, error: error?.message || "企业身份策略读取失败" }));
+    }
+  };
+  const saveIdentityPolicy = async (domains) => {
+    setIdentityPolicy((current) => ({ ...current, busy: true, error: "" }));
+    try {
+      await updateEnterpriseIdentityPolicy(workspaceId, domains);
+      setIdentityPolicy({ open: false, busy: false, error: "", domains });
+      await loadMembersContract();
+      setMemberNotice("企业身份展示策略已更新。");
+    } catch (error) {
+      setIdentityPolicy((current) => ({ ...current, busy: false, error: error?.message || "企业身份策略保存失败" }));
     }
   };
   const loadGovernanceEvidence = async () => {
@@ -3851,7 +3875,12 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
             <div className="set-members">
               <div className="set-members-head">
                 <span>成员（{members.length}）{membersLoading ? " · 同步中" : ""}</span>
-                <span className="member-mode">工作区成员 · Entra 登录后归因</span>
+                <div className="set-members-head-actions">
+                  <span className="member-mode">工作区成员 · Entra 登录后归因</span>
+                  <button type="button" className="member-identity-policy" onClick={openIdentityPolicy} disabled={!memberPermissions.canManageMembers} title={!memberPermissions.canManageMembers ? memberPermissionReason : "配置企业身份展示"}>
+                    <SlidersHorizontal size={13} />企业身份展示
+                  </button>
+                </div>
               </div>
               {memberLoadError ? <div className="member-msg error">{memberLoadError}<button type="button" className="gov-inline-retry" onClick={loadMembersContract}><RefreshCw size={13} />重试</button></div> : null}
               <form className="member-directory-search" onSubmit={submitDirectorySearch}>
@@ -3945,8 +3974,8 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
                 <div className="set-member" key={i}>
                   <span className="mbr-av">{m.initial}</span>
                   <div className="mbr-main">
-                    <b>{m.subjectLabel}</b>
-                    <em>服务端安全成员标签</em>
+                    <b>{m.label}</b>
+                    <em title={m.subjectLabel}>{m.detail || "未验证企业身份"}</em>
                     <small>{formatCount(m.usage?.runs)} runs · {formatGovernanceTokenLabel(m.usage)}{m.lastSeenAt ? ` · ${formatTime(m.lastSeenAt)}` : ""}</small>
                   </div>
                   <span className={`dw-chip ${m.status === "active" ? "ok" : "warn"}`}>{m.statusLabel}</span>
@@ -3984,6 +4013,14 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
           )}
         </section>
       </div>
+      <EnterpriseIdentityPolicyModal
+        open={identityPolicy.open}
+        initialDomains={identityPolicy.domains}
+        busy={identityPolicy.busy}
+        error={identityPolicy.error}
+        onSave={saveIdentityPolicy}
+        onClose={() => !identityPolicy.busy && setIdentityPolicy((current) => ({ ...current, open: false }))}
+      />
       <SideDrawer
         open={Boolean(settingsDrawer)}
         title={settingsDrawerCopy[settingsDrawer]?.title || "设置说明"}

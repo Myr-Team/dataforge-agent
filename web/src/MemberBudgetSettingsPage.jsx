@@ -496,8 +496,8 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setNotice(null);
     try {
       const result = safeTestEmailResult(await sendMemberBudgetTestEmail(workspaceId));
-      setNotice({ tone: result.state === "sent" ? "success" : "warning", text: result.label });
-      if (result.state === "sent") await reload({ preserveNotice: true });
+      setNotice({ tone: result.state === "accepted" ? "success" : "warning", text: result.label });
+      if (result.state === "accepted") await reload({ preserveNotice: true });
     } catch (error) {
       const stateValue = error?.status === 404
         ? { state: "failed", safe_error_category: "not_configured" }
@@ -684,8 +684,12 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
                   ? "成员预算仍可查看；邮件配置入口由独立功能开关控制。"
                   : view.notification.configured
                     ? view.notification.testEmailReady
-                      ? "测试邮件已通过，可按需开启自动提醒。"
-                      : "请先发送测试邮件，成功后可开启自动提醒。"
+                      ? "已确认收件人收到测试邮件，可按需开启自动提醒。"
+                      : view.notification.testDeliveryState === "accepted" || view.notification.testDeliveryState === "pending"
+                        ? "邮件服务已接受，正在等待收件人级投递确认。"
+                        : view.notification.testDeliveryState === "bounced" || view.notification.testDeliveryState === "failed"
+                          ? "上次测试邮件未送达，请检查收件地址或邮件策略后重试。"
+                          : "请先发送测试邮件；确认真实送达后才能开启自动提醒。"
                     : view.notification.state === "permission_required"
                       ? "请由组织 FinOps 管理员配置提醒。"
                       : view.notification.state === "unavailable"

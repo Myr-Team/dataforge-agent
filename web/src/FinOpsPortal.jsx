@@ -403,7 +403,6 @@ function TrendColumn({
         />
       ) : null}
       <div className="finops-trend-plot">
-        <b className="finops-trend-value">{formatValue(rawValue)}</b>
         <div className="finops-trend-bar-slot">
           <div
             className={`finops-trend-stack ${value > 0 ? "has-value" : ""}`}
