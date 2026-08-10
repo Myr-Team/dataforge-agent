@@ -161,6 +161,53 @@ def test_finops_bootstrap_is_bounded_and_omits_request_evidence(client: TestClie
         assert forbidden not in serialized
 
 
+def test_finops_bootstrap_applies_model_filter_to_summary_and_trend(
+    client: TestClient,
+    repository: InMemoryFinOpsRepository,
+) -> None:
+    repository.upsert_events(
+        [
+            FinOpsRequestEvent.model_validate(
+                {
+                    "request_ref": "req_bbbbbbbbbbbb",
+                    "occurred_at": datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc),
+                    "call_class": "model",
+                    "tenant_ref": "tenantref-a",
+                    "workspace_id": "ws-a",
+                    "actor_ref": "actor-safe",
+                    "run_id": "run-b",
+                    "agent_id": "df-coordinator",
+                    "deployment": "deepseek-v4-flash",
+                    "route": "analysis",
+                    "status": "succeeded",
+                    "tokens": TokenUsage(input=20, output=4, total=24),
+                    "gateway_coverage": "app_observed",
+                    "estimated_cost": {
+                        "amount": 0.002,
+                        "currency": "USD",
+                        "status": "estimated",
+                        "price_card_revision": "price-2",
+                    },
+                    "evidence_state": "observed",
+                    "usage_source": "provider",
+                }
+            )
+        ]
+    )
+
+    response = client.get(
+        "/api/finops/bootstrap?workspace_id=ws-a&model=deepseek-v4-flash&from=2026-07-01T00:00:00Z&to=2026-07-25T00:00:00Z",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overview"]["metrics"]["requests"] == 1
+    assert payload["overview"]["metrics"]["tokens"]["total"] == 24
+    assert payload["overview"]["metrics"]["estimated_cost"]["amount"] == 0.002
+    assert sum(item["requests"] for item in payload["trend"]["items"]) == 1
+
+
 def test_finops_bootstrap_requires_summary_permission(
     client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

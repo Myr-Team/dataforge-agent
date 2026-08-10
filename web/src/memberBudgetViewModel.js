@@ -296,3 +296,7 @@ export function safeTestEmailResult(value = {}) {
   }
   return { state: "unavailable", label: "邮件服务暂时不可用" };
 }
+
+export function testEmailNoticeTone(state) {
+  return text(state) === "delivered" ? "success" : "warning";
+}

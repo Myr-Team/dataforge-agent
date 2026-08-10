@@ -82,3 +82,20 @@ test("group search keeps raw id only in transient selection data", () => {
 
   assert.deepEqual(result, [{ id: "raw-group-id", name: "Finance" }]);
 });
+
+test("identity access distinguishes available tokens from verified Graph permissions", () => {
+  const view = identityAccessViewModel({
+    graph_connection: { state: "token_available", token_source: "delegated" },
+    permissions: {
+      "User.ReadBasic.All": "verification_required",
+      "GroupMember.Read.All": "consent_required",
+    },
+  });
+
+  assert.equal(view.connection.state, "token_available");
+  assert.equal(view.connection.label, "登录令牌可用，等待目录查询验证");
+  assert.equal(view.permissions.userRead.ready, false);
+  assert.equal(view.permissions.userRead.label, "待查询验证");
+  assert.equal(view.permissions.groupMembership.ready, false);
+  assert.equal(view.permissions.groupMembership.label, "需要管理员同意");
+});

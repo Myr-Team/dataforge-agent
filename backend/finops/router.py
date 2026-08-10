@@ -866,17 +866,21 @@ async def bootstrap(
     request: Request,
     from_value: str | None = Query(default=None, alias="from", max_length=64),
     to_value: str | None = Query(default=None, alias="to", max_length=64),
+    department_id: str | None = Query(default=None, max_length=160),
     workspace_id: str | None = Query(default=None, max_length=160),
+    agent_id: str | None = Query(default=None, max_length=160),
+    actor_ref: str | None = Query(default=None, max_length=160),
+    model: str | None = Query(default=None, max_length=160),
 ) -> dict[str, Any]:
     service, query, roles = _common(
         request,
         from_value,
         to_value,
-        None,
+        department_id,
         workspace_id,
-        None,
-        None,
-        None,
+        agent_id,
+        actor_ref,
+        model,
     )
     if not all(role in {"owner", "admin"} for role in roles.values()):
         raise HTTPException(

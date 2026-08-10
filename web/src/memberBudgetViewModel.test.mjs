@@ -5,6 +5,7 @@ import {
   memberBudgetHomeSummaryViewModel,
   memberBudgetViewModel,
   safeTestEmailResult,
+  testEmailNoticeTone,
 } from "./memberBudgetViewModel.js";
 
 const payload = {
@@ -244,6 +245,12 @@ test("test email response accepts only safe public categories", () => {
     safeTestEmailResult({ state: "failed", safe_error_category: "hostile-service-body" }),
     { state: "unavailable", label: "邮件服务暂时不可用" },
   );
+});
+
+test("accepted email is pending delivery rather than a success notice", () => {
+  assert.equal(testEmailNoticeTone("accepted"), "warning");
+  assert.equal(testEmailNoticeTone("delivered"), "success");
+  assert.equal(testEmailNoticeTone("failed"), "warning");
 });
 
 test("missing alert evidence and unavailable feeds do not become observed zero", () => {

@@ -38,6 +38,7 @@ from .model_provider_service import (
 )
 from .model_providers import ProviderPatch, deepseek_api_endpoint
 from .provider_client import RequestsProviderTransport
+from .tenant_admin import tenant_admin_capability
 from .workspace_authz import active_workspace_role
 from .workspace_store import list_workspaces
 
@@ -512,12 +513,15 @@ def _context(
             detail="trusted tenant identity is required",
         )
     roles = _authorized_workspace_roles(actor)
-    if not roles or not all(
-        role in {"owner", "admin"} for role in roles.values()
-    ):
+    capability = tenant_admin_capability(
+        actor,
+        workspace_roles=roles,
+        allow_all_workspace_owner=True,
+    )
+    if not capability.allowed:
         raise HTTPException(
             status_code=403,
-            detail="Model provider management requires admin or owner",
+            detail="Model provider management requires a tenant administrator",
         )
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     tenant_id = str(actor.get("tenant_id") or "").strip()
@@ -531,7 +535,10 @@ def _context(
         canonical_tenant_ref(tenant_id, secret=secret),
         canonical_actor_ref(tenant_id, actor_id, secret=secret),
         roles,
-        sorted(roles)[0],
+        next(
+            (workspace_id for workspace_id, role in sorted(roles.items()) if role in {"owner", "admin"}),
+            sorted(roles)[0],
+        ),
     )
 
 

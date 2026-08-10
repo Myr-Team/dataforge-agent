@@ -563,6 +563,26 @@ def test_test_email_has_its_own_disabled_gate(monkeypatch) -> None:
     assert client.post("/api/finops/notification-settings/test-email").status_code == 404
 
 
+def test_configured_tenant_owner_can_manage_email_without_app_role(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_TENANT_OWNER_OIDS", "actor-a")
+    client, _service = _client(monkeypatch, app_roles=())
+
+    response = client.get("/api/finops/notification-settings")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"
+
+
+def test_email_admin_role_name_is_configurable(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_TENANT_ADMIN_ROLE", "Contoso.FinOpsOwner")
+    client, _service = _client(monkeypatch, app_roles=("Contoso.FinOpsOwner",))
+
+    response = client.get("/api/finops/notification-settings")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Not found"
+
+
 def test_email_configuration_gate_hides_read_and_write_before_service_or_audit(monkeypatch) -> None:
     client, service = _client(monkeypatch)
     monkeypatch.delenv("DF_FINOPS_EMAIL_CONFIGURATION_ENABLED", raising=False)

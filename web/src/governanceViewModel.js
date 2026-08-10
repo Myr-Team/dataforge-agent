@@ -297,7 +297,7 @@ export function directorySelectionViewModel(payload = {}) {
 }
 
 export function memberDirectoryViewModel(members = []) {
-  return (Array.isArray(members) ? members : []).map((member) => {
+  return (Array.isArray(members) ? members : []).map((member, index) => {
     const rawRef = String(member?.subject_label || "").trim().toLowerCase();
     const actionRef = /^member_[0-9a-f]{40}$/.test(rawRef) ? rawRef : "";
     const role = ["owner", "admin", "editor", "viewer"].includes(member?.role) ? member.role : "viewer";
@@ -307,8 +307,8 @@ export function memberDirectoryViewModel(members = []) {
     return {
       actionRef,
       subjectLabel,
-      label: display?.name || subjectLabel,
-      detail: display?.email || "",
+      label: display?.name || `待关联 Entra 成员 ${index + 1}`,
+      detail: display?.email || "尚未完成企业身份关联",
       identityVisibility: display ? "verified_enterprise" : "pseudonymous",
       role,
       owner: role === "owner",

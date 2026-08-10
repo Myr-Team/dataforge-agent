@@ -74,6 +74,7 @@ ALLOWED_REASON_CODES = frozenset(
         "authorized", "permission_denied", "operation_failed", "persistence_failed", "transition_attempt",
         "task_completed", "task_cancelled", "task_failed", "connector_error", "invitation_failed",
         "invalid_request", "conflict", "not_found", "promotion_attempt", "experiment_promoted", "promotion_failed",
+        "routing_governed", "routing_suspended",
     }
 )
 ALLOWED_CORRELATION_FIELDS = frozenset(

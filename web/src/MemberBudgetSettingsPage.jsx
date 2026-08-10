@@ -30,7 +30,7 @@ import {
   saveMemberBudgetNotification,
   sendMemberBudgetTestEmail,
 } from "./api.js";
-import { memberBudgetViewModel, safeTestEmailResult } from "./memberBudgetViewModel.js";
+import { memberBudgetViewModel, safeTestEmailResult, testEmailNoticeTone } from "./memberBudgetViewModel.js";
 
 const EMPTY_VIEW = memberBudgetViewModel();
 
@@ -496,7 +496,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setNotice(null);
     try {
       const result = safeTestEmailResult(await sendMemberBudgetTestEmail(workspaceId));
-      setNotice({ tone: result.state === "accepted" ? "success" : "warning", text: result.label });
+      setNotice({ tone: testEmailNoticeTone(result.state), text: result.label });
       if (result.state === "accepted") await reload({ preserveNotice: true });
     } catch (error) {
       const stateValue = error?.status === 404

@@ -313,6 +313,21 @@ def test_provider_governance_requires_owner_or_admin(monkeypatch) -> None:
     assert audits == []
 
 
+def test_configured_tenant_owner_can_manage_provider_with_mixed_workspace_roles(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_TENANT_OWNER_OIDS", "owner-a")
+    client, _repository, _secrets, _audits = _client(
+        monkeypatch,
+        roles={"ws-a": "owner", "ws-b": "viewer"},
+    )
+
+    response = client.get(
+        "/api/model-providers",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+
+
 def test_owner_creates_masked_bedrock_provider(monkeypatch) -> None:
     client, _repository, secrets, audits = _client(monkeypatch)
     monkeypatch.setenv("DF_AWS_BEDROCK_CONNECTOR_ENABLED", "1")

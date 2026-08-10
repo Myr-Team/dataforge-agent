@@ -11,6 +11,7 @@ from ..audit_store import record_audit_event
 from ..control_plane import workspace_finops_member_identities
 from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
+from ..tenant_admin import tenant_admin_capability
 from ..workspace_authz import active_workspace_role
 from .acs_email import AcsEmailError, acs_email_sender_from_environment, validate_template
 from .email_delivery_monitor import email_delivery_monitor_from_environment
@@ -62,16 +63,14 @@ def _email_configuration_context(request: Request) -> tuple[str, str, tuple[str,
         raise HTTPException(status_code=404, detail="email_configuration_disabled")
     context = _context(request)
     actor = context[3]
-    roles = actor.get("roles")
-    if (
-        not isinstance(roles, (list, tuple, set))
-        or "DataForge.FinOpsAdmin" not in {
-            str(role).strip() for role in roles if str(role).strip()
-        }
-    ):
+    capability = tenant_admin_capability(
+        actor,
+        workspace_roles={context[2][0]: active_workspace_role(context[2][0], actor) or ""},
+    )
+    if not capability.allowed:
         raise HTTPException(
             status_code=403,
-            detail="Tenant FinOps administrator role required",
+            detail=f"Tenant FinOps administrator role required ({capability.role_name})",
         )
     return context
 

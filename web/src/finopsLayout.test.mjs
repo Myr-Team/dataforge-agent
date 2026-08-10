@@ -170,6 +170,9 @@ test("trend bars scale inside a dedicated plot track without clipping near-maxim
   assert.match(styles, /\.finops-trend-legend \.cached, \.finops-trend-stack \.cached\s*\{[^}]*#0e9f6e/s);
   assert.match(styles, /\.finops-trend-column:hover \.finops-trend-stack[\s\S]*translateY\(-2px\)/s);
   assert.doesNotMatch(styles, /\.finops-trend-stack\s*\{[^}]*max-height:/s);
+  assert.doesNotMatch(styles, /\.finops-trend-columns\s*\{[^}]*border-bottom:/s);
+  assert.match(styles, /\.finops-trend-plot\s*\{[^}]*border-bottom:\s*1px solid/s);
+  assert.match(styles, /\.finops-trend-column\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 24px/s);
 });
 
 

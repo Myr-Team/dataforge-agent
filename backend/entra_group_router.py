@@ -20,6 +20,7 @@ from .entra_group_mapping import (
 from .finops.normalization import canonical_actor_ref, canonical_tenant_ref
 from .graph_client import graph_token_context, search_entra_groups
 from .identity import actor_from_request, is_trusted_tenant_identity
+from .tenant_admin import tenant_admin_capability
 from .workspace_authz import active_workspace_role
 from .workspace_store import list_workspaces
 
@@ -75,17 +76,17 @@ async def identity_governance(request: Request) -> dict[str, Any]:
     except Exception as exc:
         raise _mapping_error(exc)
     token_context = graph_token_context(request)
-    permission_state = (
-        "configured"
-        if token_context.get("source") in {"delegated", "app_only"}
-        else "unavailable"
-    )
+    token_available = token_context.get("source") in {"delegated", "app_only"}
     return {
         "mappings": [item.public_payload() for item in items],
         "mapping_count": len(items),
+        "graph_connection": {
+            "state": "token_available" if token_available else "unavailable",
+            "token_source": token_context.get("source") or "unavailable",
+        },
         "permissions": {
-            "User.ReadBasic.All": permission_state,
-            "GroupMember.Read.All": permission_state,
+            "User.ReadBasic.All": "verification_required" if token_available else "unavailable",
+            "GroupMember.Read.All": "verification_required" if token_available else "unavailable",
         },
         "membership_resolution": {
             "claims": "enabled",
@@ -206,12 +207,15 @@ def _context(
             detail="trusted tenant identity is required",
         )
     roles = _authorized_workspace_roles(actor)
-    if not roles or not all(
-        role in {"owner", "admin"} for role in roles.values()
-    ):
+    capability = tenant_admin_capability(
+        actor,
+        workspace_roles=roles,
+        allow_all_workspace_owner=True,
+    )
+    if not capability.allowed:
         raise HTTPException(
             status_code=403,
-            detail="Identity governance requires admin or owner",
+            detail="Identity governance requires a tenant administrator",
         )
     secret = str(os.environ.get("DF_FINOPS_HMAC_SECRET") or "").strip()
     tenant_id = str(actor.get("tenant_id") or "").strip()
@@ -225,7 +229,10 @@ def _context(
         canonical_tenant_ref(tenant_id, secret=secret),
         canonical_actor_ref(tenant_id, actor_id, secret=secret),
         roles,
-        sorted(roles)[0],
+        next(
+            (workspace_id for workspace_id, role in sorted(roles.items()) if role in {"owner", "admin"}),
+            sorted(roles)[0],
+        ),
     )
 
 

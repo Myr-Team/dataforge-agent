@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Activity, Bot, KeyRound, ShieldCheck } from "lucide-react";
 
 import { IdentityAccessPage } from "./IdentityAccessPage.jsx";
@@ -13,8 +13,10 @@ const TABS = [
   { id: "readiness", label: "服务状态", icon: Activity },
 ];
 
-export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
-  const [tab, setTab] = useState("agents");
+export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null, initialTab = "agents" }) {
+  const safeInitialTab = TABS.some((item) => item.id === initialTab) ? initialTab : "agents";
+  const [tab, setTab] = useState(safeInitialTab);
+  useEffect(() => setTab(safeInitialTab), [safeInitialTab]);
   return (
     <div className="model-governance-settings" data-testid="model-governance-settings">
       <nav className="model-governance-tabs" aria-label="模型与身份设置">
