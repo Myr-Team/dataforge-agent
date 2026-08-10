@@ -23,7 +23,7 @@ import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionV
 export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
-  const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null });
+  const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
   const [selectedGroup, setSelectedGroup] = useState(null);
   const [role, setRole] = useState("viewer");
   const [priority, setPriority] = useState(100);
@@ -61,17 +61,24 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
     event?.preventDefault();
     const safeQuery = String(query || "").trim();
     if (safeQuery.length < 2) {
-      setSearchState({ loading: false, error: "至少输入 2 个字符。", items: [], connected: null });
+      setSearchState({ loading: false, error: "至少输入 2 个字符。", items: [], connected: null, permissionState: "" });
       return;
     }
     setSearchState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const payload = await searchIdentityGovernanceGroups(safeQuery);
+      const permissionState = String(payload?.permission_state || "").trim();
+      const permissionMessage = permissionState === "denied"
+        ? "目录令牌已取得，但缺少组读取权限；需要租户管理员同意 GroupMember.Read.All。"
+        : payload?.connected === false
+          ? "尚未取得 Microsoft Graph 登录令牌；请启用 Easy Auth 令牌存储后重新登录。"
+          : "";
       setSearchState({
         loading: false,
-        error: payload?.connected === false ? "Microsoft Graph 暂不可用或尚未授予目录读取权限。" : "",
+        error: permissionMessage,
         items: identityGroupSearchViewModel(payload),
         connected: payload?.connected !== false,
+        permissionState,
       });
     } catch (error) {
       setSearchState({
@@ -79,6 +86,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
         error: error instanceof Error ? error.message : "Entra 组搜索失败",
         items: [],
         connected: false,
+        permissionState: "unavailable",
       });
     }
   };
@@ -121,7 +129,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
     );
     setSelectedGroup(null);
     setQuery("");
-    setSearchState({ loading: false, error: "", items: [], connected: null });
+    setSearchState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
   };
 
   return (
@@ -156,6 +164,12 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
       </section>
 
       <div className="identity-trust-strip">
+        <div>
+          <span className={view.connection.ready ? "ready" : "pending"}>
+            {view.connection.ready ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
+          </span>
+          <p><b>目录连接</b><small>{view.connection.label}</small></p>
+        </div>
         <div>
           <span className={view.permissions.userRead.ready ? "ready" : "pending"}>
             {view.permissions.userRead.ready ? <CheckCircle2 size={14} /> : <CircleAlert size={14} />}
@@ -249,7 +263,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
           <section className="identity-add-section">
             <header>
               <h3>关联 Entra 组</h3>
-              <p>从组织目录搜索友好名称，然后为当前工作区分配角色。</p>
+              <p>从组织目录搜索现有组，然后为当前工作区分配角色；DataForge 不会代替管理员创建 Entra 组。</p>
             </header>
             <form className="identity-search" onSubmit={searchGroups}>
               <label>
@@ -299,7 +313,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
               </label>
               <button className="primary-button" type="button" disabled={!selectedGroup || Boolean(busy)} onClick={createMapping}>
                 {busy === "create" ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
-                建立关联
+                建立组映射
               </button>
             </div>
           </section>

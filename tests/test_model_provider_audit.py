@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import backend.model_provider_router as provider_router
 from backend.app import app
 from backend.model_provider_repository import InMemoryModelProviderRepository
+from backend.audit_store import ALLOWED_REASON_CODES
 from auth_fixtures import trusted_headers
 
 
@@ -120,3 +121,7 @@ def test_bedrock_mutation_fails_before_secret_write_when_audit_is_unavailable(
     assert response.json()["detail"] == "Audit persistence is required"
     assert secrets.writes == 0
     assert repository.list("tenant-a") == []
+
+
+def test_provider_routing_transitions_use_allowlisted_audit_reason_codes() -> None:
+    assert {"routing_governed", "routing_suspended"}.issubset(ALLOWED_REASON_CODES)

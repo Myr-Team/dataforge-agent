@@ -811,6 +811,51 @@ def test_member_contract_reveals_only_verified_enterprise_identities(monkeypatch
     assert "reviewer@partner.example" not in serialized
 
 
+def test_member_contract_does_not_derive_trusted_domain_without_explicit_policy(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-owner-domain-secret")
+    owner = {
+        "actor_id": "owner-domain-oid",
+        "tenant_id": "tenant-secret",
+        "email": "owner@contoso.com",
+        "name": "Owner",
+        "source": "easy_auth",
+    }
+    trusted_member = {
+        "actor_id": "analyst-domain-oid",
+        "tenant_id": "tenant-secret",
+        "email": "analyst@contoso.com",
+        "name": "Enterprise Analyst",
+        "role": "editor",
+        "status": "active",
+        "source": "easy_auth",
+    }
+    external_member = {
+        "actor_id": "partner-domain-oid",
+        "tenant_id": "tenant-secret",
+        "email": "reviewer@partner.example",
+        "name": "External Reviewer",
+        "role": "viewer",
+        "status": "active",
+        "source": "easy_auth",
+    }
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: owner)
+    monkeypatch.setattr(control_plane, "default_actor", lambda: owner)
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: False)
+    monkeypatch.setattr(control_plane, "_load_workspace_meta", lambda _workspace_id: {"workspace_owner": owner})
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [trusted_member, external_member])
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+
+    result = control_plane.workspace_member_roles("ws-owner-domain", object())
+    members = {member["subject_label"]: member for member in result["members"]}
+
+    trusted_label = invitation_store.member_subject_label("ws-owner-domain", trusted_member)
+    external_label = invitation_store.member_subject_label("ws-owner-domain", external_member)
+    assert members[trusted_label]["identity_visibility"] == "pseudonymous"
+    assert "display" not in members[trusted_label]
+    assert members[external_label]["identity_visibility"] == "pseudonymous"
+    assert "display" not in members[external_label]
+
+
 def test_owner_can_update_enterprise_identity_policy_with_normalized_domains(monkeypatch) -> None:
     owner = {
         "actor_id": "owner-raw-oid",
@@ -1397,7 +1442,7 @@ def test_artifact_mutation_endpoints_audit_authorized_workspace_before_running(
     [
         ("x-request-id", "eyJhbGciOiJIUzI1NiJ9.client-secret.signature"),
         ("idempotency-key", "sk-live-client-api-key"),
-        ("x-correlation-id", "Server=tcp:db;AccountKey=connection-secret"),
+        ("x-correlation-id", "opaque-correlation-marker"),
     ],
 )
 def test_client_correlation_headers_never_appear_in_audit_bytes_or_api(monkeypatch, header, secret) -> None:

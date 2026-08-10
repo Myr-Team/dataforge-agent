@@ -24,6 +24,7 @@ import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
 import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
 import { memberBudgetHomeSummaryViewModel } from "./memberBudgetViewModel.js";
 import { EnterpriseIdentityPolicyModal } from "./EnterpriseIdentityPolicyModal.jsx";
+import { prettyTraceJson, traceExplorerRows } from "./runTraceExplorer.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -2884,7 +2885,8 @@ function TraceReference({ workspaceId, runId, reference, compact = false, showMe
 function RunsCenter({ dashboard, trace, running, observability, onOpenConversation, tasks }) {
   const runs = dashboard?.runs || [];
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
-  const r = runs[0] || {};
+  const [selectedRunId, setSelectedRunId] = useState("");
+  const r = runs.find((item) => (item.run_id || item.conversation_id) === selectedRunId) || runs[0] || {};
   const runId = r.run_id || r.conversation_id || "";
   const [q, setQ] = useState("");
   const [histExpanded, setHistExpanded] = useState(false);
@@ -2895,13 +2897,19 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const [traceOpen, setTraceOpen] = useState({});
   const [logOpen, setLogOpen] = useState(false);
   const [logText, setLogText] = useState("");
+  const [traceExplorerOpen, setTraceExplorerOpen] = useState(false);
+  const [traceSelection, setTraceSelection] = useState(0);
   const runMaf = useMemo(() => deriveMafViewModel(rtrace || [], summary?.maf), [rtrace, summary?.maf]);
   useEffect(() => {
     if (!runId) return;
+    let active = true;
     setSummary(null); setRtrace(null); setTracePage(0); setTraceOpen({});
-    loadRunSummary(runId).then(setSummary).catch(() => {});
-    loadRunTrace(runId).then((d) => setRtrace(Array.isArray(d) ? d : (d?.trace || []))).catch(() => {});
+    loadRunSummary(runId).then((value) => { if (active) setSummary(value); }).catch(() => {});
+    loadRunTrace(runId).then((d) => { if (active) setRtrace(Array.isArray(d) ? d : (d?.trace || [])); }).catch(() => {});
+    return () => { active = false; };
   }, [runId]);
+  const traceExplorerItems = useMemo(() => traceExplorerRows(rtrace || []), [rtrace]);
+  useEffect(() => setTraceSelection(0), [runId]);
   const openLog = () => {
     setLogOpen(true); setLogText("");
     loadRunLog(runId, "text").then((d) => setLogText(typeof d === "string" ? d : (d?.text || JSON.stringify(d, null, 2)))).catch((e) => setLogText(`加载日志失败：${e.message}`));
@@ -2948,6 +2956,56 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
   const histPages = Math.max(1, Math.ceil(filtered.length / PAGE));
   const histVisible = histExpanded ? filtered.slice(histPage * PAGE, histPage * PAGE + PAGE) : filtered.slice(0, 6);
 
+  if (traceExplorerOpen) {
+    const selectedTrace = traceExplorerItems[Math.min(traceSelection, Math.max(0, traceExplorerItems.length - 1))] || null;
+    return (
+      <main className="agent-studio runs-stage trace-explorer-stage" data-testid="run-trace-explorer">
+        <section className="trace-explorer-head">
+          <button type="button" className="ghost-button icon-label" onClick={() => setTraceExplorerOpen(false)}><ChevronLeft size={16} />返回运行记录</button>
+          <div>
+            <span className="eyeless-label">Trace Explorer</span>
+            <h1>运行 Trace 详情</h1>
+            <p>{runDisplayName(r)} · {traceExplorerItems.length} 条服务端运行事件</p>
+          </div>
+          <button type="button" className="ghost-button icon-label" disabled={!runId} onClick={() => onOpenConversation?.(runId)}><MessageSquare size={15} />回到会话</button>
+        </section>
+        <section className="trace-explorer-shell card">
+          <aside className="trace-explorer-list" aria-label="Trace 事件列表">
+            {rtrace === null ? <p className="empty-copy"><Loader2 size={14} className="spin" /> 正在读取 Trace</p> : null}
+            {rtrace !== null && !traceExplorerItems.length ? <p className="empty-copy">本次运行没有可展示的 Trace 事件。</p> : null}
+            {traceExplorerItems.map((item, index) => (
+              <button type="button" key={item.id} className={traceSelection === index ? "active" : ""} onClick={() => setTraceSelection(index)}>
+                <span>{item.index}</span>
+                <div><b>{traceEventLabel(item.event)}</b><small>{item.agent}{item.external ? " · External Agent" : ""}</small></div>
+                <em>{item.durationMs == null ? "—" : formatTraceDuration(item.durationMs)}</em>
+              </button>
+            ))}
+          </aside>
+          <article className="trace-explorer-detail">
+            {selectedTrace ? (
+              <>
+                <header>
+                  <div><span>{selectedTrace.external ? "External Agent" : "DataForge Runtime"}</span><h2>{traceEventLabel(selectedTrace.event)}</h2></div>
+                  <span className={`dw-chip ${selectedTrace.status === "completed" || selectedTrace.status === "done" ? "ok" : ""}`}>{traceStatusLabel(selectedTrace.status)}</span>
+                </header>
+                <dl>
+                  <div><dt>Agent</dt><dd>{selectedTrace.agent}</dd></div>
+                  <div><dt>角色</dt><dd>{selectedTrace.role || "未记录"}</dd></div>
+                  <div><dt>时间</dt><dd>{selectedTrace.time ? formatTime(selectedTrace.time) : "未记录"}</dd></div>
+                  <div><dt>来源</dt><dd>{selectedTrace.source}</dd></div>
+                </dl>
+                <section className="trace-json-panel">
+                  <div><b>事件 JSON</b><span>敏感字段已脱敏 · 可上下滚动</span></div>
+                  <pre>{prettyTraceJson(selectedTrace.payload)}</pre>
+                </section>
+              </>
+            ) : <p className="empty-copy">选择一条 Trace 事件查看结构化详情。</p>}
+          </article>
+        </section>
+      </main>
+    );
+  }
+
   return (
     <main className="agent-studio runs-stage">
       <section className="dashboard-hero">
@@ -2956,7 +3014,10 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
           <h1>运行记录 · 可观测性</h1>
           <p>追踪每个 Agent 的执行过程、工具调用、模型输出与评测结果，保障分析结果的可解释性与可信度。</p>
         </div>
-        <a className="ghost-button icon-label" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer" style={runId ? undefined : { pointerEvents: "none", opacity: .5 }}><Download size={15} />导出日志</a>
+        <div className="dashboard-hero-actions">
+          <button type="button" className="ghost-button icon-label" disabled={!runId} onClick={() => setTraceExplorerOpen(true)}><Activity size={15} />Trace 详情</button>
+          <a className="ghost-button icon-label" href={runId ? runLogUrl(runId, "text") : undefined} target="_blank" rel="noreferrer" style={runId ? undefined : { pointerEvents: "none", opacity: .5 }}><Download size={15} />导出日志</a>
+        </div>
       </section>
 
       <div className="run-cards">
@@ -3118,7 +3179,7 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
               const v = run.verdict ? (VERDICT_LABELS[run.verdict] || run.verdict) : null;
               const tone = run.verdict === "feasible" ? "ok" : run.verdict === "not_yet_feasible" ? "warn" : "blue";
               return (
-                <button type="button" className="rh-row" key={id || i} onClick={() => id && onOpenConversation && onOpenConversation(id)} disabled={!id || !onOpenConversation} title={id}>
+                <button type="button" className="rh-row" key={id || i} onClick={() => { if (id) { setSelectedRunId(id); setTraceExplorerOpen(true); } }} disabled={!id} title={`${id} · 查看 Trace`}>
                   <CheckCircle2 size={15} className="rh-row-ic" />
                   <div className="rh-row-main">
                     <b>{runDisplayName(run)}</b>
@@ -3713,6 +3774,10 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
         "对话、分析、概念图与语音摘要分别走独立配置，后续可以在这里开放模型切换、默认产物类型和生成成本策略。",
       ],
     },
+    identity: {
+      title: "身份与访问",
+      body: [],
+    },
     compliance: {
       title: "数据与合规管理",
       body: [
@@ -3814,6 +3879,26 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
         {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", contentSafetyLabel], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", tracingLabel], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。", "compliance")}
         {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
+
+      <section className="card identity-access-entry">
+        <div className="member-budget-entry-icon"><ShieldCheck size={18} /></div>
+        <div className="member-budget-entry-copy">
+          <strong>身份与访问</strong>
+          <p>查看当前 Entra 登录身份，并把组织目录组映射到工作区角色</p>
+        </div>
+        <div className="member-budget-entry-states" aria-label="身份与访问状态">
+          <span>Microsoft Entra ID</span>
+          <span>服务端权限判定</span>
+        </div>
+        <button
+          type="button"
+          className="settings-config-button"
+          aria-label="管理身份与访问"
+          onClick={() => setSettingsDrawer("identity")}
+        >
+          <ShieldCheck size={13} />管理
+        </button>
+      </section>
 
       <section className="card member-budget-entry">
         <div className="member-budget-entry-icon"><Coins size={18} /></div>
@@ -4025,10 +4110,10 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
         open={Boolean(settingsDrawer)}
         title={settingsDrawerCopy[settingsDrawer]?.title || "设置说明"}
         onClose={() => setSettingsDrawer(null)}
-        wide={settingsDrawer === "models"}
+        wide={["models", "identity"].includes(settingsDrawer)}
       >
-        {settingsDrawer === "models"
-          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} />
+        {["models", "identity"].includes(settingsDrawer)
+          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsDrawer === "identity" ? "identity" : "agents"} />
           : (
             <div className="settings-info-drawer">
               {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}

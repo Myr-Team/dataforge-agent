@@ -4111,7 +4111,23 @@ def _public_detail_projection(value: Any, *, depth: int) -> Any:
             key_text = str(key)
             if key_text.lower() in _PUBLIC_DETAIL_CAPABILITY_FIELDS:
                 continue
-            if key_text.lower() in {"password", "secret", "connection_string", "sas", "accountkey", "sig"}:
+            if key_text.lower() in {
+                "password",
+                "secret",
+                "connection_string",
+                "connection-string",
+                "sas",
+                "accountkey",
+                "account_key",
+                "sig",
+                "authorization",
+                "api_key",
+                "api-key",
+                "access_token",
+                "access-token",
+                "refresh_token",
+                "refresh-token",
+            }:
                 result[key_text] = "[redacted]"
             else:
                 result[key_text] = _public_detail_projection(item, depth=depth + 1)

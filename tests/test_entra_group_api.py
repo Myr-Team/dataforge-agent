@@ -154,6 +154,21 @@ def test_group_mapping_is_tenant_scoped_and_requires_admin(monkeypatch) -> None:
     ).status_code == 403
 
 
+def test_configured_tenant_owner_can_manage_groups_with_mixed_workspace_roles(monkeypatch) -> None:
+    monkeypatch.setenv("DF_FINOPS_TENANT_OWNER_OIDS", "owner-a")
+    client, _repository, _audits = _client(
+        monkeypatch,
+        roles={"ws-a": "owner", "ws-b": "viewer"},
+    )
+
+    response = client.get(
+        "/api/identity-governance",
+        headers=trusted_headers(actor_id="owner-a", tenant_id="tenant-a"),
+    )
+
+    assert response.status_code == 200
+
+
 def test_group_mapping_requires_durable_audit(monkeypatch) -> None:
     client, repository, _audits = _client(monkeypatch)
     monkeypatch.setattr(

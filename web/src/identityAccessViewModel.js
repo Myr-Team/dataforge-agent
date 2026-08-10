@@ -10,10 +10,35 @@ function text(value) {
 
 function permission(value) {
   const state = text(value) || "unavailable";
+  const labels = {
+    configured: "已配置",
+    granted: "已验证",
+    verification_required: "待查询验证",
+    token_available: "待查询验证",
+    consent_required: "需要管理员同意",
+    denied: "权限不足",
+    unavailable: "未连接",
+  };
   return {
     state,
-    ready: state === "configured",
-    label: state === "configured" ? "已配置" : "未配置",
+    ready: ["configured", "granted"].includes(state),
+    label: labels[state] || "状态未知",
+  };
+}
+
+function graphConnection(value = {}) {
+  const state = text(value?.state) || "unavailable";
+  const labels = {
+    connected: "Microsoft Graph 已连接",
+    token_available: "登录令牌可用，等待目录查询验证",
+    consent_required: "需要租户管理员同意目录权限",
+    unavailable: "未取得可用的 Microsoft Graph 令牌",
+  };
+  return {
+    state,
+    tokenSource: text(value?.token_source),
+    ready: state === "connected",
+    label: labels[state] || "目录连接状态未知",
   };
 }
 
@@ -75,6 +100,7 @@ export function identityAccessViewModel(payload = {}, workspaceId = "") {
   return {
     mappings,
     totalCount: Number.isInteger(payload.mapping_count) ? payload.mapping_count : mappings.length,
+    connection: graphConnection(payload.graph_connection),
     permissions: {
       userRead: permission(payload?.permissions?.["User.ReadBasic.All"]),
       groupMembership: permission(payload?.permissions?.["GroupMember.Read.All"]),

@@ -27,6 +27,8 @@ server {
         proxy_set_header X-MS-CLIENT-PRINCIPAL $http_x_ms_client_principal;
         proxy_set_header X-MS-CLIENT-PRINCIPAL-ID $http_x_ms_client_principal_id;
         proxy_set_header X-MS-CLIENT-PRINCIPAL-NAME $http_x_ms_client_principal_name;
+        proxy_set_header X-MS-TOKEN-AAD-ACCESS-TOKEN $http_x_ms_token_aad_access_token;
+        proxy_set_header X-MS-TOKEN-AAD-ID-TOKEN $http_x_ms_token_aad_id_token;
         proxy_set_header X-DataForge-Trusted-Tenant "${DF_WORKSPACE_OWNER_TENANT_ID}";
         proxy_set_header X-DataForge-Proxy-Secret "${DF_WEB_PROXY_SECRET}";
         proxy_http_version 1.1;
