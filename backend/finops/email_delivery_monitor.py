@@ -82,7 +82,12 @@ def _latest_row(result: Any) -> tuple[Any | None, dict[str, int]]:
         return None, {}
     table = tables[0]
     columns = getattr(table, "columns", ())
-    indexes = {str(getattr(column, "name", "")).strip().lower(): index for index, column in enumerate(columns)}
+    indexes = {
+        str(column if isinstance(column, str) else getattr(column, "name", ""))
+        .strip()
+        .lower(): index
+        for index, column in enumerate(columns)
+    }
     if not {"timegenerated", "deliverystatus"}.issubset(indexes):
         raise ValueError("delivery columns unavailable")
     rows = getattr(table, "rows", None)

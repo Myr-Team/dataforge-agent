@@ -13,7 +13,7 @@
 
 | Gate | Result |
 | --- | --- |
-| `python -m pytest -q` | 1854 passed, 1 skipped |
+| `python -m pytest -q` | 1855 passed, 1 skipped |
 | `node --test` (`web/`) | 308 passed |
 | `npm run build` (`web/`) | passed; 1795 modules transformed; existing bundle-size warning only |
 | `npx playwright test` on a unique port | 63 passed |
@@ -76,6 +76,8 @@ The product now distinguishes:
 3. terminal safe failure states such as bounced or suppressed.
 
 Provider message identifiers remain internal. Automatic budget alerts must not be enabled until a test message reaches `delivered`.
+
+Live acceptance found that the current Azure Monitor SDK exposes query column names as strings, while the initial adapter handled only column objects. A production-shaped regression test now covers both forms; the focused email/budget suite passed 60 tests and the complete Python suite passed 1855 tests after the compatibility fix.
 
 ## Rollback
 
