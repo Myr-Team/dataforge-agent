@@ -31,6 +31,32 @@ def test_monitor_confirms_recipient_delivery_without_exposing_provider_id() -> N
     assert "RecipientId" in client.query
 
 
+def test_monitor_accepts_string_columns_returned_by_current_azure_sdk() -> None:
+    class _StringColumnClient(_Client):
+        def query_workspace(self, _workspace_id: str, query: str, **_kwargs: object):
+            self.query = query
+            return SimpleNamespace(
+                tables=[
+                    SimpleNamespace(
+                        columns=["TimeGenerated", "DeliveryStatus"],
+                        rows=[
+                            [
+                                datetime.fromisoformat("2026-08-10T01:00:00+00:00"),
+                                "Delivered",
+                            ]
+                        ],
+                    )
+                ]
+            )
+
+    evidence = EmailDeliveryMonitor(
+        client=_StringColumnClient([]),
+        logs_workspace_id="11111111-1111-5111-8111-111111111111",
+    ).lookup("22222222-2222-5222-8222-222222222222")
+
+    assert evidence.state == "delivered"
+
+
 @pytest.mark.parametrize(
     ("provider_state", "expected"),
     [
