@@ -18,7 +18,7 @@ test("operations header isolates title copy from the synchronization control", a
   assert.doesNotMatch(styles, /\.finops-head\s*>\s*div\s*>\s*span/);
   assert.match(styles, /\.finops-head-copy\s*>\s*span/);
   assert.match(styles, /\.finops-live\s*>\s*span/);
-  assert.match(styles, /\.finops-live\s*>\s*span\s*\{[^}]*min-width:/s);
+  assert.doesNotMatch(styles, /\.finops-live\s*>\s*span\s*\{[^}]*min-width:/s);
   assert.doesNotMatch(component, /新鲜度/);
   assert.match(component, /aria-label=\{pageUpdating \? "数据更新中" : "刷新运营数据"\}/);
   assert.match(component, /pageUpdating \? <Loader2 className="spin"[^>]*> : <RefreshCw/);
@@ -164,8 +164,11 @@ test("trend bars scale inside a dedicated plot track without clipping near-maxim
   assert.match(component, /className="finops-trend-plot"/);
   assert.match(component, /className="finops-trend-bar-slot"/);
   assert.match(styles, /\.finops-trend-plot\s*\{[^}]*height:\s*100%/s);
-  assert.match(styles, /\.finops-trend-plot\s*\{[^}]*grid-template-rows:\s*18px minmax\(0, 1fr\)/s);
+  assert.match(styles, /\.finops-trend-plot\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\)/s);
   assert.match(styles, /\.finops-trend-bar-slot\s*\{[^}]*height:\s*100%[^}]*align-items:\s*flex-end/s);
+  assert.doesNotMatch(component, /className="finops-trend-value"/);
+  assert.match(styles, /\.finops-trend-legend \.cached, \.finops-trend-stack \.cached\s*\{[^}]*#0e9f6e/s);
+  assert.match(styles, /\.finops-trend-column:hover \.finops-trend-stack[\s\S]*translateY\(-2px\)/s);
   assert.doesNotMatch(styles, /\.finops-trend-stack\s*\{[^}]*max-height:/s);
 });
 
@@ -210,6 +213,8 @@ test("ROI page exposes one honest operating-decision hierarchy", async () => {
 
   for (const label of [
     "本期运营判断",
+    "演示案例",
+    "业务假设",
     "本期月度测算",
     "价值桥",
     "证据成熟度",

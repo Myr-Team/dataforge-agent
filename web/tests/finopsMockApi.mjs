@@ -375,6 +375,21 @@ const roiDecisionPayload = {
     summary: "情景参数与运行事实严格分开；验证完成前不显示已实现 ROI。",
     evidence_state: "estimated",
   },
+  case_story: {
+    title: "运营自动化测算",
+    status: "estimated",
+    summary: "假设每月节省 40 小时，按 50 USD/小时折算，并计入 1,000 USD 的避免损失或新增收益。",
+    boundary: "情景参数用于展示投入价值，业务结果验证前不计为已实现 ROI。",
+    assumptions: [
+      { id: "hours_saved", label: "每月节省工时", value: 40, unit: "小时/月" },
+      { id: "hourly_value", label: "小时价值", value: 50, unit: "USD" },
+      { id: "avoided_loss_or_revenue", label: "避免损失或新增收益", value: 1000, unit: "USD" },
+      { id: "implementation_cost", label: "实施投入", value: 6000, unit: "USD" },
+      { id: "monthly_fixed_cost", label: "月度固定运营成本", value: 200, unit: "USD/月" },
+      { id: "model_cost", label: "月度模型成本", value: 450, unit: "USD/月" },
+      { id: "evaluation_months", label: "评估周期", value: 12, unit: "月" },
+    ],
+  },
   metrics: [
     { id: "monthly_benefit", label: "月度收益", value: 3000, unit: "USD", status: "estimated", explanation: "来自情景测算，非已验证业务结果。" },
     { id: "monthly_total_cost", label: "月度总成本", value: 1150, unit: "USD", status: "estimated", explanation: "包含实施摊销、固定成本与当前模型估算成本。" },
@@ -650,12 +665,13 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     memberBudgetAccessState: options.memberBudgetAccessState || "allowed",
     memberBudgetEmpty: Boolean(options.memberBudgetEmpty),
     memberBudgetConflictOnce: Boolean(options.memberBudgetConflictOnce),
-    memberBudgetEmailState: options.memberBudgetEmailState || "sent",
+    memberBudgetEmailState: options.memberBudgetEmailState || "accepted",
     memberBudgetActiveDisabled: Boolean(options.memberBudgetActiveDisabled),
     memberBudgetNotificationState: options.memberBudgetNotificationState || "configured",
     memberBudgetAlertsState: options.memberBudgetAlertsState || "available",
     memberBudgetRecipientEmail: "demo-admin@example.test",
     memberBudgetTested: true,
+    memberBudgetDeliveryState: "delivered",
     memberBudgetNotificationEnabled: true,
     memberBudgetDisabled: false,
     roiScenarioConflictOnce: Boolean(options.roiScenarioConflictOnce),
@@ -1000,6 +1016,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             body_template: "{{estimated_spend}} / {{budget_amount}}",
             enabled: control.memberBudgetNotificationEnabled,
             test_email_succeeded_at: control.memberBudgetTested ? NOW : null,
+            last_test_accepted_at: control.memberBudgetDeliveryState === "not_tested" ? null : NOW,
+            last_test_delivery_state: control.memberBudgetDeliveryState,
+            last_test_delivery_checked_at: control.memberBudgetDeliveryState === "not_tested" ? null : NOW,
             revision: 2,
           },
           freshness: "recorded",
@@ -1014,6 +1033,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
       control.memberBudgetRecipientEmail = payload.recipient_email;
       control.memberBudgetNotificationEnabled = payload.enabled === true;
       control.memberBudgetTested = false;
+      control.memberBudgetDeliveryState = "not_tested";
       body = {
         item: {
           recipient_actor_ref: "member-safe",
@@ -1023,6 +1043,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           body_template: "{{estimated_spend}} / {{budget_amount}}",
           enabled: control.memberBudgetNotificationEnabled,
           test_email_succeeded_at: null,
+          last_test_accepted_at: null,
+          last_test_delivery_state: "not_tested",
+          last_test_delivery_checked_at: null,
           revision: 3,
         },
         freshness: "recorded",
@@ -1031,9 +1054,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         currency: "USD",
       };
     } else if (path === "/api/finops/notification-settings/test-email" && request.method() === "POST") {
-      if (control.memberBudgetEmailState === "sent") control.memberBudgetTested = true;
-      body = control.memberBudgetEmailState === "sent"
-        ? { state: "sent", sent_at: NOW, safe_error_category: null }
+      if (control.memberBudgetEmailState === "accepted") control.memberBudgetDeliveryState = "accepted";
+      body = control.memberBudgetEmailState === "accepted"
+        ? { state: "accepted", accepted_at: NOW, safe_error_category: null }
         : {
           state: "failed",
           sent_at: null,

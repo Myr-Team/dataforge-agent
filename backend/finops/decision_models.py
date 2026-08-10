@@ -31,6 +31,7 @@ class DecisionStatement(BaseModel):
 class RoiDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
     decision: DecisionStatement
+    case_story: dict[str, Any]
     metrics: list[DecisionMetric]
     value_bridge: dict[str, Any]
     evidence_maturity: dict[str, Any]

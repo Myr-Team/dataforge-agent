@@ -114,6 +114,7 @@ const LEVEL_LABELS = Object.freeze({
 
 const UNIT_LABELS = Object.freeze({
   USD: "USD",
+  "USD/月": "USD/月",
   ratio: "ROI",
   percent: "%",
   percentage_point: "个百分点",
@@ -526,6 +527,33 @@ function safeScenario(raw) {
 }
 
 
+function safeCaseStory(raw) {
+  const source = isRecord(raw) ? raw : {};
+  const status = evidenceState(source.status);
+  const assumptions = records(source.assumptions).flatMap((item) => {
+    const id = safeIdentifier(item.id);
+    const value = finiteNumber(item.value);
+    const unit = safeUnit(item.unit);
+    if (!id || value === null || !unit) return [];
+    return [{
+      id,
+      label: boundedText(item.label, 80) || "业务假设",
+      value,
+      unit,
+      valueLabel: formatValue(value, unit, status.key),
+    }];
+  }).slice(0, 8);
+  return {
+    title: boundedText(source.title, 120),
+    summary: boundedText(source.summary, 320),
+    boundary: boundedText(source.boundary, 240),
+    status: status.key,
+    badge: status.key === "estimated" ? "情景测算" : status.label,
+    assumptions,
+  };
+}
+
+
 function safeVerifiedRoi(raw) {
   const source = isRecord(raw) ? raw : {};
   const status = evidenceState(source.status);
@@ -568,6 +596,7 @@ export function roiDecisionView(payload) {
   const verified = safeVerifiedRoi(source.verified_roi);
   return {
     decision: safeDecision(source.decision),
+    caseStory: safeCaseStory(source.case_story),
     metrics,
     valueBridge: safeBridge(source.value_bridge, metrics),
     evidenceMaturity: safeMaturity(source.evidence_maturity),

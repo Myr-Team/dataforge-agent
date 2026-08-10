@@ -5,14 +5,17 @@ import {
   Loader2,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from "lucide-react";
 
 import {
   deleteFinOpsOfficialPriceMapping,
+  governModelProvider,
   loadFinOpsOfficialPriceCatalog,
   loadFinOpsOfficialPriceMappings,
+  loadModelProviders,
   loadWorkspaceModelRouting,
   updateFinOpsOfficialPriceMapping,
   updateWorkspaceModelRouting,
@@ -255,6 +258,36 @@ export function ModelRoutingPage({
     }
   };
 
+  const governProviderRoute = async (remediation) => {
+    const providerId = String(remediation?.providerId || "").trim();
+    if (!providerId) return;
+    setSaving(`govern:${providerId}`);
+    setSaveError("");
+    setNotice("");
+    try {
+      const providerPayload = await loadModelProviders();
+      const provider = (Array.isArray(providerPayload?.items) ? providerPayload.items : [])
+        .find((item) => String(item?.provider_id || "") === providerId);
+      if (!provider || !Number.isInteger(provider.revision)) {
+        throw new Error("DeepSeek 提供商状态尚未同步，请刷新后重试。");
+      }
+      await governModelProvider(providerId, provider.revision);
+      await load();
+      setNotice(`${remediation.providerLabel} 已纳入模型路由，现在可以为 Agent 选择对应模型。`);
+    } catch (error) {
+      if (error?.status === 409) {
+        setSaveError("DeepSeek 状态已被其他管理员更新，已重新载入，请复核后重试。");
+        await load();
+      } else if (error?.status === 403) {
+        setSaveError("当前账号没有纳入组织级模型路由的权限。");
+      } else {
+        setSaveError(error instanceof Error ? error.message : "DeepSeek 纳管暂时失败，请稍后重试。");
+      }
+    } finally {
+      setSaving("");
+    }
+  };
+
   const saveMapping = async (deployment) => {
     const officialPriceKey = String(mappingDraft[deployment] || "").trim();
     if (!officialPriceKey) {
@@ -343,6 +376,30 @@ export function ModelRoutingPage({
               <div><span>策略版本</span><b>v{view.policyRevision}</b></div>
               <div><span>官方价格关联</span><b>{mappedCount} / {view.routes.length} 个模型</b></div>
             </section>
+
+            {view.governanceRemediations.length ? (
+              <section className="routing-governance-remediation" aria-label="需要完成的模型纳管">
+                <div>
+                  <span>连接与价格已就绪</span>
+                  <strong>完成 DeepSeek 纳管后即可在下方选择模型</strong>
+                  <small>纳管操作会写入审计记录，不会修改或暴露已保存的 API Key。</small>
+                </div>
+                <div className="routing-governance-remediation-actions">
+                  {view.governanceRemediations.map((remediation) => (
+                    <button
+                      className="primary-button"
+                      type="button"
+                      key={remediation.providerId}
+                      disabled={Boolean(saving)}
+                      onClick={() => governProviderRoute(remediation)}
+                    >
+                      {saving === `govern:${remediation.providerId}` ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
+                      纳入 {remediation.providerLabel} 模型路由
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
 
             <section className="routing-section">
               <header className="routing-section-head">

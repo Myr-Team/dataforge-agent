@@ -37,6 +37,7 @@ class EmailDeliveryResult:
     state: str
     sent_at: datetime | None
     safe_error_category: str | None
+    provider_message_id: str | None = None
 
 
 class _EmailClient(Protocol):
@@ -73,7 +74,15 @@ class AcsEmailSender:
                 raise AcsEmailError("timeout")
             if _delivery_state(result) != "succeeded":
                 raise AcsEmailError("service_unavailable")
-            return EmailDeliveryResult(state="sent", sent_at=datetime.now(timezone.utc), safe_error_category=None)
+            provider_message_id = _delivery_id(result)
+            if provider_message_id is None:
+                raise AcsEmailError("service_unavailable")
+            return EmailDeliveryResult(
+                state="accepted",
+                sent_at=datetime.now(timezone.utc),
+                safe_error_category=None,
+                provider_message_id=provider_message_id,
+            )
         except AcsEmailError:
             raise
         except PermissionError as exc:
@@ -124,6 +133,14 @@ def _delivery_state(result: Any) -> str:
     else:
         value = getattr(result, "status", None) or getattr(result, "state", None)
     return str(value or "").strip().lower()
+
+
+def _delivery_id(result: Any) -> str | None:
+    value = result.get("id") if isinstance(result, Mapping) else getattr(result, "id", None)
+    try:
+        return str(UUID(str(value)))
+    except (ValueError, TypeError, AttributeError):
+        return None
 
 
 def _looks_like_permission_error(exc: Exception) -> bool:

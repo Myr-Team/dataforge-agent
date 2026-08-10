@@ -83,6 +83,7 @@ test("connected DeepSeek exposes staged connection facts without raw errors", ()
       governance_state: "governed",
       secret_status: "stored",
       connection_stage: "completed",
+      safe_error_category: "provider_unavailable",
       stage_durations_ms: {
         secret_read: 2,
         endpoint_resolution: 4,
@@ -102,6 +103,7 @@ test("connected DeepSeek exposes staged connection facts without raw errors", ()
   assert.equal(item.primaryAction, "test");
   assert.equal(item.stageLabel, "全部检测完成");
   assert.equal(item.totalDurationLabel, "131 ms");
+  assert.equal(item.safeErrorLabel, "");
 });
 
 test("Bedrock discovery is connected but never assignable", () => {

@@ -722,6 +722,10 @@ BEGIN
         body_template NVARCHAR(4000) NOT NULL,
         enabled BIT NOT NULL,
         test_email_succeeded_at DATETIME2(7) NULL,
+        last_test_message_id UNIQUEIDENTIFIER NULL,
+        last_test_accepted_at DATETIME2(7) NULL,
+        last_test_delivery_state NVARCHAR(16) NOT NULL CONSTRAINT DF_finops_notification_delivery_state DEFAULT N'not_tested',
+        last_test_delivery_checked_at DATETIME2(7) NULL,
         revision INT NOT NULL,
         created_by_ref NVARCHAR(128) NOT NULL,
         updated_by_ref NVARCHAR(128) NOT NULL,
@@ -737,6 +741,35 @@ IF COL_LENGTH(N'df_finops.notification_setting', N'test_email_succeeded_at') IS 
 BEGIN
     EXEC(N'ALTER TABLE df_finops.notification_setting
         ADD test_email_succeeded_at DATETIME2(7) NULL');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'last_test_message_id') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD last_test_message_id UNIQUEIDENTIFIER NULL');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'last_test_accepted_at') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD last_test_accepted_at DATETIME2(7) NULL');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'last_test_delivery_state') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD last_test_delivery_state NVARCHAR(16) NOT NULL
+        CONSTRAINT DF_finops_notification_delivery_state DEFAULT N''not_tested''');
+END;
+GO
+
+IF COL_LENGTH(N'df_finops.notification_setting', N'last_test_delivery_checked_at') IS NULL
+BEGIN
+    EXEC(N'ALTER TABLE df_finops.notification_setting
+        ADD last_test_delivery_checked_at DATETIME2(7) NULL');
 END;
 GO
 

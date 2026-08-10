@@ -103,10 +103,12 @@ test("operations management is immediately discoverable and supports metric dril
 
   await expect(page.locator(".finops-trend-event")).toHaveCount(0);
   await page.locator(".finops-trend-switch").getByRole("button", { name: "Token" }).click();
-  const latestTrend = page.locator(".finops-trend-column").filter({ hasText: "4,712,780 Token" });
-  await expect(latestTrend).toHaveCount(1);
+  const latestTrend = page.locator(".finops-trend-column").last();
+  await expect(latestTrend).toBeVisible();
   await latestTrend.hover();
   const trendTooltip = page.locator(".finops-trend-tooltip-content");
+  await expect(trendTooltip).toContainText("4,712,780");
+  await expect(trendTooltip).toContainText("Token");
   await expect(trendTooltip).toContainText("1");
   await expect(page.locator(".finops-viewport-tooltip")).toHaveCount(1);
   const tooltipBox = await trendTooltip.boundingBox();
@@ -204,6 +206,9 @@ for (const viewport of [
     const headerBefore = await page.locator(".finops-head").boundingBox();
     await page.getByRole("button", { name: "效能与 ROI", exact: true }).click();
     await expect(page.getByText("测算显示具备投入价值，业务结果仍需验证")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "运营自动化测算" })).toBeVisible();
+    await expect(page.locator(".finops-decision-roi-case-assumptions dl")).toHaveCount(7);
+    await expect(page.getByText("业务结果验证前不计为已实现 ROI")).toBeVisible();
     await expect(page.getByRole("heading", { name: "价值桥" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "证据成熟度" })).toBeVisible();
     await expect(page.getByRole("heading", { name: "平台自动确认与业务侧补充验证" })).toBeVisible();

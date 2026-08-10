@@ -115,6 +115,12 @@ class NotificationSetting(BaseModel):
     body_template: str = Field(min_length=1, max_length=4000)
     enabled: bool
     test_email_succeeded_at: datetime | None = None
+    last_test_message_id: str | None = Field(default=None, exclude=True, repr=False)
+    last_test_accepted_at: datetime | None = None
+    last_test_delivery_state: Literal[
+        "not_tested", "accepted", "delivered", "bounced", "failed", "pending", "unavailable"
+    ] = "not_tested"
+    last_test_delivery_checked_at: datetime | None = None
     revision: int = Field(ge=1)
     created_by_ref: str = Field(min_length=1, max_length=128)
     updated_by_ref: str = Field(min_length=1, max_length=128)

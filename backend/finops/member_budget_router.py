@@ -13,6 +13,7 @@ from ..identity import actor_from_request, is_trusted_tenant_identity
 from ..lineage_sql import build_lineage_sql_connection_factory
 from ..workspace_authz import active_workspace_role
 from .acs_email import AcsEmailError, acs_email_sender_from_environment, validate_template
+from .email_delivery_monitor import email_delivery_monitor_from_environment
 from .member_budget_repository import MemberBudgetConflictError, MemberBudgetRepository
 from .member_budget_service import MemberBudgetService
 from .member_directory import MemberDirectory
@@ -186,8 +187,8 @@ def _item_envelope(item: Any, *, data_status: str = "unavailable") -> dict[str, 
     return {"item": item, "freshness": "recorded", "coverage": "request_estimated_cost", "data_status": data_status, "currency": "USD"}
 
 
-def _test_email_response(*, state: str, sent_at: Any, safe_error_category: str | None) -> dict[str, Any]:
-    return {"state": state, "sent_at": sent_at, "safe_error_category": safe_error_category}
+def _test_email_response(*, state: str, accepted_at: Any, safe_error_category: str | None) -> dict[str, Any]:
+    return {"state": state, "accepted_at": accepted_at, "safe_error_category": safe_error_category}
 
 
 def _validate_notification_templates(payload: Mapping[str, Any]) -> None:
@@ -296,7 +297,10 @@ async def disable_member_budget(budget_id: str, request: Request) -> dict[str, A
 async def get_notification_settings(request: Request) -> dict[str, Any]:
     tenant_ref, _actor_ref, _workspace_ids, _actor = _email_configuration_context(request)
     try:
-        value = get_member_budget_service().get_notification(tenant_ref=tenant_ref)
+        value = get_member_budget_service().get_notification(
+            tenant_ref=tenant_ref,
+            delivery_monitor=email_delivery_monitor_from_environment(),
+        )
     except Exception as exc:
         raise _map_error(exc) from exc
     if value is None:
@@ -332,9 +336,9 @@ async def test_notification_email(request: Request) -> dict[str, Any]:
             tenant_ref=tenant_ref,
             sender=acs_email_sender_from_environment(),
         )
-        return _test_email_response(state=result.state, sent_at=result.sent_at, safe_error_category=result.safe_error_category)
+        return _test_email_response(state=result.state, accepted_at=result.sent_at, safe_error_category=result.safe_error_category)
     except AcsEmailError as exc:
-        return _test_email_response(state="failed", sent_at=None, safe_error_category=exc.category)
+        return _test_email_response(state="failed", accepted_at=None, safe_error_category=exc.category)
     except Exception as exc:
         raise _map_error(exc) from exc
 

@@ -104,12 +104,26 @@ export function modelRoutingViewModel(payload = {}) {
     ? rawPriceCard.configured_route_ids.map(text).filter(Boolean)
     : [];
   const configured = text(rawPriceCard.state) === "configured";
+  const governanceRemediations = Object.values(routes
+    .filter((route) => route.providerType === "deepseek" && route.unavailableReason === "governance_required")
+    .reduce((items, route) => {
+      const current = items[route.providerId] || {
+        providerId: route.providerId,
+        providerLabel: route.providerLabel,
+        routeCount: 0,
+        reason: route.unavailableReason,
+      };
+      current.routeCount += 1;
+      items[route.providerId] = current;
+      return items;
+    }, {}));
 
   return {
     defaultRouteId: text(payload.default_route),
     routes,
     assignments,
     agentAssignments,
+    governanceRemediations,
     policyRevision: Number.isInteger(payload?.policy?.revision) ? payload.policy.revision : 0,
     priceCard: {
       state: configured ? "configured" : "not_configured",

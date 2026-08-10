@@ -57,7 +57,12 @@ class _Service:
 
     def send_test_email(self, **_kwargs: Any) -> EmailDeliveryResult:
         self.writes += 1
-        return EmailDeliveryResult(state="sent", sent_at=None, safe_error_category=None)
+        return EmailDeliveryResult(
+            state="accepted",
+            sent_at=None,
+            safe_error_category=None,
+            provider_message_id="22222222-2222-5222-8222-222222222222",
+        )
 
 
 class _WorkspaceScopedClient(TestClient):
@@ -631,9 +636,9 @@ def test_test_email_works_with_alerts_disabled_and_redacts_delivery(monkeypatch)
     monkeypatch.setattr(budget_router, "acs_email_sender_from_environment", lambda: object())
     response = client.post("/api/finops/notification-settings/test-email")
     assert response.status_code == 200
-    assert response.json()["state"] == "sent"
+    assert response.json()["state"] == "accepted"
     assert response.json()["safe_error_category"] is None
-    assert set(response.json()) == {"state", "sent_at", "safe_error_category"}
+    assert set(response.json()) == {"state", "accepted_at", "safe_error_category"}
     assert "admin@example.test" not in response.text
     assert service.writes == 1
 

@@ -16,7 +16,18 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
             ],
             "scenarios": [{
                 "scenario_id": "roi_scenario_demo",
+                "title": "运营自动化测算",
                 "status": "estimated",
+                "inputs": {
+                    "currency": "USD",
+                    "hours_saved": 40,
+                    "hourly_value": 50,
+                    "avoided_loss_or_revenue": 1000,
+                    "implementation_cost": 6000,
+                    "monthly_fixed_cost": 200,
+                    "model_cost": 100,
+                    "evaluation_months": 12,
+                },
                 "result": {
                     "monthly_benefit": 3000,
                     "monthly_total_cost": 800,
@@ -57,6 +68,15 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
 
     assert result["decision"]["state"] == "scenario_positive_unverified"
     assert result["decision"]["title"] == "测算显示具备投入价值，业务结果仍需验证"
+    assert result["case_story"]["title"] == "运营自动化测算"
+    assert result["case_story"]["assumptions"][0] == {
+        "id": "hours_saved",
+        "label": "每月节省工时",
+        "value": 40.0,
+        "unit": "小时/月",
+    }
+    assert "40 小时" in result["case_story"]["summary"]
+    assert result["case_story"]["boundary"] == "情景参数用于展示投入价值，业务结果验证前不计为已实现 ROI。"
     assert result["metrics"][0]["status"] == "estimated"
     assert result["value_bridge"]["formula_revision"] == "dataforge-roi-v1"
     assert result["value_bridge"]["items"] == [

@@ -132,6 +132,16 @@ test("ROI view never labels an estimated scenario as verified", () => {
       explanation: "来自情景测算。",
     }],
     verified_roi: { value: 2.2, status: "estimated", currency: "USD" },
+    case_story: {
+      title: "运营自动化测算",
+      summary: "假设每月节省 40 小时，并按 50 USD/小时折算。",
+      status: "estimated",
+      assumptions: [
+        { id: "hours_saved", label: "每月节省工时", value: 40, unit: "小时/月" },
+        { id: "hourly_value", label: "小时价值", value: 50, unit: "USD" },
+      ],
+      boundary: "业务结果验证前不计为已实现 ROI。",
+    },
     value_bridge: { items: [], formula_revision: "dataforge-roi-v1" },
     evidence_maturity: { score_pct: 75, stages: [] },
   });
@@ -140,6 +150,9 @@ test("ROI view never labels an estimated scenario as verified", () => {
   assert.equal(view.verifiedRoiLabel, "证据不足");
   assert.equal(view.verifiedRoiValue, null);
   assert.equal(view.valueBridge.formulaRevision, "dataforge-roi-v1");
+  assert.equal(view.caseStory.title, "运营自动化测算");
+  assert.equal(view.caseStory.assumptions[0].valueLabel, "40 小时/月");
+  assert.match(view.caseStory.boundary, /业务结果验证前/);
 
   const partial = roiDecisionView({
     scenarios: [{ scenario_id: "scenario-partial", status: "partial", result: {} }],
