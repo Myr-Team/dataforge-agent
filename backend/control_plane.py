@@ -1677,11 +1677,21 @@ def workspace_member_roles(workspace_id: str, request: Request | None = None) ->
     except FileNotFoundError:
         meta = {}
     stored_owner = meta.get("workspace_owner") if isinstance(meta.get("workspace_owner"), dict) else {}
+    projected_owner = dict(stored_owner)
+    if (
+        stored_owner
+        and canonical_actor_identity(stored_owner) == canonical_actor_identity(current_actor)
+        and is_trusted_tenant_identity(current_actor)
+    ):
+        # Older workspaces may persist only the tenant-scoped Owner identity.
+        # Reuse the currently authenticated Easy Auth profile for display, but
+        # only after the stable tenant + object identifiers match exactly.
+        projected_owner.update(public_actor(current_actor))
     owner_actor = stored_owner if _actor_key(stored_owner) else current_actor if not rbac_enabled() else default_actor()
     if not stored_owner and workspace_role(workspace_id, current_actor) == "owner":
         owner_actor = {**default_actor(), **current_actor}
     owner = (
-        {**public_actor(stored_owner), "role": "owner", "status": "active"}
+        {**public_actor(projected_owner), "role": "owner", "status": "active"}
         if stored_owner
         else member_from_actor(owner_actor, role="owner")
     )

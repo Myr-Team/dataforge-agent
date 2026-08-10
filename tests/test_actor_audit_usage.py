@@ -856,6 +856,73 @@ def test_member_contract_does_not_derive_trusted_domain_without_explicit_policy(
     assert "display" not in members[external_label]
 
 
+def test_member_contract_enriches_matching_stored_owner_from_current_easy_auth_identity(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-owner-enrichment-secret")
+    stored_owner = {
+        "actor_id": "owner-enrichment-oid",
+        "tenant_id": "tenant-secret",
+        "source": "easy_auth",
+    }
+    current_owner = {
+        **stored_owner,
+        "email": "owner@contoso.com",
+        "name": "Current Owner",
+    }
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: current_owner)
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: True)
+    monkeypatch.setattr(
+        control_plane,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": stored_owner,
+            "enterprise_identity_policy": {"trusted_email_domains": ["contoso.com"]},
+        },
+    )
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+
+    result = control_plane.workspace_member_roles("ws-owner-enrichment", object())
+
+    assert result["members"][0]["identity_visibility"] == "verified_enterprise"
+    assert result["members"][0]["display"] == {
+        "name": "Current Owner",
+        "email": "owner@contoso.com",
+    }
+
+
+def test_member_contract_does_not_enrich_stored_owner_from_a_different_actor(monkeypatch) -> None:
+    monkeypatch.setenv("DF_WEB_PROXY_SECRET", "member-owner-mismatch-secret")
+    stored_owner = {
+        "actor_id": "stored-owner-oid",
+        "tenant_id": "tenant-secret",
+        "source": "easy_auth",
+    }
+    current_actor = {
+        "actor_id": "different-owner-oid",
+        "tenant_id": "tenant-secret",
+        "email": "different@contoso.com",
+        "name": "Different Actor",
+        "source": "easy_auth",
+    }
+    monkeypatch.setattr(control_plane, "actor_from_request", lambda *_args, **_kwargs: current_actor)
+    monkeypatch.setattr(control_plane, "rbac_enabled", lambda: True)
+    monkeypatch.setattr(
+        control_plane,
+        "_load_workspace_meta",
+        lambda _workspace_id: {
+            "workspace_owner": stored_owner,
+            "enterprise_identity_policy": {"trusted_email_domains": ["contoso.com"]},
+        },
+    )
+    monkeypatch.setattr(control_plane, "_workspace_invited_members", lambda _workspace_id: [])
+    monkeypatch.setattr(control_plane, "_workspace_usage_by_actor", lambda _workspace_id: {"members": [], "totals": {}})
+
+    result = control_plane.workspace_member_roles("ws-owner-mismatch", object())
+
+    assert result["members"][0]["identity_visibility"] == "pseudonymous"
+    assert "display" not in result["members"][0]
+
+
 def test_owner_can_update_enterprise_identity_policy_with_normalized_domains(monkeypatch) -> None:
     owner = {
         "actor_id": "owner-raw-oid",
