@@ -24,10 +24,7 @@ class RetrievalRequest:
     prefer_local: bool = False
 
     def __post_init__(self) -> None:
-        refs = tuple(self.allowed_corpus_refs)
-        object.__setattr__(self, "allowed_corpus_refs", refs)
-        if refs and not self.authorization_applied:
-            object.__setattr__(self, "authorization_applied", True)
+        object.__setattr__(self, "allowed_corpus_refs", tuple(self.allowed_corpus_refs))
 
 
 class RetrievalHit(TypedDict, total=False):
@@ -84,7 +81,13 @@ class LocalKeywordAdapter:
 
     def search(self, request: RetrievalRequest) -> list[RetrievalHit]:
         _validate_local_request(self._workspace_base, request)
-        documents = _authorized_documents(self._document_loader(request.workspace_id), request)
+        if not _local_authorization_ready(request):
+            return []
+        documents = _authorized_documents(
+            self._document_loader(request.workspace_id),
+            request,
+            require_workspace_identity=True,
+        )
         terms = _query_terms(request.query)
         scored: list[tuple[float, str, dict[str, Any]]] = []
         for document in documents:
@@ -103,7 +106,7 @@ class LocalKeywordAdapter:
                 score_kind="keyword_frequency",
                 graph_path_refs=[],
                 candidate_sources=["local_keyword"],
-                permission_filtered=request.authorization_applied,
+                permission_filtered=True,
             )
             for rank, (score, _, document) in enumerate(scored[: request.top_k], start=1)
         ]
@@ -116,8 +119,14 @@ class LocalGraphAdapter:
 
     def search(self, request: RetrievalRequest) -> list[RetrievalHit]:
         _validate_local_request(self._workspace_base, request)
+        if not _local_authorization_ready(request):
+            return []
         graph_path = _resolve_graph_path(self._workspace_base, request)
-        documents = _authorized_documents(self._document_loader(request.workspace_id), request)
+        documents = _authorized_documents(
+            self._document_loader(request.workspace_id),
+            request,
+            require_workspace_identity=True,
+        )
         evidence = _evidence_index(documents)
         graph = _load_graph(graph_path, request.workspace_id)
         nodes, edges = _authorized_graph(graph, evidence)
@@ -174,7 +183,7 @@ class LocalGraphAdapter:
                 graph_path_refs=sorted(paths),
                 candidate_sources=["local_graph"],
                 extra_trace={"graph_file": graph_path.name, "graph_succeeded": True},
-                permission_filtered=request.authorization_applied,
+                permission_filtered=True,
             )
             for rank, (_, (document, score, paths)) in enumerate(ranked[: request.top_k], start=1)
         ]
@@ -195,8 +204,18 @@ class HybridRetrievalAdapter:
         self._rrf_k = rrf_k
 
     def search(self, request: RetrievalRequest) -> list[RetrievalHit]:
-        keyword_hits = self._keyword_adapter.search(request)
-        graph_hits = self._graph_adapter.search(request)
+        if not _local_authorization_ready(request):
+            return []
+        keyword_hits = _authorized_documents(
+            self._keyword_adapter.search(request),
+            request,
+            require_workspace_identity=True,
+        )
+        graph_hits = _authorized_documents(
+            self._graph_adapter.search(request),
+            request,
+            require_workspace_identity=True,
+        )
         fused: dict[str, dict[str, Any]] = {}
         for source, hits in (("local_keyword", keyword_hits), ("local_graph", graph_hits)):
             seen: set[str] = set()
@@ -235,7 +254,7 @@ class HybridRetrievalAdapter:
                     graph_path_refs=sorted(item["paths"]),
                     candidate_sources=sorted(item["sources"]),
                     extra_trace={"graph_succeeded": True, "rrf_k": self._rrf_k},
-                    permission_filtered=request.authorization_applied,
+                    permission_filtered=True,
                 )
             )
         return results
@@ -267,6 +286,8 @@ def legacy_fallback(
     search_impl: SearchImplementation,
     request: RetrievalRequest,
     error: Exception,
+    *,
+    require_workspace_identity: bool = False,
 ) -> list[RetrievalHit]:
     hits = search_impl(
         request.workspace_id,
@@ -275,7 +296,11 @@ def legacy_fallback(
         use_vector=request.use_vector,
         prefer_local=request.prefer_local,
     )
-    authorized_hits = _authorized_documents(hits, request)
+    authorized_hits = _authorized_documents(
+        hits,
+        request,
+        require_workspace_identity=require_workspace_identity,
+    )
     error_category = type(error).__name__
     return [
         _decorate_hit(
@@ -304,7 +329,14 @@ def offline_legacy_fallback(
     request: RetrievalRequest,
     error: Exception,
 ) -> list[RetrievalHit]:
-    hits = legacy_fallback(local_search, request, error)
+    if not _local_authorization_ready(request):
+        return []
+    hits = legacy_fallback(
+        local_search,
+        request,
+        error,
+        require_workspace_identity=True,
+    )
     for hit in hits:
         hit["retrieval_trace"]["candidate_sources"] = ["legacy_local_fallback"]
     return hits
@@ -313,16 +345,35 @@ def offline_legacy_fallback(
 def _authorized_documents(
     documents: list[dict[str, Any]],
     request: RetrievalRequest,
+    *,
+    require_workspace_identity: bool = False,
 ) -> list[dict[str, Any]]:
-    allowed = {str(ref) for ref in request.allowed_corpus_refs if str(ref)}
+    allowed = _allowed_corpus_refs(request)
     authorized: list[dict[str, Any]] = []
     for document in documents:
-        if str(document.get("workspace_id") or request.workspace_id) != request.workspace_id:
+        workspace_id = document.get("workspace_id")
+        if require_workspace_identity and str(workspace_id or "") != request.workspace_id:
+            continue
+        if not require_workspace_identity and str(workspace_id or request.workspace_id) != request.workspace_id:
             continue
         if request.authorization_applied and not (_document_refs(document) & allowed):
             continue
         authorized.append(document)
     return authorized
+
+
+def _allowed_corpus_refs(request: RetrievalRequest) -> set[str]:
+    return {str(ref).strip() for ref in request.allowed_corpus_refs if str(ref).strip()}
+
+
+def _local_authorization_ready(request: RetrievalRequest) -> bool:
+    """Return true only when an upstream decision supplied a non-empty local ACL.
+
+    Local hits marked ``permission_filtered`` have passed both this explicit
+    authorization gate and the workspace/corpus filters before ranking.
+    """
+
+    return request.authorization_applied and bool(_allowed_corpus_refs(request))
 
 
 def _document_refs(document: dict[str, Any]) -> set[str]:

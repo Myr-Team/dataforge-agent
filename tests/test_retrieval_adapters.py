@@ -11,6 +11,7 @@ from backend import rag
 from backend.retrieval_adapters import (
     GRAPH_SCHEMA_VERSION,
     HybridRetrievalAdapter,
+    LegacyRetrievalAdapter,
     LocalGraphAdapter,
     LocalKeywordAdapter,
     RetrievalAdapterError,
@@ -174,7 +175,12 @@ def test_local_keyword_is_offline_acl_filtered_and_stably_sorted(monkeypatch: py
     assert all(hit["retrieval_trace"]["permission_filtered"] for hit in first)
 
     direct = LocalKeywordAdapter(Path.cwd() / "workspaces", _documents).search(
-        RetrievalRequest("ws-1", "alpha", allowed_corpus_refs=("corpus-a",))
+        RetrievalRequest(
+            "ws-1",
+            "alpha",
+            allowed_corpus_refs=("corpus-a",),
+            authorization_applied=True,
+        )
     )
     assert [hit["id"] for hit in direct] == ["doc-a"]
 
@@ -227,6 +233,7 @@ def test_local_graph_reads_versioned_json_and_jsonl_with_acl_before_expansion(
         "alpha",
         top_k=5,
         allowed_corpus_refs=("corpus-a",),
+        authorization_applied=True,
         graph_path=graph_path.name,
     )
 
@@ -252,7 +259,15 @@ def test_local_graph_rejects_path_traversal_and_workspace_traversal_before_loadi
     adapter = LocalGraphAdapter(tmp_path, loader)
 
     with pytest.raises(RetrievalAdapterError, match="escapes workspace root"):
-        adapter.search(RetrievalRequest("ws-1", "alpha", graph_path="../outside.json"))
+        adapter.search(
+            RetrievalRequest(
+                "ws-1",
+                "alpha",
+                allowed_corpus_refs=("corpus-a",),
+                authorization_applied=True,
+                graph_path="../outside.json",
+            )
+        )
     with pytest.raises(RetrievalAdapterError, match="workspace path escapes"):
         adapter.search(RetrievalRequest("../escape", "alpha", graph_path="corpus_graph.json"))
     assert loaded == []
@@ -268,6 +283,7 @@ def test_graph_discards_nodes_and_edges_without_authorized_evidence(tmp_path: Pa
             "alpha",
             top_k=10,
             allowed_corpus_refs=("corpus-a", "corpus-b"),
+            authorization_applied=True,
             graph_path=path.name,
         )
     )
@@ -288,26 +304,61 @@ class _StaticAdapter:
 def test_hybrid_rrf_deduplicates_and_uses_deterministic_tie_break() -> None:
     keyword = _StaticAdapter(
         [
-            {"id": "shared", "source_file": "a", "chunk_id": "shared", "content": "shared", "rank": 1},
-            {"id": "z-only", "source_file": "z", "chunk_id": "z", "content": "z", "rank": 2},
-            {"id": "shared", "source_file": "a", "chunk_id": "shared", "content": "duplicate", "rank": 3},
+            {
+                "id": "shared",
+                "workspace_id": "ws-1",
+                "source_file": "a",
+                "chunk_id": "shared",
+                "content": "shared",
+                "rank": 1,
+            },
+            {
+                "id": "z-only",
+                "workspace_id": "ws-1",
+                "source_file": "z",
+                "chunk_id": "z",
+                "content": "z",
+                "rank": 2,
+            },
+            {
+                "id": "shared",
+                "workspace_id": "ws-1",
+                "source_file": "a",
+                "chunk_id": "shared",
+                "content": "duplicate",
+                "rank": 3,
+            },
         ]
     )
     graph = _StaticAdapter(
         [
             {
                 "id": "shared",
+                "workspace_id": "ws-1",
                 "source_file": "a",
                 "chunk_id": "shared",
                 "content": "shared",
                 "rank": 1,
                 "graph_path_refs": ["entity-a>entity-b"],
             },
-            {"id": "a-only", "source_file": "a", "chunk_id": "a", "content": "a", "rank": 2},
+            {
+                "id": "a-only",
+                "workspace_id": "ws-1",
+                "source_file": "a",
+                "chunk_id": "a",
+                "content": "a",
+                "rank": 2,
+            },
         ]
     )
     adapter = HybridRetrievalAdapter(keyword, graph)
-    request = RetrievalRequest("ws-1", "anything", top_k=5)
+    request = RetrievalRequest(
+        "ws-1",
+        "anything",
+        top_k=5,
+        allowed_corpus_refs=("shared", "z", "a"),
+        authorization_applied=True,
+    )
 
     first = adapter.search(request)
     second = adapter.search(request)
@@ -442,6 +493,7 @@ def test_offline_fallback_reapplies_corpus_acl() -> None:
             "ws-1",
             "alpha",
             allowed_corpus_refs=("corpus-a",),
+            authorization_applied=True,
             mode="local_hybrid_graph",
         ),
         ValueError("graph failed"),
@@ -464,3 +516,165 @@ def test_local_keyword_rejects_workspace_traversal_before_loading(tmp_path: Path
     with pytest.raises(RetrievalAdapterError, match="workspace path escapes"):
         adapter.search(RetrievalRequest("../escape", "alpha"))
     assert loaded == []
+
+
+@pytest.mark.parametrize(
+    "retrieval_request",
+    [
+        RetrievalRequest(
+            "ws-1",
+            "alpha",
+            allowed_corpus_refs=("corpus-a",),
+            authorization_applied=False,
+        ),
+        RetrievalRequest("ws-1", "alpha", authorization_applied=True),
+    ],
+    ids=["authorization-not-applied", "empty-allow-list"],
+)
+def test_local_keyword_direct_entry_fails_closed_before_loading(
+    tmp_path: Path,
+    retrieval_request: RetrievalRequest,
+) -> None:
+    loaded: list[str] = []
+    adapter = LocalKeywordAdapter(tmp_path, lambda workspace_id: loaded.append(workspace_id) or _documents())
+
+    assert adapter.search(retrieval_request) == []
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    "retrieval_request",
+    [
+        RetrievalRequest(
+            "ws-1",
+            "alpha",
+            allowed_corpus_refs=("corpus-a",),
+            authorization_applied=False,
+        ),
+        RetrievalRequest("ws-1", "alpha", authorization_applied=True),
+    ],
+    ids=["authorization-not-applied", "empty-allow-list"],
+)
+def test_local_graph_direct_entry_fails_closed_before_graph_or_document_loading(
+    tmp_path: Path,
+    retrieval_request: RetrievalRequest,
+) -> None:
+    loaded: list[str] = []
+    adapter = LocalGraphAdapter(tmp_path, lambda workspace_id: loaded.append(workspace_id) or _documents())
+
+    assert adapter.search(retrieval_request) == []
+    assert loaded == []
+
+
+@pytest.mark.parametrize(
+    "retrieval_request",
+    [
+        RetrievalRequest(
+            "ws-1",
+            "anything",
+            allowed_corpus_refs=("corpus-a",),
+            authorization_applied=False,
+        ),
+        RetrievalRequest("ws-1", "anything", authorization_applied=True),
+    ],
+    ids=["authorization-not-applied", "empty-allow-list"],
+)
+def test_hybrid_direct_entry_fails_closed_before_rrf(retrieval_request: RetrievalRequest) -> None:
+    calls: list[str] = []
+
+    class _RecordingAdapter:
+        def __init__(self, name: str) -> None:
+            self._name = name
+
+        def search(self, _: RetrievalRequest) -> list[dict[str, Any]]:
+            calls.append(self._name)
+            return [{"id": "secret", "workspace_id": "ws-1", "corpus_ref": "corpus-secret"}]
+
+    adapter = HybridRetrievalAdapter(_RecordingAdapter("keyword"), _RecordingAdapter("graph"))
+
+    assert adapter.search(retrieval_request) == []
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "retrieval_request",
+    [
+        RetrievalRequest(
+            "ws-1",
+            "alpha",
+            allowed_corpus_refs=("corpus-a",),
+            authorization_applied=False,
+            mode="local_hybrid_graph",
+        ),
+        RetrievalRequest(
+            "ws-1",
+            "alpha",
+            authorization_applied=True,
+            mode="local_hybrid_graph",
+        ),
+    ],
+    ids=["authorization-not-applied", "empty-allow-list"],
+)
+def test_offline_fallback_direct_entry_fails_closed_before_search(
+    retrieval_request: RetrievalRequest,
+) -> None:
+    calls: list[str] = []
+
+    def local_search(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        del args, kwargs
+        calls.append("search")
+        return _documents()
+
+    assert offline_legacy_fallback(local_search, retrieval_request, ValueError("graph failed")) == []
+    assert calls == []
+
+
+def test_hybrid_applies_workspace_and_corpus_acl_before_rrf() -> None:
+    keyword = _StaticAdapter(
+        [
+            {
+                "id": "secret",
+                "workspace_id": "ws-1",
+                "corpus_ref": "corpus-secret",
+                "rank": 1,
+            },
+            {"id": "allowed", "workspace_id": "ws-1", "corpus_ref": "corpus-a", "rank": 2},
+            {"id": "foreign", "workspace_id": "ws-2", "corpus_ref": "corpus-a", "rank": 3},
+        ]
+    )
+    graph = _StaticAdapter(
+        [
+            {
+                "id": "secret",
+                "workspace_id": "ws-1",
+                "corpus_ref": "corpus-secret",
+                "rank": 1,
+            },
+            {"id": "allowed", "workspace_id": "ws-1", "corpus_ref": "corpus-a", "rank": 2},
+        ]
+    )
+    request = RetrievalRequest(
+        "ws-1",
+        "anything",
+        allowed_corpus_refs=("corpus-a",),
+        authorization_applied=True,
+    )
+
+    hits = HybridRetrievalAdapter(keyword, graph).search(request)
+
+    assert [hit["id"] for hit in hits] == ["allowed"]
+    assert hits[0]["retrieval_trace"]["permission_filtered"] is True
+
+
+def test_legacy_adapter_preserves_contract_without_local_authorization() -> None:
+    expected = [{"id": "legacy"}]
+    calls: list[tuple[Any, ...]] = []
+
+    def legacy(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        calls.append((*args, kwargs))
+        return expected
+
+    request = RetrievalRequest("", "", top_k=0)
+
+    assert LegacyRetrievalAdapter(legacy).search(request) is expected
+    assert calls == [("", "", 0, {"use_vector": True, "prefer_local": False})]
