@@ -35,6 +35,7 @@ function authority(overrides = {}) {
         governance: { permissions: { "member.read": true, "member.manage": true } },
       },
     },
+    permissionsResolved: true,
     ...overrides,
   };
 }
@@ -43,6 +44,8 @@ function authority(overrides = {}) {
 test("settings scope requires server-issued tenant actor and session refs", () => {
   assert.equal(settingsPreloadScope(authority({ workspaceAccess: null })), null);
   assert.equal(settingsPreloadScope(authority({ user: { tenantRef: "tenant_opaque_reference_a", actorRef: "actor_opaque_reference_a" } })), null);
+  assert.equal(settingsPreloadScope(authority({ capabilities: null, permissionsResolved: false })), null);
+  assert.equal(settingsAuthorizationBoundary(authority({ capabilities: null, permissionsResolved: false })), "");
   const scope = settingsPreloadScope(authority());
   assert.equal(scope.workspaceId, "ws-a");
   assert.match(scope.key, /ws-a/);
@@ -60,13 +63,38 @@ test("settings scope requires server-issued tenant actor and session refs", () =
 });
 
 
-test("settings authorization reconciliation clears the prior scope on workspace actor permission and logout boundaries", () => {
+test("settings authorization reconciliation retains a true scope while permissions resolve and clears owner changes", () => {
   const cleared = [];
-  let current = reconcileSettingsAuthorizationScope("", "scope-a", (scope) => cleared.push(scope));
-  current = reconcileSettingsAuthorizationScope(current, "scope-b", (scope) => cleared.push(scope));
-  current = reconcileSettingsAuthorizationScope(current, "", (scope) => cleared.push(scope));
+  let current = reconcileSettingsAuthorizationScope(
+    { ownerKey: "owner-a", scopeKey: "scope-a" },
+    { ownerKey: "owner-a", scopeKey: "", permissionsResolved: false },
+    (scope) => cleared.push(scope),
+  );
+  assert.deepEqual(current, { ownerKey: "owner-a", scopeKey: "scope-a" });
+  assert.deepEqual(cleared, []);
 
-  assert.equal(current, "");
+  current = reconcileSettingsAuthorizationScope(
+    current,
+    { ownerKey: "owner-b", scopeKey: "", permissionsResolved: false },
+    (scope) => cleared.push(scope),
+  );
+  assert.deepEqual(current, { ownerKey: "owner-b", scopeKey: "" });
+  assert.deepEqual(cleared, ["scope-a"]);
+
+  current = reconcileSettingsAuthorizationScope(
+    current,
+    { ownerKey: "owner-b", scopeKey: "scope-b", permissionsResolved: true },
+    (scope) => cleared.push(scope),
+  );
+  assert.deepEqual(current, { ownerKey: "owner-b", scopeKey: "scope-b" });
+  assert.deepEqual(cleared, ["scope-a"]);
+
+  current = reconcileSettingsAuthorizationScope(
+    current,
+    { ownerKey: "", scopeKey: "", permissionsResolved: false },
+    (scope) => cleared.push(scope),
+  );
+  assert.deepEqual(current, { ownerKey: "", scopeKey: "" });
   assert.deepEqual(cleared, ["scope-a", "scope-b"]);
 });
 
@@ -140,6 +168,8 @@ test("App wires Settings navigation intent and passes the current scoped cache b
   const components = await readFile(new URL("./components.jsx", import.meta.url), "utf8");
 
   assert.match(app, /settingsAuthorizationBoundary/);
+  assert.match(app, /settingsAuthorizationOwnerBoundary/);
+  assert.match(app, /settingsPermissionsResolved/);
   assert.match(app, /tenantRef: String\(session\?\.tenant_ref/);
   assert.match(app, /actorRef: String\(session\?\.actor_ref/);
   assert.match(app, /sessionRef: String\(session\?\.session_ref/);

@@ -42,6 +42,7 @@ import {
   reconcileSettingsAuthorizationScope,
   scheduleSettingsPreload,
   settingsAuthorizationBoundary,
+  settingsAuthorizationOwnerBoundary,
   settingsPreloadScope,
 } from "./settingsNavigation.js";
 import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
@@ -220,7 +221,7 @@ export function App() {
   const dashboardRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
   const finopsAuthorizationRef = useRef("");
-  const settingsAuthorizationRef = useRef("");
+  const settingsAuthorizationRef = useRef({ ownerKey: "", scopeKey: "" });
   const finopsScope = useMemo(
     () => finopsPreloadScope({
       authState,
@@ -259,20 +260,37 @@ export function App() {
       return null;
     });
   }, [finopsScope]);
+  const settingsPermissionsResolved = Boolean(
+    workspaceAccess
+    && String(workspaceAccess.workspace_id || "") === String(workspaceId)
+    && typeof workspaceAccess.authenticated === "boolean"
+    && typeof workspaceAccess.allowed === "boolean"
+    && governanceCapabilities
+    && String(governanceCapabilities.workspace_id || "") === String(workspaceId)
+    && governanceCapabilities.sections
+    && typeof governanceCapabilities.sections === "object"
+  );
+  const settingsAuthorizationOwnerKey = useMemo(() => settingsAuthorizationOwnerBoundary({
+    authState,
+    workspaceId,
+    user,
+  }), [authState, user, workspaceId]);
   const settingsScope = useMemo(() => settingsPreloadScope({
     authState,
     workspaceId,
     user,
     capabilities: governanceCapabilities,
     workspaceAccess,
-  }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
+    permissionsResolved: settingsPermissionsResolved,
+  }), [authState, governanceCapabilities, settingsPermissionsResolved, user, workspaceAccess, workspaceId]);
   const settingsAuthorizationKey = useMemo(() => settingsAuthorizationBoundary({
     authState,
     workspaceId,
     user,
     capabilities: governanceCapabilities,
     workspaceAccess,
-  }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
+    permissionsResolved: settingsPermissionsResolved,
+  }), [authState, governanceCapabilities, settingsPermissionsResolved, user, workspaceAccess, workspaceId]);
   const preloadSettings = useCallback(() => {
     if (!settingsScope) return Promise.resolve(null);
     return prefetchSettingsHome(settingsScope, {
@@ -312,10 +330,14 @@ export function App() {
   useEffect(() => {
     settingsAuthorizationRef.current = reconcileSettingsAuthorizationScope(
       settingsAuthorizationRef.current,
-      settingsAuthorizationKey,
+      {
+        ownerKey: settingsAuthorizationOwnerKey,
+        scopeKey: settingsAuthorizationKey,
+        permissionsResolved: settingsPermissionsResolved,
+      },
       clearSettingsScope,
     );
-  }, [settingsAuthorizationKey]);
+  }, [settingsAuthorizationKey, settingsAuthorizationOwnerKey, settingsPermissionsResolved]);
 
   useEffect(() => {
     if (!finopsScope) return undefined;
