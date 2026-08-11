@@ -3314,9 +3314,10 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const [tab, setTab] = useState(() => governanceOnly ? "governance" : "about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
-  const [sys, setSys] = useState(null);
+  const [sysEntry, setSysEntry] = useState({ key: "", value: null });
   const [memberRows, setMemberRows] = useState([]);
   const [memberMeta, setMemberMeta] = useState(null);
+  const [memberScopeKey, setMemberScopeKey] = useState("");
   const [memberWorkspaceId, setMemberWorkspaceId] = useState("");
   const [membersLoading, setMembersLoading] = useState(false);
   const [memberLoadError, setMemberLoadError] = useState("");
@@ -3340,24 +3341,40 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const governanceToken = useRef(null);
   const memberRequestVersion = useRef(0);
   const invitationRequestVersion = useRef(0);
-  const [workspaceSettings, setWorkspaceSettings] = useState(null);
-  const [workspaceRouting, setWorkspaceRouting] = useState(null);
+  const [workspaceSettingsEntry, setWorkspaceSettingsEntry] = useState({ key: "", value: null });
+  const [workspaceRoutingEntry, setWorkspaceRoutingEntry] = useState({ key: "", value: null });
+  const setSys = (value, key = settingsKeys.workspaceSettings) => setSysEntry({ key, value });
+  const setWorkspaceSettings = (value, key = settingsKeys.workspaceSettings) => setWorkspaceSettingsEntry({ key, value });
+  const setWorkspaceRouting = (value, key = settingsKeys.routing) => setWorkspaceRoutingEntry({ key, value });
+  const sys = sysEntry.key === settingsKeys.workspaceSettings ? sysEntry.value : null;
+  const workspaceSettings = workspaceSettingsEntry.key === settingsKeys.workspaceSettings ? workspaceSettingsEntry.value : null;
+  const workspaceRouting = workspaceRoutingEntry.key === settingsKeys.routing ? workspaceRoutingEntry.value : null;
   const [settingsDrawer, setSettingsDrawer] = useState(null);
   const [settingsPage, setSettingsPage] = useState("home");
-  const [memberBudgetHome, setMemberBudgetHome] = useState({
+  const [memberBudgetHomeEntry, setMemberBudgetHomeEntry] = useState({ key: "", value: {
     state: "loading",
     stateLabel: "正在读取",
     nearBudgetLabel: "预算状态读取中",
     mailLabel: "邮件状态读取中",
-  });
+  } });
+  const setMemberBudgetHome = (value, key = settingsKeys.budget) => setMemberBudgetHomeEntry({ key, value });
+  const memberBudgetHome = memberBudgetHomeEntry.key === settingsKeys.budget
+    ? memberBudgetHomeEntry.value
+    : { state: "loading", stateLabel: "正在读取", nearBudgetLabel: "预算状态读取中", mailLabel: "邮件状态读取中" };
   const [memberBudgetRevision, setMemberBudgetRevision] = useState(0);
   const memberBudgetHomeRequestVersion = useRef(0);
   const applyMemberPayload = (data, sourceWorkspaceId = workspaceId) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
+    setMemberScopeKey(membersKey);
     setMemberWorkspaceId(sourceWorkspaceId);
   };
-  const memberContract = workspaceBoundMemberContract(workspaceId, memberWorkspaceId, memberRows, memberMeta);
+  const memberContract = workspaceBoundMemberContract(
+    workspaceId,
+    memberScopeKey === membersKey ? memberWorkspaceId : "",
+    memberScopeKey === membersKey ? memberRows : [],
+    memberScopeKey === membersKey ? memberMeta : null,
+  );
   const memberPermissions = governancePermissions(memberContract.meta || {});
   const permissionsReady = memberContract.ready && !membersLoading && !memberLoadError;
   const currentGovernanceData = workspaceBoundGovernanceData(workspaceId, governanceData);

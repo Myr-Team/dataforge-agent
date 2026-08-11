@@ -23,7 +23,7 @@ import {
 } from "./api.js";
 import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
 import { providerConnectionsViewModel } from "./providerConnectionsViewModel.js";
-import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
 import { settingsResourceKey } from "./settingsNavigation.js";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
@@ -73,7 +73,7 @@ function bedrockRefreshNotice(payload, verb, providerId = "") {
 }
 
 export function ProviderConnectionsPage({ settingsScope = null }) {
-  const [state, setState] = useState({ loading: true, error: "", payload: null });
+  const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
     displayName: "DeepSeek 原厂",
     apiKey: "",
@@ -83,24 +83,29 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const loadGeneration = useRef(0);
+  const currentKey = settingsResourceKey(settingsScope, "provider");
+  const visiblePayload = state.key === currentKey ? state.payload : null;
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const key = settingsResourceKey(settingsScope, "provider");
+    const snapshot = key ? peekSettingsResource(key) : null;
+    if (snapshot?.value) setState({ key, loading: false, error: snapshot.lastError ? "更新失败，正在显示上次可用配置。" : "", payload: snapshot.value });
+    else setState({ key, loading: true, error: "", payload: null });
     try {
-      const key = settingsResourceKey(settingsScope, "provider");
       const payload = key
         ? await loadSettingsResource(key, ({ signal }) => loadModelProviders({ signal }))
         : await loadModelProviders();
       if (generation !== loadGeneration.current) return null;
-      setState({ loading: false, error: "", payload });
+      setState({ key, loading: false, error: "", payload });
       return payload;
     } catch (error) {
       if (generation !== loadGeneration.current || error?.name === "AbortError") return null;
       setState({
+        key,
         loading: false,
         error: "无法读取模型提供商配置，请重试。",
-        payload: null,
+        payload: snapshot?.value || null,
       });
       return null;
     }
@@ -116,7 +121,7 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
     load();
     return () => { loadGeneration.current += 1; };
   }, [load]);
-  const view = useMemo(() => providerConnectionsViewModel(state.payload || {}), [state.payload]);
+  const view = useMemo(() => providerConnectionsViewModel(visiblePayload || {}), [visiblePayload]);
 
   const runAction = async (key, action, successMessage) => {
     setBusy(key);

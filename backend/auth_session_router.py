@@ -54,6 +54,7 @@ def auth_session(request: Request, response: Response) -> dict[str, Any]:
     """Return the minimal trusted identity required by the portal shell."""
     actor = actor_from_request(request, fallback=False, resolve_groups=False)
     if not is_trusted_tenant_identity(actor):
+        response.delete_cookie(_SESSION_COOKIE, httponly=True, samesite="lax", path="/")
         return {
             "authenticated": False,
             "identity_provider": "microsoft_entra",

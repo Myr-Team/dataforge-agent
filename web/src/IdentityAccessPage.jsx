@@ -19,11 +19,11 @@ import {
   updateIdentityGroupMapping,
 } from "./api.js";
 import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionViewModel } from "./identityAccessViewModel.js";
-import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
 import { settingsResourceKey } from "./settingsNavigation.js";
 
 export function IdentityAccessPage({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null }) {
-  const [state, setState] = useState({ loading: true, error: "", payload: null });
+  const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
   const [selectedGroup, setSelectedGroup] = useState(null);
@@ -34,23 +34,28 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
   const loadGeneration = useRef(0);
+  const currentKey = settingsResourceKey(settingsScope, "identity");
+  const visiblePayload = state.key === currentKey ? state.payload : null;
 
   const load = useCallback(async () => {
     const generation = ++loadGeneration.current;
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const key = settingsResourceKey(settingsScope, "identity");
+    const snapshot = key ? peekSettingsResource(key) : null;
+    if (snapshot?.value) setState({ key, loading: false, error: snapshot.lastError ? "更新失败，正在显示上次可用配置。" : "", payload: snapshot.value });
+    else setState({ key, loading: true, error: "", payload: null });
     try {
-      const key = settingsResourceKey(settingsScope, "identity");
       const payload = key
         ? await loadSettingsResource(key, ({ signal }) => loadIdentityGovernance({ signal }))
         : await loadIdentityGovernance();
       if (generation !== loadGeneration.current) return;
-      setState({ loading: false, error: "", payload });
+      setState({ key, loading: false, error: "", payload });
     } catch (error) {
       if (generation !== loadGeneration.current || error?.name === "AbortError") return;
       setState({
+        key,
         loading: false,
         error: error instanceof Error ? error.message : "身份治理读取失败",
-        payload: null,
+        payload: snapshot?.value || null,
       });
     }
   }, [settingsScope]);
@@ -63,7 +68,7 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
     load();
     return () => { loadGeneration.current += 1; };
   }, [load]);
-  const view = useMemo(() => identityAccessViewModel(state.payload || {}, workspaceId), [state.payload, workspaceId]);
+  const view = useMemo(() => identityAccessViewModel(visiblePayload || {}, workspaceId), [visiblePayload, workspaceId]);
   const session = useMemo(
     () => identitySessionViewModel({ user, authState, access: workspaceAccess }),
     [authState, user, workspaceAccess],
@@ -71,7 +76,7 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
 
   useEffect(() => {
     setRoleDraft(Object.fromEntries(view.mappings.map((item) => [item.mappingId, item.role])));
-  }, [state.payload, workspaceId]);
+  }, [visiblePayload, workspaceId]);
 
   const searchGroups = async (event) => {
     event?.preventDefault();

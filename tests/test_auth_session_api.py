@@ -70,3 +70,5 @@ def test_auth_session_does_not_accept_untrusted_browser_identity(monkeypatch) ->
         "identity_provider": "microsoft_entra",
         "identity_source": "unavailable",
     }
+    assert "df_settings_session" in response.headers.get("set-cookie", "")
+    assert "Max-Age=0" in response.headers.get("set-cookie", "")

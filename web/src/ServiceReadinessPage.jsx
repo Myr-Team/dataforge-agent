@@ -75,20 +75,23 @@ function visibleDetails(item) {
 
 
 export function ServiceReadinessPage({ workspaceId = "", settingsScope = null }) {
-  const [state, setState] = useState({ loading: true, refreshing: false, error: "", payload: null });
+  const [state, setState] = useState({ key: "", loading: true, refreshing: false, error: "", payload: null });
+  const currentKey = settingsResourceKey(settingsScope, "readiness");
+  const visibleState = state.key === currentKey ? state : { key: currentKey, loading: true, refreshing: false, error: "", payload: null };
   const load = useCallback(async ({ refresh = false, guard = () => true } = {}) => {
     if (!workspaceId) {
-      if (guard()) setState({ loading: false, refreshing: false, error: "请先选择工作区", payload: null });
+      if (guard()) setState({ key: "", loading: false, refreshing: false, error: "请先选择工作区", payload: null });
       return;
     }
     const key = settingsResourceKey(settingsScope, "readiness");
     const snapshot = key ? peekSettingsResource(key, Date.now(), { freshMs: 15_000, staleUsableMs: 60_000 }) : null;
-    if (snapshot?.value && guard()) setState({ loading: false, refreshing: Boolean(snapshot.inFlight), error: snapshot.lastError ? "更新失败，正在显示上次可用状态。" : "", payload: snapshot.value });
+    if (snapshot?.value && guard()) setState({ key, loading: false, refreshing: Boolean(snapshot.inFlight), error: snapshot.lastError ? "更新失败，正在显示上次可用状态。" : "", payload: snapshot.value });
     if (guard()) setState((current) => ({
       ...current,
-      loading: !current.payload,
-      refreshing: Boolean(current.payload),
-      error: "",
+      key,
+      loading: !snapshot?.value,
+      refreshing: Boolean(snapshot?.value),
+      error: snapshot?.value ? current.error : "",
     }));
     try {
       const payload = key
@@ -98,11 +101,12 @@ export function ServiceReadinessPage({ workspaceId = "", settingsScope = null })
           { force: refresh, freshMs: 15_000, staleUsableMs: 60_000 },
         )
         : await loadServiceReadiness(workspaceId, { timeoutMs: 20000, refresh });
-      if (guard()) setState({ loading: false, refreshing: false, error: "", payload });
+      if (guard()) setState({ key, loading: false, refreshing: false, error: "", payload });
     } catch (error) {
       if (error?.name === "AbortError" || !guard()) return;
       setState((current) => ({
         ...current,
+        key,
         loading: false,
         refreshing: false,
         error: error instanceof Error ? error.message : "服务状态读取失败",
@@ -116,8 +120,8 @@ export function ServiceReadinessPage({ workspaceId = "", settingsScope = null })
     return () => { active = false; };
   }, [load]);
 
-  const view = useMemo(() => serviceReadinessView(state.payload), [state.payload]);
-  if (state.loading && !state.payload) {
+  const view = useMemo(() => serviceReadinessView(visibleState.payload), [visibleState.payload]);
+  if (visibleState.loading && !visibleState.payload) {
     return (
       <section className="service-readiness-page" aria-label="正在读取服务状态">
         <div className="service-readiness-loading"><RefreshCw className="spin" size={17} />正在核对当前工作区的关键服务</div>
@@ -133,21 +137,21 @@ export function ServiceReadinessPage({ workspaceId = "", settingsScope = null })
           <h2 id="service-readiness-title">关键服务状态</h2>
           <p>按当前工作区核对身份、数据、模型、成本治理与后台任务，只展示安全的运行状态。</p>
         </div>
-        <button type="button" onClick={() => load({ refresh: true })} disabled={state.refreshing}>
-          <RefreshCw className={state.refreshing ? "spin" : ""} size={14} />
-          {state.refreshing ? "检查中" : "重新检查"}
+        <button type="button" onClick={() => load({ refresh: true })} disabled={visibleState.refreshing}>
+          <RefreshCw className={visibleState.refreshing ? "spin" : ""} size={14} />
+          {visibleState.refreshing ? "检查中" : "重新检查"}
         </button>
       </header>
 
-      {state.error ? (
+      {visibleState.error ? (
         <div className="service-readiness-error" role="alert">
           <AlertTriangle size={15} />
-          <span><b>状态读取未完成</b><small>{state.error}</small></span>
+          <span><b>状态读取未完成</b><small>{visibleState.error}</small></span>
           <button type="button" onClick={() => load({ refresh: true })}>重试</button>
         </div>
       ) : null}
 
-      {state.payload ? (
+      {visibleState.payload ? (
         <>
           <div className="service-readiness-summary">
             <article><CheckCircle2 size={18} /><span><small>当前可用</small><strong>{view.summary.ready}</strong></span></article>

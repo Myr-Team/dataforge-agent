@@ -374,7 +374,10 @@ function MailForm({ notification, busy, error, onClose, onSave }) {
 
 export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = null, onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
-  const [view, setView] = useState(EMPTY_VIEW);
+  const [storedView, setView] = useState(EMPTY_VIEW);
+  const [viewScopeKey, setViewScopeKey] = useState("");
+  const currentScopeKey = String(settingsScope?.key || "");
+  const view = viewScopeKey === currentScopeKey ? storedView : EMPTY_VIEW;
   const [query, setQuery] = useState("");
   const [department, setDepartment] = useState("");
   const [budgetModal, setBudgetModal] = useState(null);
@@ -388,6 +391,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
     if (!preserveNotice) setNotice(null);
     const loaded = await loadBudgetView(workspaceId, settingsScope);
     setView(loaded.view);
+    setViewScopeKey(currentScopeKey);
     setState(loaded.state);
   };
 
@@ -400,12 +404,13 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
     loadBudgetView(workspaceId, settingsScope).then((loaded) => {
       if (cancelled) return;
       setView(loaded.view);
+      setViewScopeKey(currentScopeKey);
       setState(loaded.state);
     });
     return () => {
       cancelled = true;
     };
-  }, [settingsScope, workspaceId]);
+  }, [currentScopeKey, settingsScope, workspaceId]);
   const invalidate = (...resources) => resources.forEach((resource) => {
     const key = settingsResourceKey(settingsScope, resource);
     if (key) invalidateSettingsResource(key);
