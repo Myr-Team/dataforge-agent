@@ -10,6 +10,8 @@ import {
 
 import { loadServiceReadiness } from "./api.js";
 import { serviceReadinessView } from "./serviceReadinessViewModel.js";
+import { loadSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 
 const DETAIL_LABELS = Object.freeze({
@@ -72,7 +74,7 @@ function visibleDetails(item) {
 }
 
 
-export function ServiceReadinessPage({ workspaceId = "" }) {
+export function ServiceReadinessPage({ workspaceId = "", settingsScope = null }) {
   const [state, setState] = useState({ loading: true, refreshing: false, error: "", payload: null });
   const load = useCallback(async ({ refresh = false } = {}) => {
     if (!workspaceId) {
@@ -86,7 +88,14 @@ export function ServiceReadinessPage({ workspaceId = "" }) {
       error: "",
     }));
     try {
-      const payload = await loadServiceReadiness(workspaceId, { timeoutMs: 20000, refresh });
+      const key = settingsResourceKey(settingsScope, "readiness");
+      const payload = key
+        ? await loadSettingsResource(
+          key,
+          ({ signal }) => loadServiceReadiness(workspaceId, { timeoutMs: 20000, refresh, signal }),
+          { force: refresh, freshMs: 15_000, staleUsableMs: 60_000 },
+        )
+        : await loadServiceReadiness(workspaceId, { timeoutMs: 20000, refresh });
       setState({ loading: false, refreshing: false, error: "", payload });
     } catch (error) {
       setState((current) => ({
@@ -96,7 +105,7 @@ export function ServiceReadinessPage({ workspaceId = "" }) {
         error: error instanceof Error ? error.message : "服务状态读取失败",
       }));
     }
-  }, [workspaceId]);
+  }, [settingsScope, workspaceId]);
 
   useEffect(() => {
     load();

@@ -31,6 +31,8 @@ import {
   sendMemberBudgetTestEmail,
 } from "./api.js";
 import { memberBudgetViewModel, safeTestEmailResult, testEmailNoticeTone } from "./memberBudgetViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 const EMPTY_VIEW = memberBudgetViewModel();
 
@@ -41,12 +43,16 @@ function safeFailureState(error) {
   return "unavailable";
 }
 
-async function loadBudgetView(workspaceId) {
+async function loadBudgetView(workspaceId, settingsScope) {
+  const cached = (resource, loader) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? loadSettingsResource(key, ({ signal }) => loader({ signal })) : loader({});
+  };
   const [budgetsResult, membersResult, notificationResult, alertsResult] = await Promise.allSettled([
-    loadMemberBudgets(workspaceId),
-    loadMemberBudgetMembers(workspaceId),
-    loadMemberBudgetNotification(workspaceId),
-    loadMemberBudgetAlerts(workspaceId),
+    cached("budget", (options) => loadMemberBudgets(workspaceId, options)),
+    cached("budgetMembers", (options) => loadMemberBudgetMembers(workspaceId, options)),
+    cached("notification", (options) => loadMemberBudgetNotification(workspaceId, options)),
+    cached("alerts", (options) => loadMemberBudgetAlerts(workspaceId, options)),
   ]);
   const budgetsState = budgetsResult.status === "fulfilled"
     ? ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
@@ -366,7 +372,7 @@ function MailForm({ notification, busy, error, onClose, onSave }) {
   );
 }
 
-export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, onChanged = () => {} }) {
+export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = null, onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
   const [view, setView] = useState(EMPTY_VIEW);
   const [query, setQuery] = useState("");
@@ -380,7 +386,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
   const reload = async ({ preserveNotice = false } = {}) => {
     setState("loading");
     if (!preserveNotice) setNotice(null);
-    const loaded = await loadBudgetView(workspaceId);
+    const loaded = await loadBudgetView(workspaceId, settingsScope);
     setView(loaded.view);
     setState(loaded.state);
   };
@@ -391,7 +397,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
       setState("unavailable");
       return undefined;
     }
-    loadBudgetView(workspaceId).then((loaded) => {
+    loadBudgetView(workspaceId, settingsScope).then((loaded) => {
       if (cancelled) return;
       setView(loaded.view);
       setState(loaded.state);
@@ -399,7 +405,11 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [settingsScope, workspaceId]);
+  const invalidate = (...resources) => resources.forEach((resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    if (key) invalidateSettingsResource(key);
+  });
 
   const departments = useMemo(
     () => [...new Set(view.rows.map((row) => row.departmentLabel).filter(Boolean))],
@@ -422,6 +432,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await saveMemberBudget({ ...payload, workspaceId });
+      invalidate("budget", "alerts");
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已保存" });
       onChanged();
@@ -446,6 +457,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await disableMemberBudget(workspaceId, row.budgetId, row.revision);
+      invalidate("budget", "alerts");
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已停用" });
       onChanged();
@@ -470,6 +482,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await saveMemberBudgetNotification({ ...payload, workspaceId });
+      invalidate("notification");
       setMailModal(false);
       setNotice({ tone: "success", text: "邮件设置已保存" });
       onChanged();
@@ -496,6 +509,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setNotice(null);
     try {
       const result = safeTestEmailResult(await sendMemberBudgetTestEmail(workspaceId));
+      invalidate("notification");
       setNotice({ tone: testEmailNoticeTone(result.state), text: result.label });
       if (result.state === "accepted") await reload({ preserveNotice: true });
     } catch (error) {

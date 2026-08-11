@@ -19,8 +19,10 @@ import {
   updateIdentityGroupMapping,
 } from "./api.js";
 import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionViewModel } from "./identityAccessViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
-export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
+export function IdentityAccessPage({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null }) {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
@@ -35,7 +37,10 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const payload = await loadIdentityGovernance();
+      const key = settingsResourceKey(settingsScope, "identity");
+      const payload = key
+        ? await loadSettingsResource(key, ({ signal }) => loadIdentityGovernance({ signal }))
+        : await loadIdentityGovernance();
       setState({ loading: false, error: "", payload });
     } catch (error) {
       setState({
@@ -44,7 +49,11 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
         payload: null,
       });
     }
-  }, []);
+  }, [settingsScope]);
+  const invalidate = () => {
+    const key = settingsResourceKey(settingsScope, "identity");
+    if (key) invalidateSettingsResource(key);
+  };
 
   useEffect(() => { load(); }, [load]);
   const view = useMemo(() => identityAccessViewModel(state.payload || {}, workspaceId), [state.payload, workspaceId]);
@@ -97,6 +106,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
     setNotice("");
     try {
       await action();
+      invalidate();
       setNotice(successMessage);
       await load();
     } catch (error) {

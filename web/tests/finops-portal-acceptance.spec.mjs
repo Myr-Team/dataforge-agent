@@ -19,6 +19,37 @@ async function openMemberBudgets(page) {
 }
 
 
+test("Settings re-entry is interactive within 200ms without duplicate home GETs or eager member reads", async ({ page }) => {
+  const calls = [];
+  await installFinOpsMockApi(page, calls);
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
+  await expect(page.locator(".member-budget-entry")).toBeVisible();
+
+  const homePaths = new Set([
+    "/api/finops/member-budgets",
+    "/api/finops/notification-settings",
+    "/api/finops/budget-alerts",
+    "/api/workspaces/demo-corpus/settings",
+    "/api/workspaces/demo-corpus/governance/model-routing",
+  ]);
+  const before = calls.filter((call) => homePaths.has(call.path)).length;
+  expect(calls.some((call) => call.path === "/api/system-status")).toBe(false);
+  expect(calls.some((call) => call.path === "/api/workspaces/demo-corpus/members")).toBe(false);
+
+  await page.getByRole("button", { name: "工作区" }).first().click();
+  const started = Date.now();
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.locator(".member-budget-entry")).toBeVisible({ timeout: 200 });
+  expect(Date.now() - started).toBeLessThanOrEqual(200);
+  expect(calls.filter((call) => homePaths.has(call.path))).toHaveLength(before);
+
+  await page.getByRole("button", { name: "成员与权限" }).click();
+  await expect.poll(() => calls.filter((call) => call.path === "/api/workspaces/demo-corpus/members").length).toBe(1);
+});
+
+
 test("trend chart switches metric, unit and tooltip in sync", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

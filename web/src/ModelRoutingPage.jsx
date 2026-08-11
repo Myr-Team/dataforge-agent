@@ -26,6 +26,8 @@ import {
   modelRoutingViewModel,
   officialPricePresentation,
 } from "./modelRoutingViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 function routeOptions(routes, capability) {
   return routes.filter((route) => route.capabilities.includes(capability));
@@ -134,6 +136,7 @@ export function priceMappingErrorMessage(error) {
 
 export function ModelRoutingPage({
   workspaceId = "",
+  settingsScope = null,
   embedded = false,
   onSettingsChanged = null,
 }) {
@@ -155,17 +158,21 @@ export function ModelRoutingPage({
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ force = false } = {}) => {
     if (!workspaceId) {
       setState((current) => ({ ...current, loading: false, error: "当前未选中工作区。" }));
       return;
     }
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
+      const cached = (resource, loader) => {
+        const key = settingsResourceKey(settingsScope, resource);
+        return key ? loadSettingsResource(key, ({ signal }) => loader({ signal }), { force }) : loader({});
+      };
       const [payload, catalogPayload, mappingPayload] = await Promise.all([
-        loadWorkspaceModelRouting(workspaceId),
-        loadFinOpsOfficialPriceCatalog(),
-        loadFinOpsOfficialPriceMappings(),
+        cached("routing", (options) => loadWorkspaceModelRouting(workspaceId, options)),
+        cached("pricingCatalog", (options) => loadFinOpsOfficialPriceCatalog(options)),
+        cached("pricingMapping", (options) => loadFinOpsOfficialPriceMappings(options)),
       ]);
       const view = modelRoutingViewModel(payload || {});
       const mappings = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
@@ -195,7 +202,12 @@ export function ModelRoutingPage({
         error: error instanceof Error ? error.message : "模型配置读取失败",
       }));
     }
-  }, [workspaceId]);
+  }, [settingsScope, workspaceId]);
+
+  const invalidate = (...resources) => resources.forEach((resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    if (key) invalidateSettingsResource(key);
+  });
 
   useEffect(() => { load(); }, [load]);
 
@@ -241,6 +253,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "model",
       );
+      invalidate("routing");
       setState((current) => ({
         ...current,
         payload: { ...(current.payload || {}), ...payload },
@@ -265,13 +278,17 @@ export function ModelRoutingPage({
     setSaveError("");
     setNotice("");
     try {
-      const providerPayload = await loadModelProviders();
+      const providerKey = settingsResourceKey(settingsScope, "provider");
+      const providerPayload = providerKey
+        ? await loadSettingsResource(providerKey, ({ signal }) => loadModelProviders({ signal }))
+        : await loadModelProviders();
       const provider = (Array.isArray(providerPayload?.items) ? providerPayload.items : [])
         .find((item) => String(item?.provider_id || "") === providerId);
       if (!provider || !Number.isInteger(provider.revision)) {
         throw new Error("DeepSeek 提供商状态尚未同步，请刷新后重试。");
       }
       await governModelProvider(providerId, provider.revision);
+      invalidate("provider", "routing");
       await load();
       setNotice(`${remediation.providerLabel} 已纳入模型路由，现在可以为 Agent 选择对应模型。`);
     } catch (error) {
@@ -308,6 +325,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "price",
       );
+      invalidate("pricingMapping", "routing");
       const saved = result?.mapping;
       setState((value) => ({
         ...value,
@@ -338,6 +356,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "price",
       );
+      invalidate("pricingMapping", "routing");
       setState((value) => ({
         ...value,
         mappings: value.mappings.filter((item) => item.deployment !== deployment),

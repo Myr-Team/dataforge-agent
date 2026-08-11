@@ -7,7 +7,12 @@ import {
   loadAuthSession,
   loadDashboard,
   loadFinOpsBootstrap,
+  loadMemberBudgetAlerts,
+  loadMemberBudgetNotification,
+  loadMemberBudgets,
   loadWorkspaceAccess,
+  loadWorkspaceModelRouting,
+  loadWorkspaceSettings,
   loadLatestAnalysis,
   loadObservability,
   loadArtifactJob,
@@ -25,12 +30,20 @@ import {
   prefetchFinOpsBootstrap,
 } from "./finopsPreload.js";
 import { clearFinOpsData } from "./finopsDataStore.js";
+import { clearSettingsScope } from "./settingsDataStore.js";
 import {
   finopsAuthorizationBoundary,
   finopsPreloadScope,
   reconcileFinOpsAuthorizationScope,
   scheduleFinOpsPreload,
 } from "./finopsNavigation.js";
+import {
+  prefetchSettingsHome,
+  reconcileSettingsAuthorizationScope,
+  scheduleSettingsPreload,
+  settingsAuthorizationBoundary,
+  settingsPreloadScope,
+} from "./settingsNavigation.js";
 import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
@@ -206,6 +219,7 @@ export function App() {
   const dashboardRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
   const finopsAuthorizationRef = useRef("");
+  const settingsAuthorizationRef = useRef("");
   const finopsScope = useMemo(
     () => finopsPreloadScope({
       authState,
@@ -244,6 +258,33 @@ export function App() {
       return null;
     });
   }, [finopsScope]);
+  const settingsScope = useMemo(() => settingsPreloadScope({
+    authState,
+    workspaceId,
+    user,
+    capabilities: governanceCapabilities,
+    workspaceAccess,
+  }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
+  const settingsAuthorizationKey = useMemo(() => settingsAuthorizationBoundary({
+    authState,
+    workspaceId,
+    user,
+    capabilities: governanceCapabilities,
+    workspaceAccess,
+  }), [authState, governanceCapabilities, user, workspaceAccess, workspaceId]);
+  const preloadSettings = useCallback(() => {
+    if (!settingsScope) return Promise.resolve(null);
+    return prefetchSettingsHome(settingsScope, {
+      budget: ({ signal }) => loadMemberBudgets(settingsScope.workspaceId, { signal }),
+      notification: ({ signal }) => loadMemberBudgetNotification(settingsScope.workspaceId, { signal }),
+      alerts: ({ signal }) => loadMemberBudgetAlerts(settingsScope.workspaceId, { signal }),
+      workspaceSettings: ({ signal }) => loadWorkspaceSettings(settingsScope.workspaceId, { signal }),
+      routing: ({ signal }) => loadWorkspaceModelRouting(settingsScope.workspaceId, { signal }),
+    }).catch((error) => {
+      if (error?.name !== "AbortError") console.warn("Settings preload failed", error);
+      return null;
+    });
+  }, [settingsScope]);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -262,6 +303,14 @@ export function App() {
   }, [finopsAuthorizationKey]);
 
   useEffect(() => {
+    settingsAuthorizationRef.current = reconcileSettingsAuthorizationScope(
+      settingsAuthorizationRef.current,
+      settingsAuthorizationKey,
+      clearSettingsScope,
+    );
+  }, [settingsAuthorizationKey]);
+
+  useEffect(() => {
     if (!finopsScope) return undefined;
     const cancelScheduled = scheduleFinOpsPreload(
       () => preloadFinOps().catch((error) => {
@@ -273,6 +322,11 @@ export function App() {
     );
     return cancelScheduled;
   }, [finopsScope, preloadFinOps]);
+
+  useEffect(() => {
+    if (!settingsScope) return undefined;
+    return scheduleSettingsPreload(() => { preloadSettings(); }, window);
+  }, [preloadSettings, settingsScope]);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -1267,9 +1321,9 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} onFinOpsIntent={preloadFinOps} />
+      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} onFinOpsIntent={preloadFinOps} onSettingsIntent={preloadSettings} />
       <div className="workbench">
-        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} onFinOpsIntent={preloadFinOps} />
+        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} onFinOpsIntent={preloadFinOps} onSettingsIntent={preloadSettings} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={renderView}
@@ -1311,6 +1365,7 @@ export function App() {
             governanceCapabilitiesError={governanceCapabilitiesError}
             onRetryGovernanceCapabilities={retryGovernanceCapabilities}
             finopsPreloadScope={finopsPortalScope}
+            settingsPreloadScope={settingsScope}
           />
         </div>
       </div>

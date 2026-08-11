@@ -997,3 +997,35 @@ test("settings summary reflects the persisted DeepSeek workspace route", async (
     fullPage: true,
   });
 });
+
+
+test("Settings keeps the last workspace snapshot visible after a forced refresh fails", async ({ page }) => {
+  let settingsCalls = 0;
+  await installFinOpsMockApi(page);
+  await page.route("**/api/workspaces/demo-corpus/settings", async (route) => {
+    settingsCalls += 1;
+    if (settingsCalls === 1) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          workspace_id: "demo-corpus",
+          storage: { used_bytes: 1024, total_bytes: 2048 },
+          system_status: { release: { version: "settings-cache-v1" }, dependencies: {} },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "settings refresh unavailable" }),
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByText("settings-cache-v1")).toBeVisible();
+  await page.getByRole("button", { name: "刷新状态" }).click();
+  await expect(page.getByText("settings-cache-v1")).toBeVisible();
+  expect(settingsCalls).toBe(2);
+});

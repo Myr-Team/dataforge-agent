@@ -13,7 +13,7 @@ const TABS = [
   { id: "readiness", label: "服务状态", icon: Activity },
 ];
 
-export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null, initialTab = "agents", onSettingsChanged = null }) {
+export function ModelGovernanceSettings({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null, initialTab = "agents", onSettingsChanged = null }) {
   const safeInitialTab = TABS.some((item) => item.id === initialTab) ? initialTab : "agents";
   const [tab, setTab] = useState(safeInitialTab);
   useEffect(() => setTab(safeInitialTab), [safeInitialTab]);
@@ -37,10 +37,10 @@ export function ModelGovernanceSettings({ workspaceId = "", user = {}, authState
         })}
       </nav>
       <div className="model-governance-body">
-        {tab === "agents" ? <ModelRoutingPage workspaceId={workspaceId} embedded onSettingsChanged={onSettingsChanged} /> : null}
-        {tab === "providers" ? <ProviderConnectionsPage /> : null}
-        {tab === "identity" ? <IdentityAccessPage workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} /> : null}
-        {tab === "readiness" ? <ServiceReadinessPage workspaceId={workspaceId} /> : null}
+        {tab === "agents" ? <ModelRoutingPage workspaceId={workspaceId} settingsScope={settingsScope} embedded onSettingsChanged={onSettingsChanged} /> : null}
+        {tab === "providers" ? <ProviderConnectionsPage settingsScope={settingsScope} /> : null}
+        {tab === "identity" ? <IdentityAccessPage workspaceId={workspaceId} settingsScope={settingsScope} user={user} authState={authState} workspaceAccess={workspaceAccess} /> : null}
+        {tab === "readiness" ? <ServiceReadinessPage workspaceId={workspaceId} settingsScope={settingsScope} /> : null}
       </div>
     </div>
   );

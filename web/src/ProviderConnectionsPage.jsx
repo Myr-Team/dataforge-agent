@@ -23,6 +23,8 @@ import {
 } from "./api.js";
 import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
 import { providerConnectionsViewModel } from "./providerConnectionsViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
 
@@ -70,7 +72,7 @@ function bedrockRefreshNotice(payload, verb, providerId = "") {
     : `AWS Bedrock 凭据${verb}，测试结果已刷新。`;
 }
 
-export function ProviderConnectionsPage() {
+export function ProviderConnectionsPage({ settingsScope = null }) {
   const [state, setState] = useState({ loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
     displayName: "DeepSeek 原厂",
@@ -84,7 +86,10 @@ export function ProviderConnectionsPage() {
   const load = useCallback(async () => {
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
-      const payload = await loadModelProviders();
+      const key = settingsResourceKey(settingsScope, "provider");
+      const payload = key
+        ? await loadSettingsResource(key, ({ signal }) => loadModelProviders({ signal }))
+        : await loadModelProviders();
       setState({ loading: false, error: "", payload });
       return payload;
     } catch (error) {
@@ -95,7 +100,11 @@ export function ProviderConnectionsPage() {
       });
       return null;
     }
-  }, []);
+  }, [settingsScope]);
+  const invalidate = () => {
+    const key = settingsResourceKey(settingsScope, "provider");
+    if (key) invalidateSettingsResource(key);
+  };
 
   useEffect(() => { load(); }, [load]);
   const view = useMemo(() => providerConnectionsViewModel(state.payload || {}), [state.payload]);
@@ -106,6 +115,7 @@ export function ProviderConnectionsPage() {
     setNotice("");
     try {
       await action();
+      invalidate();
       const refreshed = await load();
       setNotice(typeof successMessage === "function" ? successMessage(refreshed) : successMessage);
       return true;
@@ -139,6 +149,7 @@ export function ProviderConnectionsPage() {
         base_url: DEEPSEEK_ENDPOINT,
         api_key: apiKey,
       });
+      invalidate();
       setNotice("DeepSeek 已保存到安全凭据存储，并完成首次连通性检测。");
       await load();
     } catch (error) {
