@@ -146,7 +146,7 @@ def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> N
         },
     )
 
-    assert captured["request_timeout_seconds"] == 6.0
+    assert captured["request_timeout_seconds"] == 15.0
     assert captured["retry_limit"] == 0
     assert result.status == "ready"
     assert result.evidence_refs == ["req_safe"]
@@ -155,6 +155,30 @@ def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> N
     assert "Gateway coverage" in result.sections.conclusion
     assert "Demo analysis run" in result.sections.basis
     assert result.evidence_state == "observed"
+
+
+def test_quick_assistant_timeout_is_configurable_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[float] = []
+
+    def runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        captured.append(float(kwargs["request_timeout_seconds"]))
+        raise TimeoutError("provider timeout")
+
+    service = FinOpsAssistantService(model_runner=runner)
+    monkeypatch.setenv("DF_FINOPS_QUICK_MODEL_TIMEOUT_SECONDS", "2")
+    service.answer(
+        request=_request(),
+        evidence_payload={"evidence_refs": ["req_safe"]},
+    )
+    monkeypatch.setenv("DF_FINOPS_QUICK_MODEL_TIMEOUT_SECONDS", "90")
+    service.answer(
+        request=_request(),
+        evidence_payload={"evidence_refs": ["req_safe"]},
+    )
+
+    assert captured == [6.0, 30.0]
 
 
 def test_quick_assistant_can_use_immediate_grounded_path(
