@@ -148,6 +148,7 @@ def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> N
 
     assert captured["request_timeout_seconds"] == 15.0
     assert captured["retry_limit"] == 0
+    assert captured["thinking"] == "disabled"
     assert result.status == "ready"
     assert result.evidence_refs == ["req_safe"]
     assert result.evidence_labels == ["Demo analysis run"]

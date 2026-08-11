@@ -295,6 +295,7 @@ class FinOpsAssistantService:
                     else None
                 ),
                 retry_limit=0 if request.mode == "quick" else None,
+                thinking="disabled" if request.mode == "quick" else None,
             )
         except Exception as exc:
             _LOG.warning(

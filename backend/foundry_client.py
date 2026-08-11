@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from azure.ai.projects import AIProjectClient
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential, get_bearer_token_provider
@@ -1260,6 +1260,7 @@ def run_agent(
     max_output_tokens: int = 3200,
     request_timeout_seconds: float | None = None,
     retry_limit: int | None = None,
+    thinking: Literal["enabled", "disabled"] | None = None,
 ) -> dict[str, Any]:
     prompt_file = PROMPT_FILES.get(agent_name)
     if not prompt_file:
@@ -1281,6 +1282,7 @@ def run_agent(
             response_schema=response_schema,
             max_output_tokens=max_output_tokens,
             request_timeout_seconds=request_timeout_seconds,
+            thinking=thinking,
         )
 
     if os.environ.get("DF_AGENT_RUNTIME", "responses") == "foundry_agent_service":
@@ -1343,6 +1345,7 @@ def _run_external_provider_agent(
     response_schema: dict[str, Any] | None,
     max_output_tokens: int,
     request_timeout_seconds: float | None,
+    thinking: Literal["enabled", "disabled"] | None,
 ) -> dict[str, Any]:
     enabled = str(os.environ.get("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED") or "").strip().lower()
     if enabled not in {"1", "true", "yes", "on"}:
@@ -1372,6 +1375,7 @@ def _run_external_provider_agent(
             ],
             response_format={"type": "json_object"} if response_schema else None,
             max_tokens=max_output_tokens,
+            thinking=thinking,
         ),
         api_key=runtime_provider_secret(connection),
         base_url=str(connection.get("base_url") or ""),
