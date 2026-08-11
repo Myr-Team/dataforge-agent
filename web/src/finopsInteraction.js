@@ -90,6 +90,17 @@ export function metricTooltip(metric = {}) {
     pushNumber(rows, "可缓存样本", metric.cache?.eligible);
     pushNumber(rows, "避免 Token", metric.cache?.avoidedTokens);
     pushNumber(rows, "估算节省", metric.cache?.estimatedSavings, "currency");
+    if (
+      !finite(metric.cache?.avoidedTokens)
+      && !finite(metric.cache?.estimatedSavings)
+      && metric.cache?.reason === "avoided_tokens_not_recorded"
+    ) {
+      rows.push({
+        label: "节省依据",
+        value: "缺少可追溯的避免 Token 与价目证据",
+        format: "text",
+      });
+    }
   } else if (metric.kind === "cost") {
     pushNumber(rows, "估算成本", metric.amount, "currency");
     pushNumber(rows, "已计价请求", metric.pricedRequests);

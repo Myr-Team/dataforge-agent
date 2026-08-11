@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -42,6 +42,90 @@ def test_shenzhen_bundle_is_deterministic_and_has_the_declared_scale() -> None:
     assert first.monthly_ai_operating_cost_usd == pytest.approx(206.40)
     assert all(item.provenance == "synthetic_demo" for item in first.request_facts)
     assert all("客户" not in item.title and "销售" not in item.title for item in first.analysis_tasks)
+
+
+def test_bundle_digest_uses_the_actual_scenario_identity() -> None:
+    bundle = _bundle()
+    changed = replace(bundle, scenario_id="production-site-selection")
+
+    assert canonical_digest_for_bundle(changed) != bundle.canonical_digest
+
+
+@pytest.mark.parametrize(
+    ("identity", "mutate"),
+    [
+        ("workspace", lambda bundle: replace(bundle, workspace_id="production-workspace")),
+        ("scenario", lambda bundle: replace(bundle, scenario_id="production-site-selection")),
+        ("batch", lambda bundle: replace(bundle, batch_id="production-batch")),
+        ("anchor", lambda bundle: replace(bundle, anchor_at=bundle.anchor_at + timedelta(seconds=1))),
+        ("seed", lambda bundle: replace(bundle, seed="production-seed")),
+        ("corpus", lambda bundle: replace(bundle, corpus_digest="0" * 64)),
+    ],
+)
+def test_reconciliation_rejects_bundle_identity_drift_after_digest_is_recomputed(identity, mutate) -> None:
+    changed = mutate(_bundle())
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    assert any(f"{identity} identity mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_event_identity_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    changed_event = bundle.events[0].model_copy(update={
+        "workspace_id": "production-workspace",
+        "scenario_id": "production-site-selection",
+        "seed_batch": "production-batch",
+        "evidence_state": "observed",
+    })
+    changed = replace(bundle, events=(changed_event, *bundle.events[1:]))
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    for label in ("event workspace", "event scenario", "event seed batch", "event evidence provenance"):
+        assert any(f"{label} mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_fact_run_and_evidence_provenance_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    changed = replace(
+        bundle,
+        analysis_tasks=(replace(bundle.analysis_tasks[0], provenance="runtime"), *bundle.analysis_tasks[1:]),
+        reports=(replace(bundle.reports[0], provenance="runtime"), *bundle.reports[1:]),
+        evidence_review_tasks=(replace(bundle.evidence_review_tasks[0], provenance="runtime"), *bundle.evidence_review_tasks[1:]),
+        request_facts=(replace(bundle.request_facts[0], provenance="runtime"), *bundle.request_facts[1:]),
+        runs=(replace(bundle.runs[0], provenance="runtime"), *bundle.runs[1:]),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    for label in ("analysis task", "report", "evidence review", "request fact", "run"):
+        assert any(f"{label} provenance mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_coherent_provider_type_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    changed_attempt = replace(bundle.model_attempts[0], provider_type="production_provider")
+    changed_fact = replace(bundle.request_facts[0], provider_type="production_provider")
+    changed_run = replace(bundle.runs[0], model_attempts=(changed_attempt,))
+    changed = replace(
+        bundle,
+        request_facts=(changed_fact, *bundle.request_facts[1:]),
+        model_attempts=(changed_attempt, *bundle.model_attempts[1:]),
+        runs=(changed_run, *bundle.runs[1:]),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    assert any("provider type declared mismatch" in error for error in report.errors)
 
 
 def test_bundle_reconciles_request_run_correlation_attempt_and_safe_trace() -> None:

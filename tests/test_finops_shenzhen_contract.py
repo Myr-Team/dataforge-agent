@@ -150,3 +150,20 @@ def test_browser_projection_is_derived_from_bundle_scanner_and_decision_service(
     demo = projection["endpoints"]["roi"]["scenarios"][0]["demo_evidence"]
     assert demo["process"]["reviewed_savings_hours"] == 174.6
     assert len(demo["evidence_items"]["analysis_tasks"]) == 96
+
+
+def test_browser_projection_does_not_invent_cache_savings_without_traceable_inputs() -> None:
+    projection = build_shenzhen_browser_projection()
+
+    overview_cache = projection["endpoints"]["bootstrap"]["overview"]["metrics"]["cache"]
+    assert overview_cache["avoided_tokens"] is None
+    assert overview_cache["estimated_savings"] is None
+    assert overview_cache["data_status"] == "unavailable"
+    assert overview_cache["reason"] == "avoided_tokens_not_recorded"
+
+    trend_caches = [item["cache"] for item in projection["endpoints"]["bootstrap"]["trend"]["items"]]
+    assert trend_caches
+    assert all(item["avoided_tokens"] is None for item in trend_caches)
+    assert all(item["estimated_savings"] is None for item in trend_caches)
+    assert all(item["data_status"] == "unavailable" for item in trend_caches)
+    assert all(item["reason"] == "avoided_tokens_not_recorded" for item in trend_caches)

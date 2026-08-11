@@ -231,6 +231,7 @@ def build_synthetic_demo_bundle(
     )
     canonical_digest = _canonical_digest(
         workspace_id=workspace_id,
+        scenario_id=DEMO_SCENARIO_ID,
         batch_id=batch_id,
         anchor=anchor,
         seed=seed,
@@ -271,6 +272,18 @@ def build_synthetic_demo_bundle(
 
 def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationReport:
     errors: list[str] = []
+    if bundle.workspace_id != DEMO_WORKSPACE_ID:
+        errors.append("workspace identity mismatch")
+    if bundle.scenario_id != DEMO_SCENARIO_ID:
+        errors.append("scenario identity mismatch")
+    if bundle.batch_id != DEMO_BATCH_ID:
+        errors.append("batch identity mismatch")
+    if _utc(bundle.anchor_at) != DEMO_ANCHOR:
+        errors.append("anchor identity mismatch")
+    if bundle.seed != _SEED_REVISION:
+        errors.append("seed identity mismatch")
+    if bundle.corpus_digest != _corpus_digest():
+        errors.append("corpus identity mismatch")
     if bundle.canonical_digest != canonical_digest_for_bundle(bundle):
         errors.append("canonical digest mismatch")
     events = bundle.events
@@ -301,6 +314,16 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"event reference mismatch for {fact.request_ref}")
         if event.provenance != "synthetic_demo" or event.usage_source != "synthetic_demo":
             errors.append(f"event provenance mismatch for {fact.request_ref}")
+        if event.evidence_state != "synthetic_demo":
+            errors.append(f"event evidence provenance mismatch for {fact.request_ref}")
+        if event.workspace_id != bundle.workspace_id:
+            errors.append(f"event workspace mismatch for {fact.request_ref}")
+        if event.scenario_id != bundle.scenario_id:
+            errors.append(f"event scenario mismatch for {fact.request_ref}")
+        if event.seed_batch != bundle.batch_id:
+            errors.append(f"event seed batch mismatch for {fact.request_ref}")
+        if fact.provenance != "synthetic_demo":
+            errors.append(f"request fact provenance mismatch for {fact.request_ref}")
         if (
             attempt.attempt_ref != fact.attempt_ref
             or attempt.run_id != fact.run_id
@@ -311,6 +334,8 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"attempt lineage mismatch for {fact.request_ref}")
         if run.request_ref != fact.request_ref or run.correlation_ref != fact.correlation_ref:
             errors.append(f"run lineage mismatch for {fact.request_ref}")
+        if run.provenance != "synthetic_demo":
+            errors.append(f"run provenance mismatch for {fact.request_ref}")
         if not run.steps or len(run.model_attempts) != 1:
             errors.append(f"trace is incomplete for {fact.request_ref}")
             run_attempt = None
@@ -332,6 +357,11 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"department mismatch for {fact.request_ref}")
         if event.agent_id != fact.agent_id or event.agent_id != attempt.agent_id:
             errors.append(f"agent mismatch for {fact.request_ref}")
+        expected_provider = _declared_provider_type(fact.model_id)
+        if fact.provider_type != attempt.provider_type:
+            errors.append(f"provider type mismatch for {fact.request_ref}")
+        if expected_provider is None or fact.provider_type != expected_provider:
+            errors.append(f"provider type declared mismatch for {fact.request_ref}")
         if event.tokens.total is not None and event.tokens.input is not None and event.tokens.output is not None:
             if event.tokens.total != event.tokens.input + event.tokens.output:
                 errors.append(f"token total mismatch for {fact.request_ref}")
@@ -389,6 +419,12 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
     _unique(errors, "analysis task ids", task_ids)
     _unique(errors, "report ids", report_ids)
     _unique(errors, "evidence review ids", review_ids)
+    if any(item.provenance != "synthetic_demo" for item in bundle.analysis_tasks):
+        errors.append("analysis task provenance mismatch")
+    if any(item.provenance != "synthetic_demo" for item in bundle.reports):
+        errors.append("report provenance mismatch")
+    if any(item.provenance != "synthetic_demo" for item in bundle.evidence_review_tasks):
+        errors.append("evidence review provenance mismatch")
     if len(bundle.analysis_tasks) != 96:
         errors.append("expected 96 analysis tasks")
     if len(bundle.reports) != 78:
@@ -735,10 +771,19 @@ def _occurred_at(index: int, anchor: datetime) -> datetime:
     return anchor - timedelta(days=30) + timedelta(minutes=index * 17)
 
 
+def _declared_provider_type(model_id: str) -> str | None:
+    if model_id == "deepseek-v4-flash":
+        return "deepseek"
+    if model_id in {"gpt-5.6-terra", "site-selection-unpriced-adapter"}:
+        return "azure_foundry"
+    return None
+
+
 def canonical_digest_for_bundle(bundle: SyntheticDemoBundle) -> str:
     """Return the canonical digest for every nonvolatile synthetic demo fact."""
     return _canonical_digest(
         workspace_id=bundle.workspace_id,
+        scenario_id=bundle.scenario_id,
         batch_id=bundle.batch_id,
         anchor=bundle.anchor_at,
         seed=bundle.seed,
@@ -755,11 +800,11 @@ def canonical_digest_for_bundle(bundle: SyntheticDemoBundle) -> str:
     )
 
 
-def _canonical_digest(*, workspace_id: str, batch_id: str, anchor: datetime, seed: str, corpus_digest: str, analysis_tasks: tuple[AnalysisTask, ...], request_facts: tuple[SyntheticRequestFact, ...], events: tuple[FinOpsRequestEvent, ...], model_attempts: tuple[SafeModelAttempt, ...], runs: tuple[SyntheticRun, ...], reports: tuple[Report, ...], evidence_review_tasks: tuple[EvidenceReviewTask, ...], roi: RoiEvidence, monthly_ai_operating_cost_usd: float) -> str:
+def _canonical_digest(*, workspace_id: str, scenario_id: str, batch_id: str, anchor: datetime, seed: str, corpus_digest: str, analysis_tasks: tuple[AnalysisTask, ...], request_facts: tuple[SyntheticRequestFact, ...], events: tuple[FinOpsRequestEvent, ...], model_attempts: tuple[SafeModelAttempt, ...], runs: tuple[SyntheticRun, ...], reports: tuple[Report, ...], evidence_review_tasks: tuple[EvidenceReviewTask, ...], roi: RoiEvidence, monthly_ai_operating_cost_usd: float) -> str:
     payload = {
         "schema_version": "dataforge.synthetic-demo.v1",
         "workspace_id": workspace_id,
-        "scenario_id": DEMO_SCENARIO_ID,
+        "scenario_id": scenario_id,
         "batch_id": batch_id,
         "anchor_at": anchor.isoformat().replace("+00:00", "Z"),
         "seed": seed,

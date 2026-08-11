@@ -143,6 +143,41 @@ test("finops metric cards preserve unavailable and partial evidence", () => {
 });
 
 
+test("cache savings stay unavailable when traceable tokens and pricing revision are absent", () => {
+  const cards = finopsMetricCards({
+    data_status: "synthetic_demo",
+    metrics: {
+      requests: 2480,
+      tokens: { total: 100, known_requests: 2480, unknown_requests: 0 },
+      estimated_cost: { amount: 206.4, status: "partial", priced_requests: 2320, unpriced_requests: 160 },
+      budget: { amount: 300, used_amount: 206.4, usage_pct: 68.8, status: "available" },
+      latency: { p50_ms: 900, p95_ms: 1800, known_requests: 2480 },
+      cache_hit_rate_pct: 60,
+      cache: {
+        eligible_requests: 2000,
+        hit: 1200,
+        miss: 800,
+        bypassed: 480,
+        unavailable: 0,
+        avoided_tokens: null,
+        estimated_savings: null,
+        data_status: "unavailable",
+        reason: "avoided_tokens_not_recorded",
+      },
+    },
+  });
+
+  const avoided = cards.find((item) => item.id === "cache_avoided_tokens");
+  const savings = cards.find((item) => item.id === "cache_savings");
+  assert.equal(avoided.value, "未记录");
+  assert.equal(avoided.meta, "缺少可追溯的避免 Token 证据");
+  assert.equal(avoided.metric.cache.reason, "avoided_tokens_not_recorded");
+  assert.equal(savings.value, "未记录");
+  assert.equal(savings.meta, "缺少 Token 与价目版本，无法估算");
+  assert.equal(savings.metric.cache.reason, "avoided_tokens_not_recorded");
+});
+
+
 test("FinOps portal exposes four operations pages and natural update copy", () => {
   assert.deepEqual(FINOPS_TABS.map((item) => item.id), ["overview", "cost", "roi", "risk"]);
   assert.deepEqual(FINOPS_TABS.map((item) => item.label), ["运营总览", "成本分析", "效能与 ROI", "风险与优化"]);
