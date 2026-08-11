@@ -160,6 +160,27 @@ test("ROI view never labels an estimated scenario as verified", () => {
   assert.equal(partial.scenarios[0].badge, "部分证据");
 });
 
+test("synthetic demo review is labeled separately from production verified ROI", () => {
+  const view = roiDecisionView({
+    verified_roi: { status: "unavailable", value: null },
+    scenarios: [{
+      scenario_id: "roi_scenario_demo",
+      status: "estimated",
+      result: {},
+      demo_evidence: {
+        provenance: "synthetic_demo",
+        production_quality_claim: false,
+        label: "演示验证结果 · 合成数据",
+        measured: { paired_evaluations: 18, historical_hours: 17.8, assisted_hours: 8.1 },
+      },
+    }],
+  });
+
+  assert.equal(view.verifiedRoiStatus, "unavailable");
+  assert.equal(view.demoEvidence.label, "演示验证结果 · 合成数据");
+  assert.equal(view.demoEvidence.productionQualityClaim, false);
+});
+
 
 test("ROI regression view exposes error metrics without calling them verified ROI", () => {
   const view = roiDecisionView({

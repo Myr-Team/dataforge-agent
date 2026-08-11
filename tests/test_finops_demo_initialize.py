@@ -20,6 +20,7 @@ from backend.finops.insight_repository import InMemoryInsightRepository
 from backend.finops.demo_workspace_seed import seed_demo_workspace
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.synthetic_demo import DEMO_ANCHOR
 
 
 NOW = datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc)
@@ -78,6 +79,43 @@ def test_initializer_rejects_a_different_tenant_and_missing_hmac_secret() -> Non
             hmac_secret="",
             **arguments,
         )
+
+
+def test_initializer_uses_fixed_shenzhen_anchor_and_idempotent_demo_batch() -> None:
+    ledger = InMemoryFinOpsRepository()
+    seeds = InMemoryDemoSeedRepository()
+    budgets = InMemoryMemberBudgetRepository()
+    writes: list[tuple[str, int]] = []
+
+    first = initialize_demo_workspace(
+        tenant_ref="tenant_demo_ref",
+        allowed_tenant_ref="tenant_demo_ref",
+        workspace_id="demo-corpus",
+        allowed_workspace_id="demo-corpus",
+        ledger_repository=ledger,
+        seed_repository=seeds,
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        run_writer=lambda _workspace, values, **_kwargs: writes.append(("runs", len(values))),
+        now=NOW,
+    )
+    second = initialize_demo_workspace(
+        tenant_ref="tenant_demo_ref",
+        allowed_tenant_ref="tenant_demo_ref",
+        workspace_id="demo-corpus",
+        allowed_workspace_id="demo-corpus",
+        ledger_repository=ledger,
+        seed_repository=seeds,
+        budget_repository=budgets,
+        hmac_secret="test-secret",
+        run_writer=lambda _workspace, values, **_kwargs: writes.append(("runs", len(values))),
+        now=DEMO_ANCHOR,
+    )
+
+    assert first.event_count == second.event_count == 2480
+    assert first.created == 2480 and second.updated == 2480
+    assert first.canonical_digest == second.canonical_digest
+    assert writes == [("runs", 2480), ("runs", 2480)]
 
 
 def test_initializer_persists_runs_before_source_linked_outcomes() -> None:
@@ -162,6 +200,58 @@ def test_demo_run_writer_creates_once_and_reuses_owned_records() -> None:
         "seed_batch": "operations-v1",
     }
     assert starts == completes == ["run_demo_recent_001"]
+
+
+def test_demo_run_writer_projects_safe_trace_steps_and_model_attempts() -> None:
+    stored: dict[str, dict[str, object]] = {}
+    recorded: list[tuple[str, str, dict[str, object]]] = []
+    values = (
+        {
+            "run_id": "synthetic-shenzhen-site-selection-0001",
+            "message": "深圳选址评估 · 合成数据",
+            "final_text": "合成演示结果，非生产观测。",
+            "status": "completed",
+            "provenance": "synthetic_demo",
+            "steps": [{"event": "retrieval", "data": {"label": "已授权深圳资料检索"}}],
+            "model_attempt": {
+                "attempt_ref": "attempt_0001",
+                "provider_type": "azure_foundry",
+                "model_id": "gpt-5.6-terra",
+                "route": "shenzhen-site-selection",
+                "route_evidence": "synthetic",
+                "tokens": {"input": 100, "output": 200, "total": 300},
+                "provider_cache": {"state": "unavailable", "evidence_state": "unavailable"},
+                "result_cache": {"state": "miss", "eligible": True, "reason": "eligible", "policy_revision": 1},
+            },
+        },
+    )
+
+    def get_run(run_id: str):
+        if run_id not in stored:
+            raise FileNotFoundError(run_id)
+        return stored[run_id]
+
+    def start_run(run_id: str, workspace_id: str, message: str, **kwargs):
+        stored[run_id] = {"run_id": run_id, "workspace_id": workspace_id, "message": message, "origin": kwargs["origin"]}
+
+    def complete_run(run_id: str, **_kwargs):
+        return stored[run_id]
+
+    result = persist_demo_run_evidence(
+        "demo-corpus",
+        values,
+        seed_key="shenzhen-site-selection-20260811-v1",
+        get_run_fn=get_run,
+        start_run_fn=start_run,
+        complete_run_fn=complete_run,
+        record_event_fn=lambda run_id, event, data: recorded.append((run_id, event, data)),
+    )
+
+    assert result["created"] == 1
+    assert [event for _, event, _ in recorded] == ["retrieval", "model_response", "audit"]
+    model_data = recorded[1][2]
+    assert model_data["route_evidence"] == "selected"
+    assert model_data["synthetic_route_evidence"] == "synthetic"
 
 
 def test_demo_run_writer_persists_each_declared_artifact_once() -> None:

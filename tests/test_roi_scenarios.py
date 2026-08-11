@@ -112,6 +112,28 @@ def test_dataforge_roi_scenario_persists_inputs_formula_and_revision(monkeypatch
         )
 
 
+def test_allowlisted_synthetic_demo_projection_exposes_a_non_production_review_label(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+    payload = _dataforge_payload(
+        title="深圳选址评估（合成演示）",
+        provenance="synthetic_demo",
+        scenario_id="shenzhen-site-selection-v1",
+        canonical_digest="a" * 64,
+        production_quality_claim=False,
+        demo_verified_label="演示验证结果 · 合成数据",
+        measured={"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
+    )
+
+    scenario = roi_scenario_store.upsert_demo_roi_scenario("demo-corpus", payload, actor=None, seed_key="shenzhen-site-selection-20260811-v1")
+    projection = roi_scenario_store.scenario_projection("demo-corpus", scenario)
+
+    assert scenario["status"] == "estimated"
+    assert projection["demo_evidence"] == {
+        "provenance": "synthetic_demo",
+        "production_quality_claim": False,
+        "label": "演示验证结果 · 合成数据",
+        "measured": {"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
+    }
 def test_demo_roi_scenario_upsert_is_stable_and_keeps_internal_seed_batch(monkeypatch, tmp_path: Path) -> None:
     _configure_store(monkeypatch, tmp_path)
     payload = {**_dataforge_payload(), "seed_batch": "operations-v1"}

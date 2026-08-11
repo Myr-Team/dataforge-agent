@@ -14,13 +14,13 @@ try:
     from ..lineage_sql import build_lineage_sql_connection_factory
     from ..outcome_store import upsert_demo_outcome_events
     from ..roi_scenario_store import upsert_demo_roi_scenario
-    from ..run_store import complete_run, get_run, start_run, update_run_proposal
+    from ..run_store import complete_run, get_run, record_event, start_run, update_run_proposal
 except ImportError:
     from artifact_registry import get_artifact, reserve_artifact, write_artifact
     from lineage_sql import build_lineage_sql_connection_factory
     from outcome_store import upsert_demo_outcome_events
     from roi_scenario_store import upsert_demo_roi_scenario
-    from run_store import complete_run, get_run, start_run, update_run_proposal
+    from run_store import complete_run, get_run, record_event, start_run, update_run_proposal
 
 from .demo_workspace_seed import DemoSeedResult, seed_demo_workspace
 from .anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
@@ -132,6 +132,7 @@ def persist_demo_run_evidence(
     seed_key: str,
     get_run_fn: Callable[[str], Mapping[str, Any]] = get_run,
     start_run_fn: Callable[..., Any] = start_run,
+    record_event_fn: Callable[[str | None, str, Any], None] = record_event,
     complete_run_fn: Callable[..., Any] = complete_run,
     artifact_writer_fn: Callable[[str, Mapping[str, Any]], bool] | None = None,
 ) -> dict[str, int]:
@@ -151,12 +152,14 @@ def persist_demo_run_evidence(
         if current:
             if (
                 str(current.get("workspace_id") or "") != workspace_id
-                or str(current.get("origin") or "") != "operations_demo"
+                or str(current.get("origin") or "")
+                != ("synthetic_demo" if str(value.get("provenance") or "") == "synthetic_demo" else "operations_demo")
                 or str(current.get("message") or "") != message
             ):
                 raise RuntimeError("demo run id is already owned by another record")
             reused += 1
         else:
+            provenance = str(value.get("provenance") or "").strip()
             start_run_fn(
                 run_id,
                 workspace_id,
@@ -164,8 +167,56 @@ def persist_demo_run_evidence(
                 actor=None,
                 trace_id=str(value.get("trace_id") or "") or None,
                 trace_agent_id=str(value.get("trace_agent_id") or "") or None,
-                origin="operations_demo",
+                origin="synthetic_demo" if provenance == "synthetic_demo" else "operations_demo",
             )
+            for step in value.get("steps") or ():
+                if not isinstance(step, Mapping):
+                    continue
+                event = str(step.get("event") or "").strip()
+                data = step.get("data") if isinstance(step.get("data"), Mapping) else {}
+                if event:
+                    record_event_fn(run_id, event, dict(data))
+            attempt = value.get("model_attempt")
+            if isinstance(attempt, Mapping):
+                tokens = attempt.get("tokens") if isinstance(attempt.get("tokens"), Mapping) else {}
+                result_cache = attempt.get("result_cache") if isinstance(attempt.get("result_cache"), Mapping) else {}
+                provider_cache = attempt.get("provider_cache") if isinstance(attempt.get("provider_cache"), Mapping) else {}
+                record_event_fn(
+                    run_id,
+                    "model_response",
+                    {
+                        "agent": "synthetic_demo",
+                        "execution_kind": "maf_agent",
+                        "response_id": str(attempt.get("attempt_ref") or ""),
+                        "provider_type": attempt.get("provider_type"),
+                        "model_id": attempt.get("model_id"),
+                        "model": attempt.get("model_id"),
+                        "deployment": attempt.get("model_id"),
+                        "route": attempt.get("route"),
+                        # L0 only permits selected/observed/inferred/unavailable.
+                        # Keep the true synthetic designation separate and never
+                        # claim the fixture route was provider-observed.
+                        "route_evidence": "selected",
+                        "synthetic_route_evidence": attempt.get("route_evidence"),
+                        "usage": {
+                            "prompt": tokens.get("input"),
+                            "completion": tokens.get("output"),
+                            "reasoning": tokens.get("reasoning"),
+                            "cached_input": tokens.get("cached_input"),
+                            "total": tokens.get("total"),
+                        },
+                        "result_cache": {**result_cache, "provider": "redis"},
+                        "cache": {**result_cache, "provider": "redis"},
+                        "provider_cache": provider_cache,
+                        "gateway_coverage": "apim_governed",
+                        "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
+                    },
+                )
+                record_event_fn(
+                    run_id,
+                    "audit",
+                    {"provenance": provenance, "request_ref": value.get("request_ref"), "correlation_ref": value.get("correlation_ref")},
+                )
             final_text = str(value.get("final_text") or "").strip()
             persisted = complete_run_fn(
                 run_id,
@@ -209,7 +260,7 @@ def persist_demo_artifact_evidence(
 ) -> bool:
     current = get_run_fn(run_id)
     workspace_id = str(current.get("workspace_id") or "").strip()
-    if not workspace_id or str(current.get("origin") or "") != "operations_demo":
+    if not workspace_id or str(current.get("origin") or "") not in {"operations_demo", "synthetic_demo"}:
         raise RuntimeError("demo artifact run is not owned by the initializer")
     kind = str(artifact.get("kind") or "").strip()
     if kind not in {"pilot_plan", "action_plan"}:

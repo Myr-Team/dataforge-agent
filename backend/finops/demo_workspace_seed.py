@@ -10,6 +10,13 @@ from .budget_subjects import BudgetSubject, budget_subject_ref
 from .demo_seed_repository import DemoSeedRepository
 from .member_budgets import MemberBudget
 from .models import FinOpsRequestEvent
+from .synthetic_demo import (
+    DEMO_ANCHOR,
+    DEMO_BATCH_ID,
+    DEMO_WORKSPACE_ID,
+    SyntheticDemoBundle,
+    build_synthetic_demo_bundle,
+)
 
 
 _AGENTS = (
@@ -47,6 +54,7 @@ class DemoSeedResult:
     outcome_events: tuple[dict[str, Any], ...]
     run_evidence: tuple[dict[str, Any], ...]
     model_routing_policy: dict[str, Any]
+    canonical_digest: str | None = None
 
 
 def demo_operations_model_policy() -> dict[str, Any]:
@@ -96,7 +104,23 @@ def seed_demo_workspace(
     clean_tenant_ref = str(tenant_ref or "").strip()
     if not clean_tenant_ref:
         raise ValueError("tenant_ref is required")
-    anchor = _utc(now or datetime.now(timezone.utc))
+    anchor = DEMO_ANCHOR if clean_workspace_id == DEMO_WORKSPACE_ID else _utc(now or datetime.now(timezone.utc))
+    if clean_workspace_id == DEMO_WORKSPACE_ID:
+        if batch == "operations-v3":
+            batch = DEMO_BATCH_ID
+        return _seed_shenzhen_demo_workspace(
+            repository,
+            seed_repository,
+            tenant_ref=clean_tenant_ref,
+            workspace_id=clean_workspace_id,
+            batch=batch,
+            budget_repository=budget_repository,
+            hmac_secret=hmac_secret,
+            roi_scenario_writer=roi_scenario_writer,
+            outcome_events_writer=outcome_events_writer,
+            run_evidence_writer=run_evidence_writer,
+            anchor=anchor,
+        )
     subject_secret = str(hmac_secret or clean_tenant_ref).strip()
     subjects = tuple(
         BudgetSubject(
@@ -173,6 +197,158 @@ def seed_demo_workspace(
         run_evidence=run_evidence,
         model_routing_policy=demo_operations_model_policy(),
     )
+
+
+def _seed_shenzhen_demo_workspace(
+    repository: Any,
+    seed_repository: DemoSeedRepository,
+    *,
+    tenant_ref: str,
+    workspace_id: str,
+    batch: str,
+    budget_repository: Any | None,
+    hmac_secret: str | None,
+    roi_scenario_writer: Any | None,
+    outcome_events_writer: Any | None,
+    run_evidence_writer: Any | None,
+    anchor: datetime,
+) -> DemoSeedResult:
+    bundle = build_synthetic_demo_bundle(
+        workspace_id=workspace_id,
+        batch_id=batch,
+        anchor_at=anchor,
+        seed="shenzhen-finops-v1",
+    )
+    scoped_events = tuple(
+        event.model_copy(update={"tenant_ref": tenant_ref})
+        for event in bundle.events
+    )
+    created, updated = seed_repository.replace_batch_events(
+        tenant_ref=tenant_ref,
+        workspace_id=workspace_id,
+        batch=batch,
+        events=scoped_events,
+        event_repository=repository,
+    )
+    run_evidence = _shenzhen_run_evidence(bundle)
+    roi_scenario = _shenzhen_roi_scenario(bundle)
+    outcomes = _shenzhen_outcomes(bundle)
+    if budget_repository is not None:
+        subject_secret = str(hmac_secret or tenant_ref).strip()
+        subjects = tuple(
+            BudgetSubject(
+                subject_ref=budget_subject_ref(workspace_id=workspace_id, display_name=name, secret=subject_secret),
+                workspace_id=workspace_id,
+                display_name=name,
+                department_label=department,
+                primary_model=model,
+                enabled=True,
+                revision=1,
+                updated_at=anchor,
+            )
+            for name, department, model in (
+                ("深圳选址分析", "Site Intelligence", "gpt-5.6-terra"),
+                ("市场研究", "Market Research", "deepseek-v4-flash"),
+                ("可行性审阅", "Feasibility", "gpt-5.6-terra"),
+                ("证据审计", "Audit", "gpt-5.6-terra"),
+            )
+        )
+        budget_repository.upsert_budget_subjects(tenant_ref, subjects)
+    if roi_scenario_writer is not None:
+        roi_scenario_writer(workspace_id, roi_scenario, seed_key=batch)
+    if run_evidence_writer is not None:
+        run_evidence_writer(workspace_id, run_evidence, seed_key=batch)
+    if outcome_events_writer is not None:
+        outcome_events_writer(workspace_id, outcomes, seed_key=batch)
+    return DemoSeedResult(
+        batch=batch,
+        event_count=len(bundle.events),
+        created=created,
+        updated=updated,
+        events=scoped_events,
+        roi_scenario=roi_scenario,
+        outcome_events=outcomes,
+        run_evidence=run_evidence,
+        model_routing_policy=demo_operations_model_policy(),
+        canonical_digest=bundle.canonical_digest,
+    )
+
+
+def _shenzhen_roi_scenario(bundle: SyntheticDemoBundle) -> dict[str, Any]:
+    return {
+        "title": "深圳选址评估（合成演示）",
+        "currency": "USD",
+        "hours_saved": 0,
+        "hourly_value": 0,
+        "avoided_loss_or_revenue": bundle.roi.scenario_monthly_benefit_usd,
+        "implementation_cost": 0,
+        "monthly_fixed_cost": bundle.roi.monthly_operating_input_usd - bundle.monthly_ai_operating_cost_usd,
+        "model_cost": bundle.monthly_ai_operating_cost_usd,
+        "evaluation_months": 12,
+        "evidence_revision": 1,
+        "seed_batch": bundle.batch_id,
+        "provenance": "synthetic_demo",
+        "scenario_id": bundle.scenario_id,
+        "canonical_digest": bundle.canonical_digest,
+        "production_quality_claim": False,
+        "demo_verified_label": bundle.roi.demo_verified_label,
+        "scenario_monthly_benefit_usd": bundle.roi.scenario_monthly_benefit_usd,
+        "scenario_roi_pct": bundle.roi.scenario_roi_pct,
+        "measured": {
+            "paired_evaluations": bundle.roi.measured_paired_evaluations,
+            "historical_hours": bundle.roi.measured_historical_hours,
+            "assisted_hours": bundle.roi.measured_assisted_hours,
+        },
+    }
+
+
+def _shenzhen_outcomes(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any], ...]:
+    return (
+        {
+            "metric_name": "site_selection_process_hours",
+            "unit": "hours",
+            "baseline_value": bundle.roi.measured_historical_hours,
+            "observed_value": bundle.roi.measured_assisted_hours,
+            "observed_at": bundle.anchor_at.isoformat(),
+            "provenance": "observed",
+            "verification_state": "unverified",
+            "source": {"run_id": bundle.runs[0].run_id},
+            "seed_batch": bundle.batch_id,
+        },
+    )
+
+
+def _shenzhen_run_evidence(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for run in bundle.runs:
+        attempt = run.model_attempts[0]
+        request = next(item for item in bundle.request_facts if item.run_id == run.run_id)
+        rows.append(
+            {
+                "run_id": run.run_id,
+                "message": run.title,
+                "final_text": "合成演示结果，需以真实业务验证为准。",
+                "status": "completed",
+                "provenance": "synthetic_demo",
+                "request_ref": request.request_ref,
+                "correlation_ref": run.correlation_ref,
+                "steps": tuple({"event": step["event"], "data": {"label": step["label"]}} for step in run.steps if step["event"] != "model_response"),
+                "model_attempt": {
+                    "attempt_ref": attempt.attempt_ref,
+                    "provider_type": attempt.provider_type,
+                    "model_id": attempt.model_id,
+                    "route": attempt.route,
+                    "route_evidence": attempt.route_evidence,
+                    "tokens": attempt.tokens.model_dump(),
+                    "provider_cache": attempt.provider_cache.model_dump(),
+                    "result_cache": request.result_cache.model_dump(),
+                    "official_price_key": attempt.official_price_key,
+                    "price_card_revision": attempt.price_card_revision,
+                    "cost_usd": attempt.cost_usd,
+                },
+            }
+        )
+    return tuple(rows)
 
 
 def _scenario_events(

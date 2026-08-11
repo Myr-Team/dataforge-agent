@@ -134,6 +134,27 @@ def _safe_scenario(item: Mapping[str, Any]) -> dict[str, Any]:
             if (value := _safe_nonnegative_number(inputs.get(key))) is not None
         } | {"currency": currency},
         "result": {key: result.get(key) for key in _SCENARIO_RESULT_KEYS},
+        "demo_evidence": _safe_demo_evidence(item.get("demo_evidence")),
+    }
+
+
+def _safe_demo_evidence(value: Any) -> dict[str, Any] | None:
+    data = value if isinstance(value, Mapping) else {}
+    if data.get("provenance") != "synthetic_demo" or data.get("production_quality_claim") is not False:
+        return None
+    if str(data.get("label") or "").strip() != "演示验证结果 · 合成数据":
+        return None
+    measured = data.get("measured") if isinstance(data.get("measured"), Mapping) else {}
+    paired = _safe_nonnegative_number(measured.get("paired_evaluations"))
+    historical = _safe_nonnegative_number(measured.get("historical_hours"))
+    assisted = _safe_nonnegative_number(measured.get("assisted_hours"))
+    if paired != 18 or historical != 17.8 or assisted != 8.1:
+        return None
+    return {
+        "provenance": "synthetic_demo",
+        "production_quality_claim": False,
+        "label": "演示验证结果 · 合成数据",
+        "measured": {"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
     }
 
 

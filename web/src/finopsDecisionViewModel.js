@@ -525,6 +525,26 @@ function safeScenario(raw) {
     badge: status.key === "estimated" ? "情景测算" : status.label,
     formulaRevision: safeRevision(result.formula_revision),
     result: projected,
+    demoEvidence: safeDemoEvidence(raw.demo_evidence),
+  };
+}
+
+
+function safeDemoEvidence(raw) {
+  const source = isRecord(raw) ? raw : {};
+  const measured = isRecord(source.measured) ? source.measured : {};
+  if (source.provenance !== "synthetic_demo"
+    || source.production_quality_claim !== false
+    || boundedText(source.label, 80) !== "演示验证结果 · 合成数据"
+    || finiteNumber(measured.paired_evaluations) !== 18
+    || finiteNumber(measured.historical_hours) !== 17.8
+    || finiteNumber(measured.assisted_hours) !== 8.1) return null;
+  return {
+    label: "演示验证结果 · 合成数据",
+    productionQualityClaim: false,
+    pairedEvaluations: 18,
+    historicalHours: 17.8,
+    assistedHours: 8.1,
   };
 }
 
@@ -639,6 +659,7 @@ export function roiDecisionView(payload) {
   const source = isRecord(payload) ? payload : {};
   const metrics = safeMetrics(source.metrics);
   const verified = safeVerifiedRoi(source.verified_roi);
+  const scenarios = records(source.scenarios).map(safeScenario).filter(Boolean).slice(0, 20);
   return {
     decision: safeDecision(source.decision),
     caseStory: safeCaseStory(source.case_story),
@@ -652,7 +673,8 @@ export function roiDecisionView(payload) {
     verifiedRoiStatus: verified.status,
     verifiedRoiBadge: verified.badge,
     capability: safeCapability(source.capability_explanation),
-    scenarios: records(source.scenarios).map(safeScenario).filter(Boolean).slice(0, 20),
+    scenarios,
+    demoEvidence: scenarios.map((item) => item.demoEvidence).find(Boolean) || null,
     evidenceGaps: boundedTexts(source.evidence_gaps, 12, 240),
   };
 }

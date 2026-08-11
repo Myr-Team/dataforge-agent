@@ -51,6 +51,7 @@ def upsert_demo_roi_scenario(
     clean_seed_key = _identifier(seed_key, "seed_key", required=True)
     data = dict(payload or {})
     data.pop("seed_batch", None)
+    demo_evidence = _synthetic_demo_evidence(workspace, data)
     inputs = _scenario_inputs(data)
     scenario_id = (
         "roi_scenario_"
@@ -87,6 +88,8 @@ def upsert_demo_roi_scenario(
             "updated_at": now,
             "seed_batch": clean_seed_key,
         }
+        if demo_evidence:
+            scenario["demo_evidence"] = demo_evidence
         scenarios = [
             item
             for item in scenarios
@@ -185,6 +188,70 @@ def scenario_projection(workspace_id: str, scenario: Mapping[str, Any]) -> dict[
         "actor": public_actor_view,
         "created_at": str(scenario.get("created_at") or ""),
         "updated_at": str(scenario.get("updated_at") or ""),
+        "demo_evidence": _project_demo_evidence(scenario.get("demo_evidence")),
+    }
+
+
+def _synthetic_demo_evidence(workspace: str, data: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "provenance",
+        "scenario_id",
+        "canonical_digest",
+        "production_quality_claim",
+        "demo_verified_label",
+        "measured",
+        "scenario_monthly_benefit_usd",
+        "scenario_roi_pct",
+    }
+    present = {key: data.pop(key) for key in tuple(data) if key in keys}
+    if not present:
+        return {}
+    if workspace != "demo-corpus" or present.get("provenance") != "synthetic_demo":
+        raise ValueError("synthetic demo evidence is only allowed for demo-corpus")
+    if present.get("scenario_id") != "shenzhen-site-selection-v1":
+        raise ValueError("synthetic demo scenario is not recognized")
+    digest = str(present.get("canonical_digest") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("synthetic demo digest is invalid")
+    if present.get("production_quality_claim") is not False:
+        raise ValueError("synthetic demo cannot make a production-quality claim")
+    label = str(present.get("demo_verified_label") or "").strip()
+    if label != "演示验证结果 · 合成数据":
+        raise ValueError("synthetic demo label is invalid")
+    measured = present.get("measured") if isinstance(present.get("measured"), Mapping) else {}
+    paired = _positive_int(measured.get("paired_evaluations"), "paired_evaluations", 100000)
+    historical = _money(measured.get("historical_hours"), "historical_hours")
+    assisted = _money(measured.get("assisted_hours"), "assisted_hours")
+    if paired != 18 or historical != 17.8 or assisted != 8.1:
+        raise ValueError("synthetic demo measured process is invalid")
+    return {
+        "provenance": "synthetic_demo",
+        "scenario_id": "shenzhen-site-selection-v1",
+        "canonical_digest": digest,
+        "production_quality_claim": False,
+        "label": label,
+        "measured": {"paired_evaluations": paired, "historical_hours": historical, "assisted_hours": assisted},
+    }
+
+
+def _project_demo_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or value.get("provenance") != "synthetic_demo":
+        return None
+    if value.get("production_quality_claim") is not False:
+        return None
+    label = str(value.get("label") or "").strip()
+    measured = value.get("measured") if isinstance(value.get("measured"), Mapping) else {}
+    if label != "演示验证结果 · 合成数据":
+        return None
+    return {
+        "provenance": "synthetic_demo",
+        "production_quality_claim": False,
+        "label": label,
+        "measured": {
+            "paired_evaluations": measured.get("paired_evaluations"),
+            "historical_hours": measured.get("historical_hours"),
+            "assisted_hours": measured.get("assisted_hours"),
+        },
     }
 
 
