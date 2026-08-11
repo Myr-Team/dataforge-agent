@@ -2068,6 +2068,7 @@ def test_finops_model_scope_loads_actor_external_provider_routes(
         "secret_ref": "kv:deepseek-provider",
     }
     monkeypatch.setenv("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED", "1")
+    monkeypatch.setenv("DF_FINOPS_DEMO_WORKSPACE_ID", "demo-corpus")
     monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", _operations_route_allowlist())
     monkeypatch.setattr(
         finops_router,
@@ -2097,10 +2098,29 @@ def test_finops_model_scope_loads_actor_external_provider_routes(
     with finops_router._finops_model_route_scope(
         workspace_id="demo-corpus",
         agent_id=None,
+        execution_kind="direct_reply",
         actor={"tenant_id": "tenant-a", "identity_source": "easy_auth"},
     ) as selected:
         assert selected.route.route_id == "deepseek-provider-flash"
         assert current_provider_connection("deepseek-provider") == connection
+
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda _workspace_id: {
+            "policy": {},
+            "price_card": {},
+            "policy_persisted": False,
+        },
+    )
+    with finops_router._finops_model_route_scope(
+        workspace_id="demo-corpus",
+        agent_id=None,
+        execution_kind="direct_reply",
+        actor={"tenant_id": "tenant-a", "identity_source": "easy_auth"},
+    ) as selected:
+        assert selected.route.route_id == "deepseek-provider-flash"
+        assert selected.selection == "workspace_policy"
 
 
 def test_finops_background_analysis_preserves_actor_provider_scope(

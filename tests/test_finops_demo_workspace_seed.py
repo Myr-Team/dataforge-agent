@@ -75,8 +75,8 @@ def test_seed_is_workspace_bounded_and_idempotent() -> None:
     assert first.model_routing_policy == {
         "assignments": {
             "direct_reply": {
-                "primary_route_id": "analysis",
-                "fallback_route_id": None,
+                "primary_route_id": "deepseek-provider-flash",
+                "fallback_route_id": "analysis",
             },
         },
         "agent_assignments": {
