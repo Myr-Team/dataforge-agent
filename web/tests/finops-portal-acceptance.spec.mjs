@@ -231,7 +231,7 @@ test("ROI parameters create a new DataForge scenario revision", async ({ page })
   const initialDecisionCalls = control.calls.roiDecision;
   await page.getByRole("button", { name: "调整测算参数" }).click();
   const dialog = page.getByRole("dialog", { name: "调整 ROI 测算参数" });
-  await expect(dialog.getByText("当前模型成本 $450 / 月")).toBeVisible();
+  await expect(dialog.getByText("当前模型成本 $450.00 / 月")).toBeVisible();
   await dialog.getByLabel("每月节省工时").fill("48");
   await dialog.getByRole("button", { name: "保存新版本" }).click();
 
