@@ -2,6 +2,28 @@ import { expect, test } from "playwright/test";
 
 import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
+for (const scenario of [
+  { name: "budget", pattern: "**/api/finops/member-budgets**", status: 503, expected: "成员预算暂时不可用" },
+  { name: "notification 404", pattern: "**/api/finops/notification-settings**", status: 404, expected: "尚未配置" },
+  { name: "notification 403", pattern: "**/api/finops/notification-settings**", status: 403, expected: "需要组织 FinOps 管理员权限" },
+  { name: "notification 503", pattern: "**/api/finops/notification-settings**", status: 503, expected: "邮件状态不可用" },
+  { name: "alerts", pattern: "**/api/finops/budget-alerts**", status: 503, expected: "提醒记录暂时不可用" },
+]) {
+  test(`MemberBudget presents an honest safe state when ${scenario.name} is missing`, async ({ page }) => {
+    await installFinOpsMockApi(page);
+    await page.route(scenario.pattern, (route) => route.fulfill({
+      status: scenario.status,
+      contentType: "application/json",
+      body: JSON.stringify({ detail: "test-only unavailable" }),
+    }));
+    await page.goto("/");
+    await page.getByRole("button", { name: "设置" }).first().click();
+    await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+    await expect(page.getByText(scenario.expected).first()).toBeVisible();
+    await expect(page.locator(".member-budget-page")).not.toContainText("TypeError");
+  });
+}
+
 
 test("Provider secret draft is removed synchronously on a session scope switch", async ({ page }) => {
   let scope = "a";

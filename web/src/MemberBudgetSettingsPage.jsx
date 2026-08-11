@@ -36,7 +36,7 @@ import { settingsResourceKey } from "./settingsNavigation.js";
 
 const EMPTY_VIEW = memberBudgetViewModel();
 
-function safeFailureState(error) {
+export function safeMemberBudgetFailureState(error) {
   if (error?.status === 403) return "permission_required";
   if (error?.status === 404 && error?.message === "email_configuration_disabled") return "disabled";
   if (error?.status === 404) return "not_configured";
@@ -73,8 +73,8 @@ async function loadBudgetView(workspaceId, settingsScope) {
     : "unavailable";
   const notificationState = notification?.data_status === "unavailable"
       ? "unavailable"
-      : notification?.item ? "configured" : notificationResult.status === "rejected" ? safeFailureState(notificationResult.reason) : "not_configured";
-  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : "available";
+      : notification?.item ? "configured" : notificationResult.status === "rejected" ? safeMemberBudgetFailureState(notificationResult.reason) : "not_configured";
+  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : alerts ? "available" : "unavailable";
   const refreshFailed = [budgetsResult, membersResult, notificationResult, alertsResult].some((result) => result.status === "rejected");
   const view = memberBudgetViewModel({
     budgets: budgets || {},
@@ -87,7 +87,7 @@ async function loadBudgetView(workspaceId, settingsScope) {
   });
   return {
     state: budgetsState === "unavailable" && !budgetSnapshot
-      ? safeFailureState(budgetsResult.reason)
+      ? safeMemberBudgetFailureState(budgetsResult.reason)
       : refreshFailed
         || ["unavailable", "permission_required"].includes(notificationState)
         || alertsState === "unavailable"
@@ -100,6 +100,33 @@ async function loadBudgetView(workspaceId, settingsScope) {
   };
 }
 
+export function memberBudgetSnapshotView({ budgets = null, members = null, notification = null, alerts = null } = {}) {
+  if (!budgets && !members && !notification && !alerts) return null;
+  const budgetsState = budgets?.data_status || "unavailable";
+  const notificationState = notification?.data_status === "unavailable"
+    ? "unavailable"
+    : notification?.item ? "configured" : "unavailable";
+  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : alerts ? "available" : "unavailable";
+  const view = memberBudgetViewModel({
+    budgets: budgets || {},
+    budgetsState,
+    members: members || {},
+    notification,
+    notificationState,
+    alerts: alerts || {},
+    alertsState,
+  });
+  const hasMissingResource = !budgets || !members || !notification || !alerts;
+  return {
+    state: budgetsState === "unavailable"
+      ? "unavailable"
+      : hasMissingResource || notificationState === "unavailable" || alertsState === "unavailable"
+        ? "partial"
+        : view.rows.length ? "available" : "empty",
+    view,
+  };
+}
+
 function peekBudgetView(settingsScope) {
   const read = (resource) => {
     const key = settingsResourceKey(settingsScope, resource);
@@ -109,14 +136,7 @@ function peekBudgetView(settingsScope) {
   const members = read("budgetMembers");
   const notification = read("notification");
   const alerts = read("alerts");
-  if (!budgets && !members && !notification && !alerts) return null;
-  const budgetsState = budgets.data_status || "partial";
-  const view = memberBudgetViewModel({
-    budgets, budgetsState, members, notification,
-    notificationState: notification.data_status === "unavailable" ? "unavailable" : "configured",
-    alerts, alertsState: alerts.data_status === "unavailable" ? "unavailable" : "available",
-  });
-  return { state: view.rows.length ? "available" : "empty", view };
+  return memberBudgetSnapshotView({ budgets, members, notification, alerts });
 }
 
 function MetricHelp({ label, children }) {
