@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleHelp,
   ExternalLink,
@@ -157,8 +157,10 @@ export function ModelRoutingPage({
   const [saving, setSaving] = useState("");
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async ({ force = false } = {}) => {
+    const generation = ++loadGeneration.current;
     if (!workspaceId) {
       setState((current) => ({ ...current, loading: false, error: "当前未选中工作区。" }));
       return;
@@ -174,6 +176,7 @@ export function ModelRoutingPage({
         cached("pricingCatalog", (options) => loadFinOpsOfficialPriceCatalog(options)),
         cached("pricingMapping", (options) => loadFinOpsOfficialPriceMappings(options)),
       ]);
+      if (generation !== loadGeneration.current) return;
       const view = modelRoutingViewModel(payload || {});
       const mappings = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
       setAssignments(view.assignments);
@@ -196,6 +199,7 @@ export function ModelRoutingPage({
         pricingAuthorizationSource: String(mappingPayload?.authorization_source || "read_only"),
       });
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return;
       setState((current) => ({
         ...current,
         loading: false,
@@ -209,7 +213,10 @@ export function ModelRoutingPage({
     if (key) invalidateSettingsResource(key);
   });
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
 
   const view = useMemo(() => modelRoutingViewModel(state.payload || {}), [state.payload]);
   const mappings = useMemo(() => mappingByDeployment(state.mappings), [state.mappings]);
@@ -261,6 +268,7 @@ export function ModelRoutingPage({
       setNotice("模型分配已保存；新运行会按 Agent 分别记录模型、Token 与估算成本。");
     } catch (error) {
       if (error && error.status === 409) {
+        invalidate("routing");
         setSaveError("模型分配已被其他管理员更新，已为你载入最新版本，请复核后重新保存。");
         await load();
       } else {
@@ -293,6 +301,7 @@ export function ModelRoutingPage({
       setNotice(`${remediation.providerLabel} 已纳入模型路由，现在可以为 Agent 选择对应模型。`);
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("provider", "routing");
         setSaveError("DeepSeek 状态已被其他管理员更新，已重新载入，请复核后重试。");
         await load();
       } else if (error?.status === 403) {
@@ -337,7 +346,10 @@ export function ModelRoutingPage({
       setNotice(`${deployment} 已关联官方价格记录，新请求将按该版本估算。`);
     } catch (error) {
       setSaveError(priceMappingErrorMessage(error));
-      if (error?.status === 409) await load();
+      if (error?.status === 409) {
+        invalidate("pricingMapping", "routing");
+        await load();
+      }
     } finally {
       setSaving("");
     }
@@ -365,7 +377,10 @@ export function ModelRoutingPage({
       setNotice(`${deployment} 已解除官方价格关联并恢复未计价，历史估算版本保持不变。`);
     } catch (error) {
       setSaveError(priceMappingErrorMessage(error));
-      if (error?.status === 409) await load();
+      if (error?.status === 409) {
+        invalidate("pricingMapping", "routing");
+        await load();
+      }
     } finally {
       setSaving("");
     }

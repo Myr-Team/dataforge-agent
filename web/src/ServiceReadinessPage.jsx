@@ -10,7 +10,7 @@ import {
 
 import { loadServiceReadiness } from "./api.js";
 import { serviceReadinessView } from "./serviceReadinessViewModel.js";
-import { loadSettingsResource } from "./settingsDataStore.js";
+import { loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
 import { settingsResourceKey } from "./settingsNavigation.js";
 
 
@@ -76,19 +76,21 @@ function visibleDetails(item) {
 
 export function ServiceReadinessPage({ workspaceId = "", settingsScope = null }) {
   const [state, setState] = useState({ loading: true, refreshing: false, error: "", payload: null });
-  const load = useCallback(async ({ refresh = false } = {}) => {
+  const load = useCallback(async ({ refresh = false, guard = () => true } = {}) => {
     if (!workspaceId) {
-      setState({ loading: false, refreshing: false, error: "请先选择工作区", payload: null });
+      if (guard()) setState({ loading: false, refreshing: false, error: "请先选择工作区", payload: null });
       return;
     }
-    setState((current) => ({
+    const key = settingsResourceKey(settingsScope, "readiness");
+    const snapshot = key ? peekSettingsResource(key, Date.now(), { freshMs: 15_000, staleUsableMs: 60_000 }) : null;
+    if (snapshot?.value && guard()) setState({ loading: false, refreshing: Boolean(snapshot.inFlight), error: snapshot.lastError ? "更新失败，正在显示上次可用状态。" : "", payload: snapshot.value });
+    if (guard()) setState((current) => ({
       ...current,
       loading: !current.payload,
       refreshing: Boolean(current.payload),
       error: "",
     }));
     try {
-      const key = settingsResourceKey(settingsScope, "readiness");
       const payload = key
         ? await loadSettingsResource(
           key,
@@ -96,8 +98,9 @@ export function ServiceReadinessPage({ workspaceId = "", settingsScope = null })
           { force: refresh, freshMs: 15_000, staleUsableMs: 60_000 },
         )
         : await loadServiceReadiness(workspaceId, { timeoutMs: 20000, refresh });
-      setState({ loading: false, refreshing: false, error: "", payload });
+      if (guard()) setState({ loading: false, refreshing: false, error: "", payload });
     } catch (error) {
+      if (error?.name === "AbortError" || !guard()) return;
       setState((current) => ({
         ...current,
         loading: false,
@@ -108,7 +111,9 @@ export function ServiceReadinessPage({ workspaceId = "", settingsScope = null })
   }, [settingsScope, workspaceId]);
 
   useEffect(() => {
-    load();
+    let active = true;
+    load({ guard: () => active });
+    return () => { active = false; };
   }, [load]);
 
   const view = useMemo(() => serviceReadinessView(state.payload), [state.payload]);

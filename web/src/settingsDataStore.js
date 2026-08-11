@@ -4,17 +4,6 @@ const entries = new Map();
 const SENSITIVE_QUERY_KEY = /(?:actor|identity|email|user|principal|subject|token|headers?|authorization|cookie|secret|credential|api[_-]?key|password)/i;
 
 
-function opaqueScope(scopeKey) {
-  const source = String(scopeKey || "");
-  let hash = 2166136261;
-  for (let index = 0; index < source.length; index += 1) {
-    hash ^= source.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `s${(hash >>> 0).toString(36)}`;
-}
-
-
 function stableQuery(value, key = "") {
   if (value === null || value === undefined || value === "") return undefined;
   if (SENSITIVE_QUERY_KEY.test(String(key))) return undefined;
@@ -63,7 +52,9 @@ export function settingsDataKey(scopeKey, resource, query = {}) {
   if (!scopeKey) throw new Error("Settings authorization scope is required");
   if (!resource) throw new Error("Settings resource is required");
   return JSON.stringify({
-    scope: opaqueScope(scopeKey),
+    // The authorization boundary contains only server-issued opaque refs. Keeping
+    // it intact avoids collision-prone client hashing while preserving isolation.
+    scope: String(scopeKey),
     resource: String(resource),
     query: stableQuery(query) || {},
   });
@@ -82,7 +73,14 @@ export function peekSettingsResource(key, now = Date.now(), options = {}) {
 }
 
 
-function startLoad(key, entry, loader, now) {
+function supersededAbortError() {
+  const error = new Error("Settings scope was superseded");
+  error.name = "AbortError";
+  return error;
+}
+
+
+function startLoad(key, entry, loader, clock) {
   const controller = new AbortController();
   entry.abortController = controller;
   entries.set(key, entry);
@@ -94,15 +92,15 @@ function startLoad(key, entry, loader, now) {
   }
   const inFlight = Promise.resolve(result)
     .then((value) => {
-      if (entries.get(key) === entry && !controller.signal.aborted) {
-        entry.value = value;
-        entry.storedAt = Number(now);
-        entry.lastError = null;
-      }
+      if (entries.get(key) !== entry || controller.signal.aborted) throw supersededAbortError();
+      entry.value = value;
+      entry.storedAt = Number(clock());
+      entry.lastError = null;
       return value;
     })
     .catch((error) => {
-      if (entries.get(key) === entry && !controller.signal.aborted) entry.lastError = publicError(error, Number(now));
+      if (entries.get(key) !== entry || controller.signal.aborted) throw supersededAbortError();
+      entry.lastError = publicError(error, Number(clock()));
       throw error;
     })
     .finally(() => {
@@ -119,7 +117,8 @@ function startLoad(key, entry, loader, now) {
 export function loadSettingsResource(key, loader, options = {}) {
   if (!key) return Promise.reject(new Error("Settings resource key is required"));
   if (typeof loader !== "function") return Promise.reject(new Error("Settings resource loader is required"));
-  const now = options.now ?? Date.now();
+  const clock = typeof options.clock === "function" ? options.clock : () => options.now ?? Date.now();
+  const now = options.now ?? clock();
   const current = entries.get(key) || {
     scope: JSON.parse(key)?.scope || "",
     value: null,
@@ -130,7 +129,7 @@ export function loadSettingsResource(key, loader, options = {}) {
   };
   if (current.inFlight) return current.inFlight;
   if (!options.force && peekSettingsResource(key, now, options).status === "fresh") return Promise.resolve(current.value);
-  return startLoad(key, current, loader, now);
+  return startLoad(key, current, loader, clock);
 }
 
 
@@ -144,7 +143,7 @@ export function invalidateSettingsResource(key) {
 
 
 export function clearSettingsScope(scopeKey) {
-  const scope = opaqueScope(scopeKey);
+  const scope = String(scopeKey || "");
   let removed = 0;
   for (const [key, entry] of entries) {
     if (entry.scope !== scope) continue;

@@ -700,10 +700,18 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const configuredEndpoint = import.meta.env.VITE_AUTH_SESSION || "";
+    const configuredEndpoint = import.meta.env.VITE_AUTH_SESSION || window.__DF_AUTH_SESSION_ENDPOINT__ || "";
+    const forceAuthenticatedSession = window.__DF_FORCE_AUTH_SESSION__ === true;
     const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-    if (!configuredEndpoint && isLocal) {
-      setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
+    if (!configuredEndpoint && isLocal && !forceAuthenticatedSession) {
+      setUser({
+        name: "Demo User",
+        email: "local.demo@dataforge",
+        tenantScope: "local-demo",
+        tenantRef: "tenant_local_demo_v1",
+        actorRef: "actor_local_demo_v1",
+        sessionRef: "session_local_demo_v1",
+      });
       setAuthState("local");
       return () => {
         cancelled = true;
@@ -718,7 +726,11 @@ export function App() {
           email: String(session?.email || ""),
           identityProvider: String(session?.identity_provider || "microsoft_entra"),
           identitySource: String(session?.identity_source || "trusted_proxy"),
+          tenantRef: String(session?.tenant_ref || ""),
+          actorRef: String(session?.actor_ref || ""),
+          sessionRef: String(session?.session_ref || ""),
         };
+        if (!next.tenantRef || !next.actorRef || !next.sessionRef) throw new Error("auth scope unavailable");
         if (!cancelled) {
           setUser(next);
           setAuthState("authenticated");

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleAlert,
@@ -82,17 +82,21 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const key = settingsResourceKey(settingsScope, "provider");
       const payload = key
         ? await loadSettingsResource(key, ({ signal }) => loadModelProviders({ signal }))
         : await loadModelProviders();
+      if (generation !== loadGeneration.current) return null;
       setState({ loading: false, error: "", payload });
       return payload;
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return null;
       setState({
         loading: false,
         error: "无法读取模型提供商配置，请重试。",
@@ -102,11 +106,16 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
     }
   }, [settingsScope]);
   const invalidate = () => {
-    const key = settingsResourceKey(settingsScope, "provider");
-    if (key) invalidateSettingsResource(key);
+    ["provider", "routing"].forEach((resource) => {
+      const key = settingsResourceKey(settingsScope, resource);
+      if (key) invalidateSettingsResource(key);
+    });
   };
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
   const view = useMemo(() => providerConnectionsViewModel(state.payload || {}), [state.payload]);
 
   const runAction = async (key, action, successMessage) => {
@@ -122,6 +131,7 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
     } catch (error) {
       if (error?.status === 409) {
         setActionError(safeConnectionMessage(error));
+        invalidate();
         await load();
       } else {
         setActionError(safeConnectionMessage(error));

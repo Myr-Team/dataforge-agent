@@ -860,7 +860,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     }
 
     if (path === "/api/workspaces/demo-corpus/access") {
-      body = { allowed: true, role: "owner", workspace_id: "demo-corpus" };
+      body = { authenticated: true, allowed: true, role: "owner", workspace_id: "demo-corpus" };
     } else if (path === "/api/workspaces/demo-corpus/governance/capabilities") {
       if (control.capabilityDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, control.capabilityDelayMs));

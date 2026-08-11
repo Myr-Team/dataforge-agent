@@ -23,6 +23,7 @@ test("settings keys isolate opaque authorization scopes and stable queries", () 
 
   assert.equal(first, reordered);
   assert.notEqual(first, otherScope);
+  assert.match(first, /"scope":"opaque-a"/);
   assert.doesNotMatch(first, /@|token|secret/i);
 });
 
@@ -79,7 +80,7 @@ test("failed refresh retains the stale snapshot and records a public error", asy
 });
 
 
-test("clearing a scope aborts its loader and ignores a late response", async () => {
+test("clearing a scope aborts its loader and rejects a late response", async () => {
   const scope = "scope-a";
   const key = settingsDataKey(scope, "members", { workspaceId: "ws-a" });
   let signal;
@@ -92,8 +93,24 @@ test("clearing a scope aborts its loader and ignores a late response", async () 
   clearSettingsScope(scope);
   assert.equal(signal.aborted, true);
   resolveLate({ revision: 1 });
-  await pending;
+  await assert.rejects(pending, { name: "AbortError" });
   assert.equal(peekSettingsResource(key).status, "missing");
+});
+
+
+test("storage and refresh-error timestamps are captured when the work finishes", async () => {
+  const key = settingsDataKey("scope-a", "budget", { workspaceId: "ws-a" });
+  let now = 0;
+  let resolve;
+  const pending = loadSettingsResource(key, () => new Promise((next) => { resolve = next; }), { clock: () => now });
+  now = 40_000;
+  resolve({ revision: 1 });
+  await pending;
+  assert.equal(peekSettingsResource(key, 40_000).status, "fresh");
+
+  now = 50_000;
+  await assert.rejects(loadSettingsResource(key, async () => { throw new Error("upstream"); }, { force: true, clock: () => now }), /upstream/);
+  assert.equal(peekSettingsResource(key, 50_000).lastError.occurredAt, 50_000);
 });
 
 

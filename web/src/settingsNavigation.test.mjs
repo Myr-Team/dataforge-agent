@@ -21,7 +21,12 @@ function authority(overrides = {}) {
   return {
     authState: "authenticated",
     workspaceId: "ws-a",
-    user: { tenantScope: "tenant-a", email: "owner@contoso.test", actor_id: "actor-safe" },
+    user: {
+      tenantRef: "tenant_opaque_reference_a",
+      actorRef: "actor_opaque_reference_a",
+      sessionRef: "session_opaque_reference_a",
+      email: "owner@contoso.test",
+    },
     workspaceAccess: { workspace_id: "ws-a", authenticated: true, allowed: true, role: "owner" },
     capabilities: {
       workspace_id: "ws-a",
@@ -35,17 +40,23 @@ function authority(overrides = {}) {
 }
 
 
-test("settings scope is available only for trusted current authorization and never exposes raw actor identity", () => {
+test("settings scope requires server-issued tenant actor and session refs", () => {
   assert.equal(settingsPreloadScope(authority({ workspaceAccess: null })), null);
+  assert.equal(settingsPreloadScope(authority({ user: { tenantRef: "tenant_opaque_reference_a", actorRef: "actor_opaque_reference_a" } })), null);
   const scope = settingsPreloadScope(authority());
   assert.equal(scope.workspaceId, "ws-a");
   assert.match(scope.key, /ws-a/);
-  assert.doesNotMatch(scope.key, /owner@contoso\.test|actor-safe|tenant-a/);
+  assert.match(scope.key, /tenant_opaque_reference_a/);
+  assert.match(scope.key, /session_opaque_reference_a/);
+  assert.doesNotMatch(scope.key, /owner@contoso\.test/);
 
   const changedPermission = settingsAuthorizationBoundary(authority({
     capabilities: { workspace_id: "ws-a", sections: { governance: { permissions: { "member.read": true, "member.manage": false } } } },
   }));
   assert.notEqual(settingsAuthorizationBoundary(authority()), changedPermission);
+  assert.notEqual(settingsAuthorizationBoundary(authority()), settingsAuthorizationBoundary(authority({
+    user: { tenantRef: "tenant_opaque_reference_a", actorRef: "actor_opaque_reference_a", sessionRef: "session_opaque_reference_b" },
+  })));
 });
 
 
@@ -129,6 +140,9 @@ test("App wires Settings navigation intent and passes the current scoped cache b
   const components = await readFile(new URL("./components.jsx", import.meta.url), "utf8");
 
   assert.match(app, /settingsAuthorizationBoundary/);
+  assert.match(app, /tenantRef: String\(session\?\.tenant_ref/);
+  assert.match(app, /actorRef: String\(session\?\.actor_ref/);
+  assert.match(app, /sessionRef: String\(session\?\.session_ref/);
   assert.match(app, /onSettingsIntent=\{preloadSettings\}/);
   assert.match(app, /settingsPreloadScope=\{settingsScope\}/);
   assert.match(components, /settingsScope=\{settingsPreloadScope\}/);

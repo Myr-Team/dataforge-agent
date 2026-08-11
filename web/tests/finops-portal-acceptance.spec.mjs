@@ -34,19 +34,64 @@ test("Settings re-entry is interactive within 200ms without duplicate home GETs 
     "/api/workspaces/demo-corpus/settings",
     "/api/workspaces/demo-corpus/governance/model-routing",
   ]);
-  const before = calls.filter((call) => homePaths.has(call.path)).length;
+  const firstHomeGets = calls.filter((call) => call.method === "GET" && homePaths.has(call.path));
+  expect(firstHomeGets).toHaveLength(5);
+  for (const path of homePaths) {
+    expect(firstHomeGets.filter((call) => call.path === path)).toHaveLength(1);
+  }
   expect(calls.some((call) => call.path === "/api/system-status")).toBe(false);
   expect(calls.some((call) => call.path === "/api/workspaces/demo-corpus/members")).toBe(false);
 
   await page.getByRole("button", { name: "工作区" }).first().click();
+  const reentryStart = calls.length;
   const started = Date.now();
   await page.getByRole("button", { name: "设置" }).first().click();
   await expect(page.locator(".member-budget-entry")).toBeVisible({ timeout: 200 });
   expect(Date.now() - started).toBeLessThanOrEqual(200);
-  expect(calls.filter((call) => homePaths.has(call.path))).toHaveLength(before);
+  expect(calls.slice(reentryStart).filter((call) => call.method === "GET" && call.path.startsWith("/api/") && (
+    call.path.includes("member-budgets")
+    || call.path.includes("notification-settings")
+    || call.path.includes("budget-alerts")
+    || call.path.includes("/settings")
+    || call.path.includes("model-routing")
+    || call.path.includes("/members")
+    || call.path.includes("system-status")
+  ))).toHaveLength(0);
 
   await page.getByRole("button", { name: "成员与权限" }).click();
   await expect.poll(() => calls.filter((call) => call.path === "/api/workspaces/demo-corpus/members").length).toBe(1);
+});
+
+
+test("Settings home constructs its cache boundary from a production auth session", async ({ page }) => {
+  const calls = [];
+  await page.addInitScript(() => { window.__DF_FORCE_AUTH_SESSION__ = true; });
+  await installFinOpsMockApi(page, calls);
+  await page.route("**/api/auth/session", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      authenticated: true,
+      name: "Portal User",
+      email: "owner@contoso.test",
+      identity_provider: "microsoft_entra",
+      identity_source: "trusted_proxy",
+      tenant_ref: "tenant_browser_ref_abcdefghijklmnopqrstuvwxyz",
+      actor_ref: "actor_browser_ref_abcdefghijklmnopqrstuvwxyz",
+      session_ref: "session_browser_ref_abcdefghijklmnopqrstuvwxyz",
+    }),
+  }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.locator(".member-budget-entry")).toBeVisible();
+  const settingsGets = calls.filter((call) => call.method === "GET" && [
+    "/api/finops/member-budgets",
+    "/api/finops/notification-settings",
+    "/api/finops/budget-alerts",
+    "/api/workspaces/demo-corpus/settings",
+    "/api/workspaces/demo-corpus/governance/model-routing",
+  ].includes(call.path));
+  expect(settingsGets).toHaveLength(5);
 });
 
 

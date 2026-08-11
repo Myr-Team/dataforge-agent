@@ -21,7 +21,7 @@ import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, creat
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
 import { settingsIntentHandlers } from "./settingsNavigation.js";
-import { loadSettingsResource, peekSettingsResource, settingsDataKey } from "./settingsDataStore.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource, settingsDataKey } from "./settingsDataStore.js";
 import { settingsResourceKeys } from "./settingsNavigation.js";
 import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
 import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
@@ -3373,7 +3373,16 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       peekSettingsResource(settingsKeys.notification),
       peekSettingsResource(settingsKeys.alerts),
     ];
-    if (!cached.every((entry) => entry.value !== null && entry.value !== undefined)) {
+    if (cached.every((entry) => entry.value !== null && entry.value !== undefined)) {
+      setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
+        budgets: cached[0].value,
+        budgetsState: cached[0].value?.data_status || "partial",
+        notification: cached[1].value,
+        notificationState: cached[1].value?.data_status === "unavailable" ? "unavailable" : "configured",
+        alerts: cached[2].value,
+        alertsState: cached[2].value?.data_status === "unavailable" ? "unavailable" : "available",
+      }));
+    } else {
       setMemberBudgetHome({
         state: "loading",
         stateLabel: "正在读取",
@@ -3387,22 +3396,25 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       loadSettingsResource(settingsKeys.alerts, ({ signal }) => loadMemberBudgetAlerts(workspaceId, { signal })),
     ]).then(([budgetsResult, notificationResult, alertsResult]) => {
       if (cancelled || requestVersion !== memberBudgetHomeRequestVersion.current) return;
-      if (budgetsResult.status === "rejected") {
+      if (budgetsResult.status === "rejected" && !cached[0].value) {
         setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
           status: budgetsResult.reason?.status === 403 ? "permission_required" : "unavailable",
         }));
         return;
       }
-      const budgetsState = ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
-        ? budgetsResult.value.data_status
+      const budgets = budgetsResult.status === "fulfilled" ? budgetsResult.value : cached[0].value;
+      const notification = notificationResult.status === "fulfilled" ? notificationResult.value : cached[1].value;
+      const alerts = alertsResult.status === "fulfilled" ? alertsResult.value : cached[2].value;
+      const budgetsState = ["complete", "partial", "unavailable"].includes(budgets?.data_status)
+        ? budgets.data_status
         : "partial";
       const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
         ? "available"
         : "unavailable";
       setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
-        budgets: budgetsResult.value,
+        budgets,
         budgetsState,
-        notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
+        notification: notification || null,
         notificationState: notificationResult.status === "fulfilled"
           ? notificationResult.value?.data_status === "unavailable"
             ? "unavailable"
@@ -3415,7 +3427,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
               : notificationResult.reason?.status === 403
                 ? "permission_required"
               : "unavailable",
-        alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
+        alerts: alerts || {},
         alertsState,
       }));
     });
@@ -3452,6 +3464,9 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       if (requestVersion === memberRequestVersion.current) setMembersLoading(false);
     }
   };
+  const invalidateMembers = () => {
+    if (membersKey) invalidateSettingsResource(membersKey);
+  };
   const openIdentityPolicy = async () => {
     if (!workspaceId || !memberPermissions.canManageMembers) return;
     setIdentityPolicy({ open: true, busy: true, error: "", domains: [] });
@@ -3466,6 +3481,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setIdentityPolicy((current) => ({ ...current, busy: true, error: "" }));
     try {
       await updateEnterpriseIdentityPolicy(workspaceId, domains);
+      invalidateMembers();
       setIdentityPolicy({ open: false, busy: false, error: "", domains });
       await loadMembersContract();
       setMemberNotice("企业身份展示策略已更新。");
@@ -3587,13 +3603,20 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   useEffect(() => {
     if (!workspaceId || !settingsKeys.workspaceSettings) return undefined;
     let cancelled = false;
+    const snapshot = peekSettingsResource(settingsKeys.workspaceSettings);
+    if (snapshot.value) {
+      setWorkspaceSettings(snapshot.value);
+      setSys(snapshot.value?.system_status || null);
+    }
     loadSettingsResource(settingsKeys.workspaceSettings, ({ signal }) => loadWorkspaceSettings(workspaceId, { signal }))
       .then((data) => {
         if (cancelled) return;
         setWorkspaceSettings(data);
         setSys(data?.system_status || null);
       })
-      .catch(() => { if (!cancelled) setWorkspaceSettings(null); });
+      .catch((error) => {
+        if (!cancelled && error?.name !== "AbortError" && !snapshot.value) setWorkspaceSettings(null);
+      });
     return () => { cancelled = true; };
   }, [settingsKeys.workspaceSettings, workspaceId]);
   const refreshWorkspaceRouting = () => {
@@ -3615,9 +3638,11 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       setWorkspaceRouting(null);
       return undefined;
     }
+    const snapshot = peekSettingsResource(settingsKeys.routing);
+    if (snapshot.value) setWorkspaceRouting(snapshot.value);
     loadSettingsResource(settingsKeys.routing, ({ signal }) => loadWorkspaceModelRouting(workspaceId, { signal }))
       .then((payload) => { if (!cancelled) setWorkspaceRouting(payload || null); })
-      .catch(() => { if (!cancelled) setWorkspaceRouting(null); });
+      .catch((error) => { if (!cancelled && error?.name !== "AbortError" && !snapshot.value) setWorkspaceRouting(null); });
     return () => { cancelled = true; };
   }, [settingsKeys.routing, workspaceId]);
   useEffect(() => {
@@ -3772,6 +3797,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       redirect_url: window.location.origin,
     })
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setInviteForm({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
@@ -3801,6 +3827,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setMemberNotice("");
     removeMember(workspaceId, target)
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setMemberNotice("成员已从当前工作区移除。");
@@ -3822,6 +3849,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setMemberNotice("");
     updateMemberRole(workspaceId, target, role)
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setMemberNotice("成员角色已更新，后续运行会按新角色展示协作与用量归因。");

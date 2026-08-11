@@ -439,6 +439,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("budget", "alerts");
         setBudgetModal(null);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
@@ -464,6 +465,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("budget", "alerts");
         setBudgetModal(null);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
@@ -489,6 +491,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("notification");
         setMailModal(false);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });

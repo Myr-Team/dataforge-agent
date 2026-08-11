@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleAlert,
@@ -33,16 +33,20 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const loadGeneration = useRef(0);
 
   const load = useCallback(async () => {
+    const generation = ++loadGeneration.current;
     setState((current) => ({ ...current, loading: true, error: "" }));
     try {
       const key = settingsResourceKey(settingsScope, "identity");
       const payload = key
         ? await loadSettingsResource(key, ({ signal }) => loadIdentityGovernance({ signal }))
         : await loadIdentityGovernance();
+      if (generation !== loadGeneration.current) return;
       setState({ loading: false, error: "", payload });
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return;
       setState({
         loading: false,
         error: error instanceof Error ? error.message : "身份治理读取失败",
@@ -55,7 +59,10 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
     if (key) invalidateSettingsResource(key);
   };
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
   const view = useMemo(() => identityAccessViewModel(state.payload || {}, workspaceId), [state.payload, workspaceId]);
   const session = useMemo(
     () => identitySessionViewModel({ user, authState, access: workspaceAccess }),
@@ -111,6 +118,7 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
       await load();
     } catch (error) {
       if (error?.status === 409) {
+        invalidate();
         setActionError("映射已被其他管理员更新，已重新加载最新版本，请复核后再试。");
         await load();
       } else {
