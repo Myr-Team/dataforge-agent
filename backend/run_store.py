@@ -28,6 +28,7 @@ try:
         sanitize_capability_pack_contract,
     )
     from .identity import is_trusted_identity, public_actor
+    from .token_integrity import finite_nonnegative_integral_token_count
 except ImportError:
     from blob_store import (
         BlobJsonReadError,
@@ -45,6 +46,7 @@ except ImportError:
         sanitize_capability_pack_contract,
     )
     from identity import is_trusted_identity, public_actor
+    from token_integrity import finite_nonnegative_integral_token_count
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,15 +181,12 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                 "mode": plain.get("mode"),
                 "time": now,
             }
-            provider_type = str(plain.get("provider_type") or "").strip().lower()
-            if provider_type in {"azure_foundry", "deepseek"}:
-                model_record["provider_type"] = provider_type
-            provider_id = str(plain.get("provider_id") or "").strip()
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", provider_id):
-                model_record["provider_id"] = provider_id
-            model_id = str(plain.get("model_id") or "").strip()
-            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", model_id):
-                model_record["model_id"] = model_id
+            # Persist only opaque configured-provider references while retaining
+            # the current route and gateway coverage evidence from mainline.
+            for key in ("provider_type", "provider_id", "model_id", "route_evidence"):
+                value = _safe_model_observation_value(key, plain.get(key))
+                if value is not None:
+                    model_record[key] = value
             gateway_coverage = str(plain.get("gateway_coverage") or "").strip().lower()
             if gateway_coverage in {"apim_governed", "app_observed", "unmanaged", "unknown"}:
                 model_record["gateway_coverage"] = gateway_coverage
@@ -196,14 +195,11 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                     model_record[key] = plain.get(key)
             if "cost_estimate" in plain:
                 model_record["cost_estimate"] = _safe_cost_estimate(plain.get("cost_estimate"))
-            if "cache" in plain:
-                cache = normalize_cache_meter(plain.get("cache"))
-                if cache:
-                    model_record["cache"] = cache
-            if "result_cache" in plain:
-                result_cache = normalize_cache_meter(plain.get("result_cache"))
-                if result_cache:
-                    model_record["result_cache"] = result_cache
+            for key in ("cache", "result_cache"):
+                if key in plain:
+                    cache = normalize_cache_meter(plain.get(key))
+                    if cache:
+                        model_record[key] = cache
             if "provider_cache" in plain:
                 provider_cache = normalize_provider_cache_meter(plain.get("provider_cache"))
                 if provider_cache:
@@ -3750,6 +3746,12 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
             sanitized["provider_cache"] = provider_cache
         else:
             sanitized.pop("provider_cache", None)
+    for key in ("provider_type", "provider_id", "model_id", "route_evidence"):
+        safe_value = _safe_model_observation_value(key, data.get(key))
+        if safe_value is None:
+            sanitized.pop(key, None)
+        else:
+            sanitized[key] = safe_value
     return sanitized
 
 
@@ -4198,7 +4200,7 @@ def _usage_is_observed(data: Any) -> bool:
     if not isinstance(usage, dict):
         return False
     return any(
-        key in usage and isinstance(usage.get(key), (int, float)) and not isinstance(usage.get(key), bool)
+        finite_nonnegative_integral_token_count(usage.get(key)) is not None
         for key in (
             "prompt_tokens",
             "input_tokens",
@@ -4216,10 +4218,41 @@ def _usage_from_dict(data: dict[str, Any]) -> dict[str, int]:
     usage = data.get("usage") if "usage" in data else data
     if not isinstance(usage, dict):
         return {"total": 0, "prompt": 0, "completion": 0}
-    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or usage.get("prompt") or 0)
-    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or usage.get("completion") or 0)
-    total = int(usage.get("total_tokens") or usage.get("total") or prompt + completion)
+    prompt = _first_valid_token_count(usage, "prompt_tokens", "input_tokens", "prompt") or 0
+    completion = _first_valid_token_count(usage, "completion_tokens", "output_tokens", "completion") or 0
+    total = _first_valid_token_count(usage, "total_tokens", "total")
+    if total is None:
+        total = prompt + completion
     return {"total": total, "prompt": prompt, "completion": completion}
+
+
+def _first_valid_token_count(usage: dict[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        token_count = finite_nonnegative_integral_token_count(usage.get(key))
+        if token_count is not None:
+            return token_count
+    return None
+
+
+def _safe_model_observation_value(key: str, value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if key == "provider_type":
+        normalized = text.lower()
+        return normalized if normalized in {"azure_foundry", "deepseek"} else None
+    if key == "provider_id":
+        try:
+            from .model_references import safe_configured_provider_ref
+        except ImportError:
+            from model_references import safe_configured_provider_ref
+        return safe_configured_provider_ref(text)
+    if key == "model_id":
+        return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", text) else None
+    if key == "route_evidence":
+        normalized = text.lower()
+        return normalized if normalized in {"observed", "selected", "inferred", "unavailable"} else None
+    return None
 
 
 def _normalized_observed_usage(data: Any) -> dict[str, int | None]:
@@ -4244,8 +4277,9 @@ def _normalized_observed_usage(data: Any) -> dict[str, int | None]:
         normalized[target] = None
         for source in sources:
             value = usage.get(source)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                normalized[target] = int(value)
+            token_count = finite_nonnegative_integral_token_count(value)
+            if token_count is not None:
+                normalized[target] = token_count
                 break
     return normalized
 

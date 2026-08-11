@@ -114,3 +114,18 @@ def test_provider_cache_unknown_populations_remain_unavailable() -> None:
     assert event.provider_cache.state == "unavailable"
     assert event.provider_cache.hit_rate_pct is None
     assert event.routing_policy_revision is None
+
+
+def test_reasoning_is_an_output_detail_not_an_extra_total_category() -> None:
+    from backend.finops.models import TokenUsage
+
+    usage = TokenUsage(
+        input=100,
+        output=40,
+        reasoning=12,
+        cached_input=70,
+        total=140,
+    )
+
+    assert usage.total == 140
+    assert usage.reasoning == 12

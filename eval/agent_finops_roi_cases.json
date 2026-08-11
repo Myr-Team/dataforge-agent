@@ -1,0 +1,177 @@
+{
+  "schema_version": "dataforge.agent-eval-dataset.v1",
+  "measurement_scope": "sanitized_fixture",
+  "dataset": {
+    "id": "agent-finops-local",
+    "version": "2026-08-v1",
+    "digest": "sha256:3a555d646e9c9f6fb7d69fa4a0955eb01f8cd28e67cccd955e57a690b3813b98"
+  },
+  "baseline": {
+    "version": "baseline-v1",
+    "dataset_digest": "sha256:3a555d646e9c9f6fb7d69fa4a0955eb01f8cd28e67cccd955e57a690b3813b98"
+  },
+  "candidate": {
+    "version": "candidate-v1",
+    "dataset_digest": "sha256:3a555d646e9c9f6fb7d69fa4a0955eb01f8cd28e67cccd955e57a690b3813b98"
+  },
+  "huber_delta": 1.0,
+  "tolerances": {
+    "mae_relative": 0.02,
+    "rmse_relative": 0.05,
+    "bce_absolute": 0.0,
+    "brier_absolute": 0.0,
+    "recall_at_5_drop": 0.02,
+    "mrr_drop": 0.0,
+    "ndcg_at_5_drop": 0.0,
+    "unsupported_claim_rate_increase": 0.0,
+    "cost_per_success_relative": 0.1
+  },
+  "cases": [
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "continuous-001",
+      "task_type": "continuous_regression",
+      "capability": "cost_forecast",
+      "input_ref": "synthetic-forecast-001",
+      "expected": {"value": 10.0, "unit": "minutes"},
+      "baseline": {"value": 12.0, "unit": "minutes"},
+      "candidate": {"value": 11.0, "unit": "minutes"}
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "continuous-002",
+      "task_type": "continuous_regression",
+      "capability": "cost_forecast",
+      "input_ref": "synthetic-forecast-002",
+      "expected": {"value": 20.0, "unit": "minutes"},
+      "baseline": {"value": 18.0, "unit": "minutes"},
+      "candidate": {"value": 19.0, "unit": "minutes"}
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "binary-001",
+      "task_type": "binary_probability",
+      "capability": "success_probability",
+      "input_ref": "synthetic-probability-001",
+      "expected": {"label": 1},
+      "baseline": {"probability": 0.7},
+      "candidate": {"probability": 0.8}
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "binary-002",
+      "task_type": "binary_probability",
+      "capability": "success_probability",
+      "input_ref": "synthetic-probability-002",
+      "expected": {"label": 0},
+      "baseline": {"probability": 0.3},
+      "candidate": {"probability": 0.2}
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "retrieval-001",
+      "task_type": "retrieval_ranking",
+      "capability": "local_evidence_retrieval",
+      "input_ref": "sanitized-query-001",
+      "expected": {
+        "relevant_ids": ["chunk-safe-1"],
+        "allowed_ids": ["chunk-safe-1", "chunk-safe-2"]
+      },
+      "baseline": {
+        "hit_ids": ["chunk-safe-2", "chunk-safe-1", "chunk-safe-1"],
+        "adapter": "fixture_baseline",
+        "retrieval_trace": {"candidate_sources": ["sanitized_fixture"], "permission_filtered": true}
+      },
+      "candidate": {
+        "hit_ids": ["chunk-safe-1", "chunk-safe-2"],
+        "adapter": "fixture_candidate",
+        "retrieval_trace": {"candidate_sources": ["sanitized_fixture"], "permission_filtered": true}
+      }
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "retrieval-not-applicable-001",
+      "task_type": "retrieval_ranking",
+      "capability": "local_evidence_retrieval",
+      "input_ref": "sanitized-query-no-qrels",
+      "expected": {
+        "relevant_ids": [],
+        "allowed_ids": ["chunk-safe-3"]
+      },
+      "baseline": {
+        "hit_ids": ["chunk-safe-3"],
+        "adapter": "fixture_baseline",
+        "retrieval_trace": {"candidate_sources": ["sanitized_fixture"], "permission_filtered": true}
+      },
+      "candidate": {
+        "hit_ids": ["chunk-safe-3"],
+        "adapter": "fixture_candidate",
+        "retrieval_trace": {"candidate_sources": ["sanitized_fixture"], "permission_filtered": true}
+      }
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "grounding-001",
+      "task_type": "grounded_generation",
+      "capability": "reference_contract",
+      "input_ref": "sanitized-grounding-001",
+      "expected": {"allowed_evidence_refs": ["evidence-safe-1", "evidence-safe-2"]},
+      "baseline": {
+        "claims": [
+          {"claim_id": "claim-1", "evidence_refs": ["evidence-safe-1"]},
+          {"claim_id": "claim-2", "evidence_refs": []}
+        ]
+      },
+      "candidate": {
+        "claims": [
+          {"claim_id": "claim-1", "evidence_refs": ["evidence-safe-1"]},
+          {"claim_id": "claim-2", "evidence_refs": ["evidence-safe-2"]}
+        ]
+      }
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "unit-economics-scenario-comparability-001",
+      "task_type": "unit_economics",
+      "capability": "scenario_unit_economics",
+      "input_ref": "synthetic-economics-001",
+      "expected": {"evidence_scope": "synthetic_contract_fixture"},
+      "baseline": {
+        "cost": {"amount": 10.0, "currency": "USD", "status": "complete", "window": "fixture-window-1"},
+        "successful_requests": 10,
+        "verified_outcomes": 0,
+        "outcome_evidence_status": "estimated",
+        "monetized_benefit": {"amount": 25.0, "currency": "USD", "status": "scenario", "window": "fixture-window-1"}
+      },
+      "candidate": {
+        "cost": {"amount": 10.5, "currency": "USD", "status": "complete", "window": "fixture-window-1"},
+        "successful_requests": 12,
+        "verified_outcomes": 0,
+        "outcome_evidence_status": "estimated",
+        "monetized_benefit": {"amount": 30.0, "currency": "USD", "status": "scenario", "window": "fixture-window-1"}
+      }
+    },
+    {
+      "schema_version": "dataforge.agent-eval-case.v1",
+      "case_id": "unit-economics-scenario-boundary-001",
+      "task_type": "unit_economics",
+      "capability": "scenario_truth_boundary",
+      "input_ref": "synthetic-scenario-001",
+      "expected": {"evidence_scope": "synthetic_contract_fixture"},
+      "baseline": {
+        "cost": {"amount": 8.0, "currency": "USD", "status": "complete", "window": "fixture-window-2"},
+        "successful_requests": 8,
+        "verified_outcomes": 0,
+        "outcome_evidence_status": "estimated",
+        "monetized_benefit": {"amount": 20.0, "currency": "USD", "status": "scenario", "window": "fixture-window-2"}
+      },
+      "candidate": {
+        "cost": {"amount": 8.5, "currency": "USD", "status": "complete", "window": "fixture-window-2"},
+        "successful_requests": 9,
+        "verified_outcomes": 0,
+        "outcome_evidence_status": "estimated",
+        "monetized_benefit": {"amount": 24.0, "currency": "USD", "status": "scenario", "window": "fixture-window-2"}
+      }
+    }
+  ]
+}

@@ -31,7 +31,9 @@ class TokenUsage(BaseModel):
     @model_validator(mode="after")
     def validate_total(self) -> "TokenUsage":
         if self.total is not None:
-            known_parts = [self.input, self.output, self.reasoning]
+            # Cached input is a subset of input and reasoning is an output detail,
+            # so neither is added again when validating the provider total.
+            known_parts = [self.input, self.output]
             known_sum = sum(value for value in known_parts if value is not None)
             if known_sum and self.total < known_sum:
                 raise ValueError("total tokens cannot be lower than known token categories")
