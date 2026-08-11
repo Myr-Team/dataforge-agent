@@ -28,6 +28,7 @@ try:
         sanitize_capability_pack_contract,
     )
     from .identity import is_trusted_identity, public_actor
+    from .money_integrity import finite_nonnegative_money_amount
     from .token_integrity import finite_nonnegative_integral_token_count
 except ImportError:
     from blob_store import (
@@ -46,6 +47,7 @@ except ImportError:
         sanitize_capability_pack_contract,
     )
     from identity import is_trusted_identity, public_actor
+    from money_integrity import finite_nonnegative_money_amount
     from token_integrity import finite_nonnegative_integral_token_count
 
 
@@ -3852,14 +3854,12 @@ def _safe_cost_estimate(value: Any) -> dict[str, Any]:
     if status != "estimated":
         reason = str(data.get("reason") or "price_not_configured").strip().lower()
         return {"status": "unavailable", "reason": reason if reason in {"usage_not_recorded", "price_not_configured"} else "price_not_configured"}
-    amount = data.get("amount")
+    amount = finite_nonnegative_money_amount(data.get("amount"))
     revision = data.get("price_card_revision")
     route_id = str(data.get("route_id") or "").strip().lower()
     currency = str(data.get("currency") or "").strip().upper()
     if (
-        not isinstance(amount, (int, float))
-        or isinstance(amount, bool)
-        or amount < 0
+        amount is None
         or not (
             (isinstance(revision, int) and not isinstance(revision, bool) and revision >= 0)
             or (isinstance(revision, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", revision))
@@ -3871,7 +3871,7 @@ def _safe_cost_estimate(value: Any) -> dict[str, Any]:
     safe = {
         "status": "estimated",
         "currency": currency,
-        "amount": round(float(amount), 6),
+        "amount": round(amount, 6),
         "price_card_revision": revision,
         **({"route_id": route_id} if route_id else {}),
         "formula": "input_tokens/1_000_000*input_per_million + output_tokens/1_000_000*output_per_million",

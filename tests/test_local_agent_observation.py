@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import backend.run_store as run_store
+import pytest
 
+import backend.run_store as run_store
 from backend.local_agent_observation import build_local_model_observation
 
 
@@ -177,3 +178,51 @@ def test_local_observation_preserves_synthetic_provenance_without_observed_cache
     assert observation.provenance == "synthetic_demo"
     assert observation.route_evidence == "synthetic"
     assert observation.provider_cache.evidence_state == "synthetic"
+
+
+@pytest.mark.parametrize("amount", [float("nan"), float("inf"), float("-inf"), True, -0.01])
+def test_local_observation_downgrades_invalid_money_to_unavailable(amount: object) -> None:
+    run = {
+        "run_id": "run-safe",
+        "workspace_id": "workspace-safe",
+        "status": "completed",
+        "models": [
+            {
+                "cost_estimate": {
+                    "status": "estimated",
+                    "amount": amount,
+                    "currency": "USD",
+                    "price_card_revision": 7,
+                }
+            }
+        ],
+    }
+
+    cost = build_local_model_observation(run).cost
+
+    assert cost.status == "unavailable"
+    assert cost.amount is None
+
+
+@pytest.mark.parametrize("amount", [0, 0.0123])
+def test_local_observation_preserves_finite_nonnegative_money(amount: float) -> None:
+    run = {
+        "run_id": "run-safe",
+        "workspace_id": "workspace-safe",
+        "status": "completed",
+        "models": [
+            {
+                "cost_estimate": {
+                    "status": "estimated",
+                    "amount": amount,
+                    "currency": "USD",
+                    "price_card_revision": 7,
+                }
+            }
+        ],
+    }
+
+    cost = build_local_model_observation(run).cost
+
+    assert cost.status == "estimated"
+    assert cost.amount == amount

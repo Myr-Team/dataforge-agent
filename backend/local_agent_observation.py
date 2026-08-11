@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .model_references import safe_configured_provider_ref
+from .money_integrity import finite_nonnegative_money_amount
 from .provider_usage import ProviderCacheEvidence
 from .token_integrity import finite_nonnegative_integral_token_count
 
@@ -201,9 +202,10 @@ def _cost_evidence(value: Any) -> LocalCostEvidence:
     status = str(data.get("status") or "unavailable").strip().lower()
     if status not in {"estimated", "partial", "unavailable"}:
         status = "unavailable"
-    amount = data.get("amount")
-    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or amount < 0:
-        amount = None
+    raw_amount = data.get("amount")
+    amount = finite_nonnegative_money_amount(raw_amount)
+    if raw_amount is not None and amount is None:
+        status = "unavailable"
     currency = str(data.get("currency") or "").strip().upper()
     if not re.fullmatch(r"[A-Z]{3}", currency):
         currency = None
@@ -217,7 +219,7 @@ def _cost_evidence(value: Any) -> LocalCostEvidence:
     if status == "unavailable":
         amount = None
     return LocalCostEvidence(
-        amount=float(amount) if amount is not None else None,
+        amount=amount,
         currency=currency,
         status=status,
         price_card_revision=revision_text,
