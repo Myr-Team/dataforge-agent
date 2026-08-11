@@ -172,7 +172,22 @@ function ModelRoutingPageContent({
     }
     const routingKey = settingsResourceKey(settingsScope, "routing");
     const routingSnapshot = routingKey ? peekSettingsResource(routingKey) : null;
-    if (routingSnapshot?.value) setState((current) => ({ ...current, scopeKey: currentScopeKey, loading: false, error: routingSnapshot.lastError ? "更新失败，正在显示上次可用配置。" : "", payload: routingSnapshot.value }));
+    const catalogKey = settingsResourceKey(settingsScope, "pricingCatalog");
+    const mappingKey = settingsResourceKey(settingsScope, "pricingMapping");
+    const catalogSnapshot = catalogKey ? peekSettingsResource(catalogKey) : null;
+    const mappingSnapshot = mappingKey ? peekSettingsResource(mappingKey) : null;
+    if (routingSnapshot?.value || catalogSnapshot?.value || mappingSnapshot?.value) setState((current) => ({
+      ...current,
+      scopeKey: currentScopeKey,
+      loading: false,
+      error: [routingSnapshot, catalogSnapshot, mappingSnapshot].some((snapshot) => snapshot?.lastError) ? "更新失败，正在显示上次可用配置。" : "",
+      payload: routingSnapshot?.value || null,
+      catalog: Array.isArray(catalogSnapshot?.value?.items) ? catalogSnapshot.value.items : [],
+      catalogRevision: String(catalogSnapshot?.value?.revision || ""),
+      mappings: Array.isArray(mappingSnapshot?.value?.items) ? mappingSnapshot.value.items : [],
+      canManagePricing: mappingSnapshot?.value?.can_manage === true,
+      pricingAuthorizationSource: String(mappingSnapshot?.value?.authorization_source || "read_only"),
+    }));
     else setState((current) => ({ ...current, scopeKey: currentScopeKey, loading: true, error: "", payload: null }));
     try {
       const cached = (resource, loader) => {
