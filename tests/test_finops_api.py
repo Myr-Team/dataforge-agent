@@ -593,6 +593,10 @@ def test_finops_assistant_query_is_workspace_bounded_and_evidence_cited(
     assert len(evidence_labels) == 1
     assert "分析运行" in evidence_labels[0]
     assert "req_" not in evidence_labels[0]
+    knowledge_citations = response_payload.pop("knowledge_citations")
+    assert knowledge_citations
+    assert all(item.startswith("内部知识：") for item in knowledge_citations)
+    assert any("成本与计价方法" in item for item in knowledge_citations)
     assert response_payload == {
         "status": "ready",
         "answer": "当前模型范围内只有一条已观测请求，可继续扩大样本后比较。",

@@ -121,6 +121,33 @@ function UnitEconomicsTrend({ items }) {
 }
 
 
+function ForecastValidation({ validation }) {
+  const available = validation.status === "estimated";
+  return (
+    <div className="finops-decision-roi-validation">
+      <div className="finops-decision-roi-validation-summary">
+        <span>验证结论</span>
+        <strong>{available
+          ? (validation.improvementPct !== null && validation.improvementPct > 0 ? "趋势模型优于朴素基线" : "趋势模型仍需继续校准")
+          : "当前样本不足以执行留出回测"}</strong>
+        <p>{validation.boundary}</p>
+      </div>
+      <dl>
+        <div><dt>MSE</dt><dd>{validation.mseLabel}<small>误差平方均值</small></dd></div>
+        <div><dt>RMSE</dt><dd>{validation.rmseLabel}<small>单位成本误差</small></dd></div>
+        <div><dt>R²</dt><dd>{validation.r2Label}<small>验证集解释度</small></dd></div>
+        <div><dt>相对基线</dt><dd>{validation.improvementLabel}<small>误差改善</small></dd></div>
+      </dl>
+      <footer>
+        <span>{validation.sampleCount} 个样本</span>
+        <span>训练 {validation.trainCount} · 验证 {validation.validationCount}</span>
+        <span>{validation.methodRevision || "linear-holdout-v1"}</span>
+      </footer>
+    </div>
+  );
+}
+
+
 export function RoiDecisionPage({
   payload = null,
   loading = false,
@@ -240,9 +267,15 @@ export function RoiDecisionPage({
         </article>
       </section>
 
-      <section className="finops-decision-roi-wide">
-        <header className="finops-decision-roi-panel-head"><div><span>成本、使用与产出的共同变化</span><h2>单位效能趋势</h2></div><small>按周期展示服务端返回的单位效能与证据状态</small></header>
-        <UnitEconomicsTrend items={view.unitEconomicsTrend} />
+      <section className="finops-decision-roi-analysis-grid">
+        <article className="finops-decision-roi-panel">
+          <header className="finops-decision-roi-panel-head"><div><span>预测误差证据</span><h2>趋势回归校验</h2></div><small>MSE 衡量历史回测误差，不等于已实现 ROI</small></header>
+          <ForecastValidation validation={view.forecastValidation} />
+        </article>
+        <article className="finops-decision-roi-panel">
+          <header className="finops-decision-roi-panel-head"><div><span>成本、使用与产出的共同变化</span><h2>单位效能趋势</h2></div><small>按周期展示服务端返回的单位效能与证据状态</small></header>
+          <UnitEconomicsTrend items={view.unitEconomicsTrend} />
+        </article>
       </section>
 
       <section className="finops-decision-roi-capability" aria-label="ROI 能力与口径">

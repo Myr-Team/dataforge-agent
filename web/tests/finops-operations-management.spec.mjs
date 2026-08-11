@@ -107,7 +107,7 @@ test("operations management is immediately discoverable and supports metric dril
   await expect(latestTrend).toBeVisible();
   await latestTrend.hover();
   const trendTooltip = page.locator(".finops-trend-tooltip-content");
-  await expect(trendTooltip).toContainText("4,712,780");
+  await expect(trendTooltip).toContainText("2,051,580");
   await expect(trendTooltip).toContainText("Token");
   await expect(trendTooltip).toContainText("1");
   await expect(page.locator(".finops-viewport-tooltip")).toHaveCount(1);
@@ -239,7 +239,7 @@ for (const viewport of [
     await expect(page.getByText("$0.1706")).toBeVisible();
     await expect(page.getByText("$0.2143")).toBeVisible();
     await expect(page.getByText("$0.1735")).toBeVisible();
-    await expect(page.locator(".finops-decision-roi-wide")).not.toContainText("缺少样本或价格");
+    await expect(page.locator(".finops-decision-roi-analysis-grid")).not.toContainText("缺少样本或价格");
 
     control.delayNextRoiRefreshMs = 250;
     await page.locator(".finops-live").getByRole("button", { name: "刷新运营数据" }).click();
@@ -536,7 +536,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expect(page.locator(".finops-metric")).toHaveCount(4);
   const overviewMetricValues = await page.locator(".finops-metric > strong").allTextContents();
   expect(new Set(overviewMetricValues).size).toBe(4);
-  await expect(page.locator(".finops-trend-column")).toHaveCount(7);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(11);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
   await expect(page.locator(".finops-executive-donut .segment")).toHaveCount(4);
   const donutShares = await page.locator(".finops-executive-donut .segment").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("stroke-dasharray")));
@@ -551,7 +551,7 @@ test("demo completeness fixture fills every visible metric card chart table and 
   await expectDemoSurfaceComplete(page);
   await expect(page.locator(".finops-metric")).toHaveCount(0);
   await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖");
-  await expect(page.locator(".finops-trend-column")).toHaveCount(7);
+  await expect(page.locator(".finops-trend-column")).toHaveCount(11);
   await expectDistinctGeometry(page.locator(".finops-trend-stack"), "height");
   await expect(page.locator(".finops-table")).toHaveCount(2);
   for (const table of await page.locator(".finops-table").all()) {
@@ -565,11 +565,13 @@ test("demo completeness fixture fills every visible metric card chart table and 
   const workspacePanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "专案成本归因" }) });
   await expect(workspacePanel.locator("tbody tr")).toHaveCount(1);
   const agentPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "Agent 成本归因" }) });
-  const modelPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "模型成本归因" }) });
+  const modelPanel = page.locator(".finops-panel").filter({ has: page.getByRole("heading", { name: "模型用量与缓存结构" }) });
   await expect(agentPanel.locator(".finops-bar-row")).toHaveCount(6);
-  await expect(modelPanel.locator(".finops-bar-row")).toHaveCount(4);
+  await expect(modelPanel.locator(".finops-model-usage-row")).toHaveCount(4);
   await expectDistinctGeometry(agentPanel.locator(".finops-bar-row i"), "width");
-  await expectDistinctGeometry(modelPanel.locator(".finops-bar-row i"), "width");
+  await expect(modelPanel.locator(".finops-model-token-track")).toHaveCount(4);
+  await expect(modelPanel).toContainText("deepseek-v4-flash");
+  await expect(modelPanel).toContainText("缓存输入");
   const doughnuts = page.getByRole("img", { name: /成本结构/ });
   await expect(doughnuts).toHaveCount(0);
 
@@ -698,6 +700,8 @@ test("refresh state, risk footer, and cost assistant stay presentation ready", a
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("$493.88");
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("gpt-5.1");
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("不等于云平台实际账单");
+  await expect(assistant.locator(".finops-ai-knowledge-citations").last()).toContainText("内部方法参考");
+  await expect(assistant.locator(".finops-ai-knowledge-citations").last()).toContainText("DataForge 成本与计价方法");
   await assistant.getByRole("button", { name: "关闭运营 AI" }).click();
 
   await page.getByRole("button", { name: "风险与优化" }).last().click();
@@ -788,6 +792,63 @@ test("settings opens the same persisted Agent model configuration", async ({ pag
   await mkdir(outputDir, { recursive: true });
   await page.screenshot({
     path: path.join(outputDir, "settings-service-readiness-desktop.png"),
+    fullPage: true,
+  });
+});
+
+test("settings summary reflects the persisted DeepSeek workspace route", async ({ page }) => {
+  await installFinOpsMockApi(page);
+  await page.route("**/api/workspaces/demo-corpus/governance/model-routing", async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        workspace_id: "demo-corpus",
+        default_route: "analysis",
+        routes: [
+          {
+            id: "analysis",
+            deployment: "gpt-5.1",
+            label: "GPT-5.1",
+            capabilities: ["analysis", "chat"],
+          },
+          {
+            id: "ds_deepseek-primary_deepseek-v4-flash",
+            deployment: "deepseek-v4-flash",
+            model_id: "deepseek-v4-flash",
+            provider_id: "deepseek-primary",
+            provider_type: "deepseek",
+            provider_label: "DeepSeek 原厂",
+            label: "DeepSeek V4 Flash",
+            capabilities: ["analysis", "chat"],
+            selectable: true,
+          },
+        ],
+        policy: {
+          revision: 4,
+          default_route_id: "ds_deepseek-primary_deepseek-v4-flash",
+          assignments: {},
+          agent_assignments: {},
+        },
+        price_card: { state: "configured", revision: 2, currency: "USD" },
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).click();
+  const modelCard = page.locator(".set-cfg").filter({ hasText: "模型与生成" });
+  await expect(modelCard).toContainText("DeepSeek V4 Flash");
+  await expect(modelCard).toContainText("DeepSeek 原厂 · 工作区策略 · v4");
+
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({
+    path: path.join(outputDir, "operations-model-summary-deepseek-desktop.png"),
     fullPage: true,
   });
 });

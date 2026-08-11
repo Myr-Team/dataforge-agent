@@ -5,6 +5,7 @@ import {
   MODEL_AGENT_ROLES,
   MODEL_EXECUTION_KINDS,
   modelRoutingViewModel,
+  modelRoutingSummary,
   officialPricePresentation,
 } from "./modelRoutingViewModel.js";
 
@@ -145,4 +146,33 @@ test("DeepSeek official price presentation shows cache hit, miss and output rate
     { label: "输出", value: "$0.28", unit: "/ 百万 Token" },
   ]);
   assert.equal(price.revision, "deepseek-2026-07-28-v1");
+});
+
+test("model settings summary follows the persisted workspace default route", () => {
+  const summary = modelRoutingSummary({
+    default_route: "azure-default",
+    routes: [
+      { id: "azure-default", deployment: "gpt-5.1", label: "GPT-5.1", capabilities: ["chat"] },
+      {
+        id: "ds_flash",
+        deployment: "deepseek-v4-flash",
+        model_id: "deepseek-v4-flash",
+        provider_type: "deepseek",
+        provider_label: "DeepSeek 原厂",
+        label: "DeepSeek V4 Flash",
+        capabilities: ["chat", "analysis"],
+      },
+    ],
+    policy: {
+      revision: 8,
+      default_route_id: "ds_flash",
+      assignments: { direct_reply: { primary_route_id: "ds_flash" } },
+    },
+  });
+
+  assert.equal(summary.chatModelLabel, "DeepSeek V4 Flash");
+  assert.equal(summary.providerLabel, "DeepSeek 原厂");
+  assert.equal(summary.routeId, "ds_flash");
+  assert.equal(summary.policyRevision, 8);
+  assert.equal(summary.sourceLabel, "工作区策略");
 });

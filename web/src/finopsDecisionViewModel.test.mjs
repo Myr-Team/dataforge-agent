@@ -161,6 +161,52 @@ test("ROI view never labels an estimated scenario as verified", () => {
 });
 
 
+test("ROI regression view exposes error metrics without calling them verified ROI", () => {
+  const view = roiDecisionView({
+    decision: { evidence_state: "estimated" },
+    verified_roi: { status: "not_recorded", value: null },
+    forecast_validation: {
+      status: "estimated",
+      target: "cost_per_successful_request",
+      unit: "USD/次成功调用",
+      sample_count: 10,
+      train_count: 7,
+      validation_count: 3,
+      mse: 0.000004,
+      rmse: 0.002,
+      mae: 0.0016,
+      r2: 0.82,
+      baseline_mse: 0.000016,
+      improvement_pct: 75,
+      method_revision: "linear-holdout-v1",
+    },
+  });
+
+  assert.equal(view.forecastValidation.status, "estimated");
+  assert.equal(view.forecastValidation.mseLabel, "0.000004");
+  assert.equal(view.forecastValidation.rmseLabel, "$0.002");
+  assert.equal(view.forecastValidation.improvementLabel, "75%");
+  assert.match(view.forecastValidation.boundary, /不等于已实现 ROI/);
+  assert.equal(view.verifiedRoiLabel, "证据不足");
+});
+
+
+test("ROI view preserves a non-positive scenario decision instead of calling it valuable", () => {
+  const view = roiDecisionView({
+    decision: {
+      state: "scenario_not_positive",
+      title: "当前测算尚未达到正向回报",
+      summary: "当前情景中的净收益或 ROI 不为正。",
+      evidence_state: "estimated",
+    },
+  });
+
+  assert.equal(view.decision.state, "scenario_not_positive");
+  assert.equal(view.decision.title, "当前测算尚未达到正向回报");
+  assert.equal(view.decision.badge, "情景测算");
+});
+
+
 test("zero is preserved while missing remains unavailable", () => {
   const view = roiDecisionView({
     metrics: [

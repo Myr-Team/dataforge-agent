@@ -12,6 +12,7 @@ const EVIDENCE_STATE_LABELS = Object.freeze({
 const DECISION_STATES = new Set([
   "verified",
   "scenario_positive_unverified",
+  "scenario_not_positive",
   "evidence_incomplete",
   "prioritized",
   "no_current_risk",
@@ -131,6 +132,7 @@ const UNIT_LABELS = Object.freeze({
   "小时/月": "小时/月",
   "月": "月",
   "USD per successful request": "USD / 成功调用",
+  "USD/次成功调用": "USD / 成功调用",
 });
 
 const ROI_METRIC_COPY = Object.freeze({
@@ -590,6 +592,49 @@ function safeTrend(value) {
 }
 
 
+function safeForecastValidation(raw) {
+  const source = isRecord(raw) ? raw : {};
+  const status = boundedText(source.status, 32) === "estimated"
+    ? "estimated"
+    : "insufficient_data";
+  const sampleCount = nonNegativeNumber(source.sample_count) ?? 0;
+  const trainCount = nonNegativeNumber(source.train_count) ?? 0;
+  const validationCount = nonNegativeNumber(source.validation_count) ?? 0;
+  const mse = finiteNumber(source.mse);
+  const rmse = finiteNumber(source.rmse);
+  const mae = finiteNumber(source.mae);
+  const r2 = finiteNumber(source.r2);
+  const baselineMse = finiteNumber(source.baseline_mse);
+  const improvementPct = finiteNumber(source.improvement_pct);
+  const available = status === "estimated" && mse !== null && rmse !== null;
+  return {
+    status: available ? "estimated" : "insufficient_data",
+    badge: available ? "历史回测" : "样本不足",
+    target: boundedText(source.target, 80) === "cost_per_successful_request"
+      ? "每次成功调用估算成本"
+      : "单位成本趋势",
+    unit: boundedText(source.unit, 32),
+    sampleCount,
+    trainCount,
+    validationCount,
+    mse,
+    rmse,
+    mae,
+    r2,
+    baselineMse,
+    improvementPct,
+    mseLabel: mse === null ? "暂不可用" : formatNumber(mse, 9),
+    rmseLabel: rmse === null ? "暂不可用" : formatValue(rmse, "USD", "estimated"),
+    maeLabel: mae === null ? "暂不可用" : formatValue(mae, "USD", "estimated"),
+    r2Label: r2 === null ? "暂不可用" : formatNumber(r2, 3),
+    baselineMseLabel: baselineMse === null ? "暂不可用" : formatNumber(baselineMse, 9),
+    improvementLabel: improvementPct === null ? "暂不可用" : `${formatNumber(improvementPct, 1)}%`,
+    methodRevision: safeRevision(source.method_revision),
+    boundary: "回归误差只衡量历史单位成本趋势的预测一致性，不等于已实现 ROI，也不证明业务因果关系。",
+  };
+}
+
+
 export function roiDecisionView(payload) {
   const source = isRecord(payload) ? payload : {};
   const metrics = safeMetrics(source.metrics);
@@ -601,6 +646,7 @@ export function roiDecisionView(payload) {
     valueBridge: safeBridge(source.value_bridge, metrics),
     evidenceMaturity: safeMaturity(source.evidence_maturity),
     unitEconomicsTrend: safeTrend(source.unit_economics_trend),
+    forecastValidation: safeForecastValidation(source.forecast_validation),
     verifiedRoiValue: verified.value,
     verifiedRoiLabel: verified.label,
     verifiedRoiStatus: verified.status,

@@ -91,6 +91,107 @@ def test_roi_decision_keeps_scenario_separate_from_verified_value() -> None:
     assert result["evidence_maturity"]["stages"][3]["evidence_gap"] == "业务结果尚未独立验证"
 
 
+def test_roi_decision_adds_holdout_regression_error_without_promoting_roi() -> None:
+    trend = [
+        {
+            "bucket_at": f"2026-08-{day:02d}",
+            "cost_per_successful_request": value,
+            "data_status": "available",
+        }
+        for day, value in enumerate(
+            (0.18, 0.175, 0.171, 0.166, 0.162, 0.157, 0.153, 0.149, 0.145, 0.142),
+            start=1,
+        )
+    ]
+    result = build_roi_decision(
+        economics={
+            "funnel": [],
+            "scenarios": [{
+                "scenario_id": "roi_regression_demo",
+                "status": "estimated",
+                "inputs": {"currency": "USD"},
+                "result": {"roi_ratio": 1.5, "formula_revision": "dataforge-roi-v1"},
+            }],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 10}, "cost_evidence": {}},
+        cost_value={"outcome_evidence": {}},
+        unit_trend=trend,
+    )
+
+    validation = result["forecast_validation"]
+    assert validation["status"] == "estimated"
+    assert validation["target"] == "cost_per_successful_request"
+    assert validation["sample_count"] == 10
+    assert validation["train_count"] == 7
+    assert validation["validation_count"] == 3
+    assert validation["mse"] is not None
+    assert validation["baseline_mse"] is not None
+    assert validation["method_revision"] == "linear-holdout-v1"
+    assert "优于朴素基线" in result["decision"]["summary"]
+    assert result["decision"]["evidence_state"] == "estimated"
+    assert result["verified_roi"]["value"] is None
+
+
+def test_roi_regression_reports_insufficient_data_instead_of_inventing_accuracy() -> None:
+    result = build_roi_decision(
+        economics={"funnel": [], "scenarios": [], "verified_roi": {}},
+        roi_snapshot={"usage": {"runs": 2}, "cost_evidence": {}},
+        cost_value={"outcome_evidence": {}},
+        unit_trend=[
+            {"bucket_at": "2026-08-01", "cost_per_successful_request": 0.1, "data_status": "available"},
+            {"bucket_at": "2026-08-02", "cost_per_successful_request": 0.2, "data_status": "available"},
+        ],
+    )
+
+    assert result["forecast_validation"] == {
+        "status": "insufficient_data",
+        "target": "cost_per_successful_request",
+        "unit": "USD/次成功调用",
+        "sample_count": 2,
+        "train_count": 0,
+        "validation_count": 0,
+        "mse": None,
+        "rmse": None,
+        "mae": None,
+        "r2": None,
+        "baseline_mse": None,
+        "improvement_pct": None,
+        "method_revision": "linear-holdout-v1",
+    }
+
+
+def test_roi_decision_does_not_call_a_negative_scenario_investment_worthy() -> None:
+    result = build_roi_decision(
+        economics={
+            "funnel": [],
+            "scenarios": [{
+                "scenario_id": "roi-negative",
+                "status": "estimated",
+                "inputs": {"currency": "USD"},
+                "result": {
+                    "monthly_benefit": 400,
+                    "monthly_total_cost": 800,
+                    "monthly_net_benefit": -400,
+                    "roi_ratio": -0.5,
+                    "formula_revision": "dataforge-roi-v1",
+                },
+            }],
+            "verified_roi": {"status": "not_recorded", "value": None},
+        },
+        roi_snapshot={"usage": {"runs": 0}, "cost_evidence": {}},
+        cost_value={"outcome_evidence": {}},
+        unit_trend=[],
+    )
+
+    assert result["decision"] == {
+        "state": "scenario_not_positive",
+        "title": "当前测算尚未达到正向回报",
+        "summary": "当前情景中的净收益或 ROI 不为正；应先优化投入、提升可验证收益，再重新测算。",
+        "evidence_state": "estimated",
+    }
+
+
 def test_roi_decision_projects_each_stage_to_openable_request_evidence() -> None:
     result = build_roi_decision(
         economics={

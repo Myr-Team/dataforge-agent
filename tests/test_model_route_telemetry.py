@@ -315,6 +315,50 @@ def test_maf_model_response_uses_observed_fallback_route_for_attribution() -> No
     assert payload["cost_estimate"]["status"] == "estimated"
 
 
+def test_maf_deepseek_response_exposes_observed_provider_cache_and_gateway_state(monkeypatch) -> None:
+    monkeypatch.setenv("DF_APIM_GATEWAY_ENABLED", "1")
+    monkeypatch.setenv("DF_PROVIDER_APIM_ENABLED", "1")
+    selected = SelectedTextRoute(
+        route=ModelRoute(
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash",
+            frozenset({"analysis"}),
+            provider_id="provider-deepseek",
+            provider_type="deepseek",
+            model_id="deepseek-v4-flash",
+        ),
+        execution_kind="full_analysis",
+    )
+    event = MafRuntimeEvent(
+        sequence=1,
+        event="maf_agent_completed",
+        status="completed",
+        agent_id="df-feasibility-analyst",
+        input_tokens=1_000,
+        output_tokens=100,
+        total_tokens=1_100,
+        provider_cache_hit_tokens=800,
+        provider_cache_miss_tokens=200,
+    )
+
+    payload = orchestrator._maf_model_response_payload(
+        event,
+        "specialist_handoff",
+        selected_route=selected,
+    )
+
+    assert payload["usage"]["cached_input"] == 800
+    assert payload["provider_cache"] == {
+        "state": "partial_hit",
+        "hit_tokens": 800,
+        "miss_tokens": 200,
+        "hit_rate_pct": 80.0,
+        "evidence_state": "observed",
+    }
+    assert payload["gateway_coverage"] == "apim_governed"
+
+
 def test_maf_gateway_client_uses_selected_analysis_route_header(monkeypatch) -> None:
     created = []
     provider_calls = []

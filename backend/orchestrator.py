@@ -6464,6 +6464,8 @@ def _maf_model_response_payload(
         for key, value in (
             ("input_tokens", event.input_tokens),
             ("output_tokens", event.output_tokens),
+            ("reasoning", event.reasoning_tokens),
+            ("cached_input", event.provider_cache_hit_tokens),
             ("total_tokens", event.total_tokens),
         )
         if value is not None
@@ -6483,9 +6485,39 @@ def _maf_model_response_payload(
         payload["tool_names"] = list(event.tool_names)
     if event.cache_hit is not None:
         payload["cache_hit"] = event.cache_hit
+    payload["gateway_coverage"] = _maf_gateway_coverage(observed_provider_type)
+    if observed_provider_type == "deepseek":
+        hit_tokens = event.provider_cache_hit_tokens
+        miss_tokens = event.provider_cache_miss_tokens
+        if hit_tokens is None or miss_tokens is None:
+            payload["provider_cache"] = {
+                "state": "unavailable",
+                "hit_tokens": hit_tokens,
+                "miss_tokens": miss_tokens,
+                "hit_rate_pct": None,
+                "evidence_state": "unavailable" if hit_tokens is None and miss_tokens is None else "partial",
+            }
+        else:
+            denominator = hit_tokens + miss_tokens
+            payload["provider_cache"] = {
+                "state": "partial_hit" if hit_tokens and miss_tokens else "hit" if hit_tokens else "miss",
+                "hit_tokens": hit_tokens,
+                "miss_tokens": miss_tokens,
+                "hit_rate_pct": round(hit_tokens / denominator * 100, 2) if denominator else None,
+                "evidence_state": "observed",
+            }
     if event.error_category:
         payload["error_category"] = event.error_category
     return payload
+
+
+def _maf_gateway_coverage(provider_type: str) -> str:
+    gateway_enabled = str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    provider_gateway_enabled = str(os.environ.get("DF_PROVIDER_APIM_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    governed = gateway_enabled and (
+        str(provider_type or "") == "azure_foundry" or provider_gateway_enabled
+    )
+    return "apim_governed" if governed else "app_observed"
 
 
 def _maf_live_event_frames(

@@ -36,6 +36,7 @@ class RoiDecision(BaseModel):
     value_bridge: dict[str, Any]
     evidence_maturity: dict[str, Any]
     unit_economics_trend: list[dict[str, Any]]
+    forecast_validation: dict[str, Any]
     verified_roi: dict[str, Any]
     capability_explanation: dict[str, list[str]]
     scenarios: list[dict[str, Any]]

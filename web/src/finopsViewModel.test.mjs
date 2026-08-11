@@ -8,6 +8,7 @@ import {
   FINOPS_TABS,
   finopsBootstrapViewData,
   finopsMetricCards,
+  finopsBreakdownRows,
   finopsRequestViewModel,
   finopsTrendViewModel,
   finopsBudgetView,
@@ -20,6 +21,35 @@ import {
   formatRelativeUpdateTime,
   gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
+
+
+test("model breakdown keeps cached, uncached and output token populations separate", () => {
+  const [row] = finopsBreakdownRows({ items: [{
+    key: "deepseek-v4-flash",
+    requests: 2,
+    tokens: 195,
+    estimated_cost: 0.42,
+    token_composition: {
+      input: 160,
+      cached_input: 70,
+      uncached_input: 90,
+      output: 35,
+      reasoning: null,
+      known_requests: 2,
+      data_status: "available",
+    },
+  }] });
+
+  assert.deepEqual(row.tokenComposition, {
+    input: 160,
+    cachedInput: 70,
+    uncachedInput: 90,
+    output: 35,
+    reasoning: null,
+    knownRequests: 2,
+    status: "available",
+  });
+});
 
 
 test("operations customer labels hide infrastructure product names", () => {
@@ -157,11 +187,26 @@ test("finops trend view model keeps token categories separate", () => {
 
   assert.deepEqual(rows[0].series, {
     input: 80,
+    uncached: 65,
+    unclassifiedInput: null,
     output: 20,
     cached: 15,
     reasoning: null,
   });
   assert.equal(rows[0].status, "partial");
+});
+
+
+test("token trend does not double-count cached input as an extra token pool", () => {
+  const [classified, unclassified] = finopsTrendViewModel({ items: [
+    { bucket: "2026-08-09T00:00:00Z", tokens: { input: 100, cached_input: 70, output: 20, total: 120 } },
+    { bucket: "2026-08-10T00:00:00Z", tokens: { input: 80, cached_input: null, output: 10, total: 90 } },
+  ] });
+
+  assert.equal(classified.series.uncached + classified.series.cached + classified.series.output, classified.total);
+  assert.equal(classified.series.unclassifiedInput, null);
+  assert.equal(unclassified.series.uncached, null);
+  assert.equal(unclassified.series.unclassifiedInput, 80);
 });
 
 
@@ -204,6 +249,23 @@ test("finops chart axis is adaptive and bar proportions remain truthful", () => 
   assert.equal(finopsBarPercent(0, axis.max), 0);
   assert.ok(finopsBarPercent(0.0021, axis.max) < finopsBarPercent(0.0097, axis.max));
   assert.ok(finopsBarPercent(0.0021, axis.max) < 50);
+});
+
+
+test("finops chart uses a close readable ceiling and preserves bucket progress", () => {
+  const axis = niceFinOpsAxis([15, 23], 5);
+  const rows = finopsTrendViewModel({
+    items: [
+      { bucket: "2026-08-09T00:00:00Z", estimated_cost: 15, bucket_status: "complete" },
+      { bucket: "2026-08-10T00:00:00Z", estimated_cost: 0.2, bucket_status: "in_progress" },
+    ],
+  });
+
+  assert.equal(axis.max, 25);
+  assert.deepEqual(axis.ticks, [25, 20, 15, 10, 5, 0]);
+  assert.equal(rows[0].bucketStatus, "complete");
+  assert.equal(rows[1].bucketStatus, "in_progress");
+  assert.equal(rows[1].dateLabel, "08-10");
 });
 
 

@@ -49,28 +49,29 @@ function hasNumber(value) {
 }
 
 export function niceFinOpsAxis(values = [], tickCount = 4) {
-  const count = Math.max(2, Math.floor(Number(tickCount) || 4));
+  const intervalTarget = Math.max(4, Math.min(6, Math.floor(Number(tickCount) || 5)));
   const observedMaximum = (Array.isArray(values) ? values : [])
     .filter((value) => hasNumber(value) && value >= 0)
     .reduce((maximum, value) => Math.max(maximum, value), 0);
   if (observedMaximum <= 0) {
     return {
       max: 1,
-      ticks: Array.from({ length: count }, (_item, index) => (
-        (count - 1 - index) / (count - 1)
+      ticks: Array.from({ length: intervalTarget + 1 }, (_item, index) => (
+        (intervalTarget - index) / intervalTarget
       )),
     };
   }
-  const roughStep = observedMaximum / (count - 1);
+  const roughStep = observedMaximum / intervalTarget;
   const magnitude = 10 ** Math.floor(Math.log10(roughStep));
   const normalized = roughStep / magnitude;
   const niceFactor = [1, 2, 2.5, 5, 10].find((candidate) => candidate >= normalized) || 10;
   const step = niceFactor * magnitude;
-  const max = step * (count - 1);
+  const intervals = Math.max(1, Math.ceil((observedMaximum / step) - 1e-12));
+  const max = step * intervals;
   return {
     max,
-    ticks: Array.from({ length: count }, (_item, index) => (
-      step * (count - 1 - index)
+    ticks: Array.from({ length: intervals + 1 }, (_item, index) => (
+      Number((step * (intervals - index)).toPrecision(12))
     )),
   };
 }
@@ -358,12 +359,20 @@ export function finopsTrendViewModel(payload = {}) {
   return (Array.isArray(payload?.items) ? payload.items : []).map((item) => ({
     bucket: item.bucket,
     label: String(item.bucket || "").replace("T00:00:00Z", "").replace("T", " ").replace(":00:00Z", ":00"),
+    dateLabel: String(item.bucket || "").slice(5, 10),
+    bucketStatus: item.bucket_status === "in_progress" ? "in_progress" : "complete",
     requests: hasNumber(item.requests) ? item.requests : 0,
     cost: item.estimated_cost,
     p95: item.p95_latency_ms,
     total: item?.tokens?.total,
     series: {
       input: item?.tokens?.input ?? null,
+      uncached: hasNumber(item?.tokens?.input) && hasNumber(item?.tokens?.cached_input)
+        ? Math.max(0, item.tokens.input - item.tokens.cached_input)
+        : null,
+      unclassifiedInput: hasNumber(item?.tokens?.input) && !hasNumber(item?.tokens?.cached_input)
+        ? item.tokens.input
+        : null,
       output: item?.tokens?.output ?? null,
       cached: item?.tokens?.cached_input ?? null,
       reasoning: item?.tokens?.reasoning ?? null,
@@ -642,6 +651,15 @@ export function finopsBreakdownRows(payload = {}) {
       avoidedTokens: item?.cache?.avoided_tokens ?? null,
       estimatedSavings: item?.cache?.estimated_savings ?? null,
       status: item?.cache?.data_status || "unavailable",
+    },
+    tokenComposition: {
+      input: item?.token_composition?.input ?? null,
+      cachedInput: item?.token_composition?.cached_input ?? null,
+      uncachedInput: item?.token_composition?.uncached_input ?? null,
+      output: item?.token_composition?.output ?? null,
+      reasoning: item?.token_composition?.reasoning ?? null,
+      knownRequests: item?.token_composition?.known_requests ?? 0,
+      status: item?.token_composition?.data_status || "unavailable",
     },
     status: item.data_status || "unavailable",
   }));

@@ -3,8 +3,8 @@ const NOW = new Date().toISOString();
 export const bootstrapPayload = {
   scope: { workspace_ids: ["demo-corpus"], workspace_count: 1 },
   window: {
-    from: "2026-07-09T00:00:00Z",
-    to: "2026-08-07T23:59:59Z",
+    from: "2026-07-12T00:00:00Z",
+    to: "2026-08-11T23:59:59Z",
     timezone: "UTC",
   },
   freshness: {
@@ -43,7 +43,7 @@ export const bootstrapPayload = {
         state: "reconciliation_pending",
         gateway_unmatched: {
           scope: "unattributed",
-          window: { from: "2026-07-09T00:00:00Z", to: "2026-08-07T23:59:59Z" },
+          window: { from: "2026-07-12T00:00:00Z", to: "2026-08-11T23:59:59Z" },
           linked_requests: 2214,
           unmatched_gateway_errors: {
             total: 11,
@@ -176,6 +176,10 @@ export const bootstrapPayload = {
       { bucket: "2026-08-05T00:00:00Z", requests: 68, tokens: { input: 3771868, output: 664943, cached_input: 442463, reasoning: 89417, total: 4526228 }, estimated_cost: 11.26, p95_latency_ms: 3360, cache: { eligible_requests: 55, hit: 11, miss: 44, bypassed: 10, unavailable: 3, avoided_tokens: 442463, estimated_savings: 1.16, data_status: "partial" }, data_status: "partial" },
       { bucket: "2026-08-06T00:00:00Z", requests: 80, tokens: { input: 4607940, output: 780624, cached_input: 475138, reasoning: 102908, total: 5491472 }, estimated_cost: 16.66, p95_latency_ms: 3650, cache: { eligible_requests: 63, hit: 12, miss: 51, bypassed: 13, unavailable: 4, avoided_tokens: 475138, estimated_savings: 1.34, data_status: "partial" }, data_status: "partial" },
       { bucket: "2026-08-07T00:00:00Z", requests: 86, tokens: { input: 3974310, output: 639000, cached_input: 386847, reasoning: 98550, total: 4712780 }, estimated_cost: 14.4, p95_latency_ms: 4120, cache: { eligible_requests: 70, hit: 10, miss: 60, bypassed: 9, unavailable: 7, avoided_tokens: 386847, estimated_savings: 1.08, data_status: "partial" }, data_status: "partial" },
+      { bucket: "2026-08-08T00:00:00Z", requests: 89, tokens: { input: 5228040, output: 901300, cached_input: 708240, reasoning: 120800, total: 6250140 }, estimated_cost: 20.14, p95_latency_ms: 3820, cache: { eligible_requests: 72, hit: 17, miss: 55, bypassed: 12, unavailable: 5, avoided_tokens: 708240, estimated_savings: 1.92, data_status: "available" }, data_status: "available" },
+      { bucket: "2026-08-09T00:00:00Z", requests: 77, tokens: { input: 4312030, output: 748900, cached_input: 603670, reasoning: 98800, total: 5159730 }, estimated_cost: 16.87, p95_latency_ms: 3410, cache: { eligible_requests: 63, hit: 15, miss: 48, bypassed: 10, unavailable: 4, avoided_tokens: 603670, estimated_savings: 1.66, data_status: "available" }, data_status: "available" },
+      { bucket: "2026-08-10T00:00:00Z", requests: 94, tokens: { input: 5564010, output: 944880, cached_input: 801220, reasoning: 133700, total: 6642590 }, estimated_cost: 21.76, p95_latency_ms: 3650, cache: { eligible_requests: 78, hit: 20, miss: 58, bypassed: 11, unavailable: 5, avoided_tokens: 801220, estimated_savings: 2.21, data_status: "available" }, data_status: "available" },
+      { bucket: "2026-08-11T00:00:00Z", bucket_status: "in_progress", requests: 31, tokens: { input: 1719060, output: 289420, cached_input: 312400, reasoning: 43100, total: 2051580 }, estimated_cost: 6.42, p95_latency_ms: 3290, cache: { eligible_requests: 25, hit: 8, miss: 17, bypassed: 4, unavailable: 2, avoided_tokens: 312400, estimated_savings: 0.88, data_status: "partial" }, data_status: "partial" },
     ],
   },
   departments: {
@@ -271,7 +275,7 @@ export const bootstrapPayload = {
     departments: ["Operations", "AI Platform", "Delivery", "Finance"],
     workspaces: ["Commerce Insights", "Finance Forecast", "IT Governance"],
     agents: ["分析协调 Agent", "财务洞察 Agent", "风险审阅 Agent"],
-    models: ["gpt-5.6-terra", "gpt-5.1", "deepseek-chat"],
+    models: ["gpt-5.6-terra", "gpt-5.1", "deepseek-v4-flash"],
   },
 };
 
@@ -421,6 +425,21 @@ const roiDecisionPayload = {
     { id: "cost-per-call", period: "8月6日", label: "每次成功调用成本", value: 0.2143, unit: "USD", status: "estimated" },
     { id: "cost-per-call", period: "8月7日", label: "每次成功调用成本", value: 0.1735, unit: "USD", status: "estimated" },
   ],
+  forecast_validation: {
+    status: "estimated",
+    target: "cost_per_successful_request",
+    unit: "USD/次成功调用",
+    sample_count: 10,
+    train_count: 7,
+    validation_count: 3,
+    mse: 0.000004,
+    rmse: 0.002,
+    mae: 0.0016,
+    r2: 0.82,
+    baseline_mse: 0.000016,
+    improvement_pct: 75,
+    method_revision: "linear-holdout-v1",
+  },
   verified_roi: { status: "not_recorded", value: null, currency: "USD" },
   capability_explanation: {
     platform_confirmed: ["调用、Token 与模型成本", "成功率、时延与缓存节省", "运行、分析与产物关联"],
@@ -1560,10 +1579,10 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
           { key: "Checkout Copilot", requests: 400, tokens: 27190057, estimated_cost: 79.5, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 3560, cache_hit_rate_pct: 18.7, data_status: "available" },
         ],
         models: [
-          { key: "gpt-5.1", requests: 611, tokens: 42284821, estimated_cost: 272.2, error_rate_pct: 3.4, success_rate_pct: 96.6, p95_latency_ms: 3580, cache_hit_rate_pct: 18.5, data_status: "estimated" },
-          { key: "gpt-5.6-terra", requests: 590, tokens: 40696870, estimated_cost: 109.7, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 3710, cache_hit_rate_pct: 18.8, data_status: "estimated" },
-          { key: "deepseek-chat", requests: 599, tokens: 41343442, estimated_cost: 72.01, error_rate_pct: 3.7, success_rate_pct: 96.3, p95_latency_ms: 3460, cache_hit_rate_pct: 18.6, data_status: "estimated" },
-          { key: "gpt-4.1-mini", requests: 604, tokens: 41338873, estimated_cost: 39.97, error_rate_pct: 3.5, success_rate_pct: 96.5, p95_latency_ms: 3370, cache_hit_rate_pct: 18.7, data_status: "estimated" },
+          { key: "gpt-5.1", requests: 611, tokens: 42284821, estimated_cost: 272.2, error_rate_pct: 3.4, success_rate_pct: 96.6, p95_latency_ms: 3580, cache_hit_rate_pct: 18.5, token_composition: { input: 35000140, cached_input: 6814020, uncached_input: 28186120, output: 6114681, reasoning: 1170000, known_requests: 611, data_status: "available" }, data_status: "estimated" },
+          { key: "gpt-5.6-terra", requests: 590, tokens: 40696870, estimated_cost: 109.7, error_rate_pct: 3.6, success_rate_pct: 96.4, p95_latency_ms: 3710, cache_hit_rate_pct: 18.8, token_composition: { input: 33192800, cached_input: 7202600, uncached_input: 25990200, output: 6324070, reasoning: 1180000, known_requests: 590, data_status: "available" }, data_status: "estimated" },
+          { key: "deepseek-v4-flash", requests: 599, tokens: 41343442, estimated_cost: 72.01, error_rate_pct: 3.7, success_rate_pct: 96.3, p95_latency_ms: 3460, cache_hit_rate_pct: 18.6, token_composition: { input: 34601042, cached_input: 10242881, uncached_input: 24358161, output: 6742400, reasoning: null, known_requests: 599, data_status: "available" }, data_status: "estimated" },
+          { key: "gpt-4.1-mini", requests: 604, tokens: 41338873, estimated_cost: 39.97, error_rate_pct: 3.5, success_rate_pct: 96.5, p95_latency_ms: 3370, cache_hit_rate_pct: 18.7, token_composition: { input: 34900873, cached_input: 5984400, uncached_input: 28916473, output: 6438000, reasoning: null, known_requests: 604, data_status: "partial" }, data_status: "estimated" },
         ],
       };
     } else if (path === "/api/finops/budgets") {
@@ -1847,6 +1866,11 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         evidence_state: assistantReady ? "observed" : "unavailable",
         evidence_refs: assistantEvidenceRefs,
         evidence_labels: assistantEvidenceRefs.map((_, index) => `${metricLabel}证据 ${index + 1}`),
+        knowledge_citations: assistantReady
+          ? [isCostQuestion
+            ? "内部知识：DataForge 成本与计价方法 / 请求级估算成本"
+            : "内部知识：DataForge 风险判定与证据手册 / 风险规则与代表证据"]
+          : [],
         suggested_questions: assistantReady
           ? (isCostQuestion ? ["价目覆盖率如何影响成本可信度？", "哪些模型最适合优先优化？"] : ["与上一周期相比如何？"])
           : [],

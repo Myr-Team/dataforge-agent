@@ -25,6 +25,7 @@ import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
 import { memberBudgetHomeSummaryViewModel } from "./memberBudgetViewModel.js";
 import { EnterpriseIdentityPolicyModal } from "./EnterpriseIdentityPolicyModal.jsx";
 import { prettyTraceJson, traceExplorerRows } from "./runTraceExplorer.js";
+import { modelRoutingSummary } from "./modelRoutingViewModel.js";
 const DataWorkbench = lazy(() => import("./DataWorkbench.jsx").then((m) => ({ default: m.DataWorkbench })));
 const FinOpsPortal = lazy(() => import("./FinOpsPortal.jsx").then((m) => ({ default: m.FinOpsPortal })));
 import {
@@ -90,7 +91,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts, loadEnterpriseIdentityPolicy, updateEnterpriseIdentityPolicy } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadWorkspaceModelRouting, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts, loadEnterpriseIdentityPolicy, updateEnterpriseIdentityPolicy } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -2994,6 +2995,25 @@ function RunsCenter({ dashboard, trace, running, observability, onOpenConversati
                   <div><dt>时间</dt><dd>{selectedTrace.time ? formatTime(selectedTrace.time) : "未记录"}</dd></div>
                   <div><dt>来源</dt><dd>{selectedTrace.source}</dd></div>
                 </dl>
+                {selectedTrace.event === "model_response" ? (
+                  <section className="trace-model-evidence" aria-label="模型与缓存证据">
+                    <div className="trace-model-evidence-model">
+                      <span>实际模型</span>
+                      <b>{selectedTrace.modelLabel}</b>
+                      <small>{selectedTrace.cacheEvidence.gateway.label}</small>
+                    </div>
+                    <div>
+                      <span>结果缓存</span>
+                      <b>{selectedTrace.cacheEvidence.result.label}</b>
+                      <small>{selectedTrace.cacheEvidence.result.detail}</small>
+                    </div>
+                    <div>
+                      <span>模型侧 Token 缓存</span>
+                      <b>{selectedTrace.cacheEvidence.provider.label}</b>
+                      <small>{selectedTrace.cacheEvidence.provider.detail}</small>
+                    </div>
+                  </section>
+                ) : null}
                 <section className="trace-json-panel">
                   <div><b>事件 JSON</b><span>敏感字段已脱敏 · 可上下滚动</span></div>
                   <pre>{prettyTraceJson(selectedTrace.payload)}</pre>
@@ -3309,6 +3329,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const memberRequestVersion = useRef(0);
   const invitationRequestVersion = useRef(0);
   const [workspaceSettings, setWorkspaceSettings] = useState(null);
+  const [workspaceRouting, setWorkspaceRouting] = useState(null);
   const [settingsDrawer, setSettingsDrawer] = useState(null);
   const [settingsPage, setSettingsPage] = useState("home");
   const [memberBudgetHome, setMemberBudgetHome] = useState({
@@ -3549,6 +3570,29 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       .catch(() => { if (!cancelled) setWorkspaceSettings(null); });
     return () => { cancelled = true; };
   }, [workspaceId]);
+  const refreshWorkspaceRouting = () => {
+    if (!workspaceId) return Promise.resolve(null);
+    return loadWorkspaceModelRouting(workspaceId)
+      .then((payload) => {
+        setWorkspaceRouting(payload || null);
+        return payload;
+      })
+      .catch(() => {
+        setWorkspaceRouting(null);
+        return null;
+      });
+  };
+  useEffect(() => {
+    let cancelled = false;
+    if (!workspaceId) {
+      setWorkspaceRouting(null);
+      return undefined;
+    }
+    loadWorkspaceModelRouting(workspaceId)
+      .then((payload) => { if (!cancelled) setWorkspaceRouting(payload || null); })
+      .catch(() => { if (!cancelled) setWorkspaceRouting(null); });
+    return () => { cancelled = true; };
+  }, [workspaceId]);
   useEffect(() => {
     if (!governanceOnly) {
       governanceGuard.current.begin("");
@@ -3590,6 +3634,11 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const systemStatus = sys || {};
   const deps = systemStatus.dependencies || health.dependencies || {};
   const models = systemStatus.models || observability?.models || {};
+  const routingSummary = modelRoutingSummary(workspaceRouting || {});
+  const displayedChatModel = workspaceRouting ? routingSummary.chatModelLabel : (models.chat || "未记录");
+  const displayedModelSource = workspaceRouting
+    ? `${routingSummary.providerLabel} · ${routingSummary.sourceLabel} · v${routingSummary.policyRevision}`
+    : "服务端运行状态";
   const storage = workspaceSettings?.storage || {};
   const usedBytes = Number(storage.used_bytes || 0);
   const totalBytes = Number(storage.total_bytes || 0);
@@ -3875,7 +3924,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       </div>
 
       <div className="set-cfgs">
-        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", models.chat || "未记录"], ["概念图模型", models.image || "未记录"], ["向量模型（RAG）", models.embedding || "未记录"], ["检索增强", ragLabel], ["默认生成音频摘要", "已禁用"]], "控制模型选择、检索增强与生成输出行为。", "models")}
+        {cfgCard(<Sparkles size={16} />, "模型与生成", [["对话 / 推理模型", displayedChatModel], ["模型来源", displayedModelSource], ["概念图模型", models.image || "未记录"], ["向量模型（RAG）", models.embedding || "未记录"], ["检索增强", ragLabel]], "控制模型选择、检索增强与生成输出行为。", "models")}
         {cfgCard(<ShieldCheck size={16} />, "数据与合规", [["内容安全（RAI）", contentSafetyLabel], ["身份认证", "Microsoft Entra ID · Easy Auth"], ["数据驻留", "Azure · East US 2"], ["分布式追踪", tracingLabel], ["审计日志保留", "180 天"]], "保障数据安全、合规与可观测性。", "compliance")}
         {cfgCard(<Cpu size={16} />, "工作区偏好", [["界面语言", "简体中文"], ["主题", "浅色（深色即将支持）"], ["时区", "跟随系统"], ["数据持久化", "Azure Blob（工作区/会话/产物）"], ["默认时区显示", "跟随系统"]], "自定义界面语言、主题、时区与数据持久化偏好。", "preferences")}
       </div>
@@ -4113,7 +4162,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
         wide={["models", "identity"].includes(settingsDrawer)}
       >
         {["models", "identity"].includes(settingsDrawer)
-          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsDrawer === "identity" ? "identity" : "agents"} />
+          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsDrawer === "identity" ? "identity" : "agents"} onSettingsChanged={refreshWorkspaceRouting} />
           : (
             <div className="settings-info-drawer">
               {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}

@@ -65,12 +65,18 @@ export function executiveCostSummary(overview = {}) {
   const pricing = overview?.trust?.pricing || {};
   const coverage = finiteNumber(pricing.coverage_pct);
   const unpriced = finiteNumber(cost.unpriced_requests ?? pricing.unpriced_requests);
+  const priced = finiteNumber(cost.priced_requests ?? pricing.priced_requests);
+  const totalRequests = priced === null || unpriced === null ? null : priced + unpriced;
   const coverageLabel = coverage === null
     ? "计价覆盖待补齐"
     : `计价覆盖 ${formatFinOpsPercent(coverage)}`;
   return {
     value: formatFinOpsCost(finiteNumber(cost.amount), cost.status),
     meta: `${coverageLabel}${unpriced ? ` · ${formatFinOpsNumber(unpriced, "0")} 次未计价` : ""}`,
+    coverageLabel: coverage === null ? "待补齐" : formatFinOpsPercent(coverage),
+    pricedLabel: formatFinOpsNumber(priced, "未记录"),
+    unpricedLabel: formatFinOpsNumber(unpriced, "未记录"),
+    totalRequestsLabel: formatFinOpsNumber(totalRequests, "未记录"),
     status: evidenceState(cost.status),
   };
 }

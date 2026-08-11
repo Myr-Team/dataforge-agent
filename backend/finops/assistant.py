@@ -60,7 +60,9 @@ class AssistantMetricContext(BaseModel):
     dimension_value: str | None = Field(default=None, max_length=160)
     window: AssistantWindow
     filters: AssistantFilters
-    data_status: str = Field(pattern=r"^(complete|partial|unavailable|insufficient_data)$")
+    data_status: str = Field(
+        pattern=r"^(complete|available|observed|estimated|partial|unavailable|insufficient_data)$"
+    )
     evidence_state: EvidenceState
     cache_state: Literal["hit", "miss", "bypassed", "unavailable"] | None = None
     policy_type: AssistantPolicyType | None = None
@@ -174,6 +176,7 @@ class AssistantResponse(BaseModel):
     answer: str
     evidence_refs: list[str] = Field(default_factory=list)
     evidence_labels: list[str] = Field(default_factory=list)
+    knowledge_citations: list[str] = Field(default_factory=list, max_length=4)
     evidence_state: EvidenceState
     suggested_questions: list[str] = Field(default_factory=list)
     sections: AssistantAnswerSections | None = None
@@ -216,11 +219,18 @@ class FinOpsAssistantService:
                 evidence_state="unavailable",
                 suggested_questions=[],
             )
+        knowledge_entries = retrieve_finops_knowledge(
+            metric_id=request.metric_context.metric_id,
+            policy_type=request.metric_context.policy_type,
+            question=request.question,
+        )
+        knowledge_citations = _knowledge_citations(knowledge_entries)
         if request.mode == "quick" and not _quick_model_enabled():
             return _grounded_quick_response(
                 request=request,
                 allowed_refs=allowed_refs,
                 evidence_labels=evidence_labels,
+                knowledge_citations=knowledge_citations,
             )
         metric_context = request.metric_context.model_dump(
             mode="json",
@@ -228,11 +238,6 @@ class FinOpsAssistantService:
             exclude_none=True,
         )
         metric_context["evidence_refs"] = sorted(allowed_refs)
-        knowledge_entries = retrieve_finops_knowledge(
-            metric_id=request.metric_context.metric_id,
-            policy_type=request.metric_context.policy_type,
-            question=request.question,
-        )
         payload = {
             "task": (
                 "根据所选运营指标回答用户问题，必须分别输出 conclusion、basis、impact、"
@@ -314,6 +319,7 @@ class FinOpsAssistantService:
                 answer=sections.conclusion,
                 evidence_refs=output.evidence_refs,
                 evidence_labels=public_labels,
+                knowledge_citations=knowledge_citations,
                 evidence_state=request.metric_context.evidence_state,
                 suggested_questions=suggested_questions,
                 sections=sections,
@@ -326,6 +332,7 @@ class FinOpsAssistantService:
                     request=request,
                     allowed_refs=allowed_refs,
                     evidence_labels=evidence_labels,
+                    knowledge_citations=knowledge_citations,
                 )
             return _unavailable_response()
 
@@ -354,6 +361,7 @@ def _grounded_quick_response(
     request: AssistantRequest,
     allowed_refs: set[str],
     evidence_labels: Mapping[str, str],
+    knowledge_citations: list[str] | None = None,
 ) -> AssistantResponse:
     context = request.metric_context
     refs = sorted(allowed_refs)[:3]
@@ -412,6 +420,7 @@ def _grounded_quick_response(
         answer=sections.conclusion,
         evidence_refs=refs,
         evidence_labels=public_labels,
+        knowledge_citations=list(knowledge_citations or [])[:4],
         evidence_state=context.evidence_state,
         suggested_questions=[
             f"{context.label}与上一周期相比发生了什么变化？",
@@ -419,6 +428,17 @@ def _grounded_quick_response(
         ],
         sections=sections,
     )
+
+
+def _knowledge_citations(entries: list[dict[str, str]]) -> list[str]:
+    citations: list[str] = []
+    for item in entries:
+        citation = " ".join(str(item.get("citation") or "").split())[:240]
+        if citation.startswith("内部知识：") and citation not in citations:
+            citations.append(citation)
+        if len(citations) >= 4:
+            break
+    return citations
 
 
 def _evidence_labels(

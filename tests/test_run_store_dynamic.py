@@ -94,3 +94,49 @@ def test_record_event_persists_only_safe_cache_metering(tmp_path, monkeypatch) -
         },
     }
     assert "key_sample" not in result["steps"][0]["data"]["cache"]
+
+
+def test_model_record_preserves_route_provider_and_both_cache_layers(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+
+    run_store.start_run("deepseek-cache-run", "ws-a", "Analyze", {})
+    run_store.record_event(
+        "deepseek-cache-run",
+        "model_response",
+        {
+            "agent": "df-feasibility-analyst",
+            "route": "ds_flash",
+            "deployment": "deepseek-v4-flash",
+            "model_id": "deepseek-v4-flash",
+            "provider_type": "deepseek",
+            "provider_id": "provider-safe",
+            "gateway_coverage": "apim_governed",
+            "usage": {"input_tokens": 1000, "output_tokens": 20, "total_tokens": 1020},
+            "result_cache": {
+                "state": "miss",
+                "provider": "redis",
+                "eligible": True,
+                "reason": "eligible",
+                "policy_revision": 6,
+            },
+            "provider_cache": {
+                "state": "partial_hit",
+                "hit_tokens": 800,
+                "miss_tokens": 200,
+                "hit_rate_pct": 80,
+                "evidence_state": "observed",
+            },
+        },
+    )
+
+    result = run_store.complete_run("deepseek-cache-run")
+    model = result["models"][0]
+    assert model["provider_type"] == "deepseek"
+    assert model["provider_id"] == "provider-safe"
+    assert model["model_id"] == "deepseek-v4-flash"
+    assert model["gateway_coverage"] == "apim_governed"
+    assert model["result_cache"]["state"] == "miss"
+    assert model["provider_cache"]["hit_tokens"] == 800

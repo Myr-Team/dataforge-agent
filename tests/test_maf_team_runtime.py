@@ -785,6 +785,8 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
                 "input_token_count": 21,
                 "output_token_count": 8,
                 "total_token_count": 29,
+                "prompt_cache_hit_tokens": 16,
+                "prompt_cache_miss_tokens": 5,
             },
             "additional_properties": {
                 "retry_count": 2,
@@ -824,6 +826,8 @@ async def test_completed_agent_event_carries_only_bounded_safe_telemetry(fake_re
     assert completed.input_tokens == 21
     assert completed.output_tokens == 8
     assert completed.total_tokens == 29
+    assert completed.provider_cache_hit_tokens == 16
+    assert completed.provider_cache_miss_tokens == 5
     assert completed.retry_count == 2
     assert completed.tool_names[:2] == ("search_pack_context", "render_pdf_report")
     assert len(completed.tool_names) == 12
