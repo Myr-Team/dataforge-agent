@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import math
+
+import pytest
+
 from backend.finops.normalization import (
     canonical_actor_ref,
     canonical_tenant_ref,
     normalize_run_event,
 )
+from backend.provider_usage import normalize_deepseek_usage
 
 
 def test_canonical_tenant_ref_normalizes_raw_entra_tenant_case_and_whitespace() -> None:
@@ -129,3 +134,62 @@ def test_reasoning_is_an_output_detail_not_an_extra_total_category() -> None:
 
     assert usage.total == 140
     assert usage.reasoning == 12
+
+
+@pytest.mark.parametrize("invalid", [12.9, math.nan, math.inf, True, -1, -0.5, "12"])
+def test_finops_normalization_keeps_invalid_token_values_unavailable(invalid: object) -> None:
+    event = normalize_run_event(
+        {
+            "run_id": "run-safe",
+            "workspace_id": "workspace-safe",
+            "status": "completed",
+            "started_at": "2026-07-28T01:00:00Z",
+            "models": [
+                {
+                    "usage": {
+                        "prompt": invalid,
+                        "completion": invalid,
+                        "cached_input": invalid,
+                        "reasoning": invalid,
+                        "total": invalid,
+                    },
+                    "provider_cache": {"hit_tokens": invalid, "miss_tokens": invalid},
+                }
+            ],
+        },
+        model_index=0,
+        tenant_id="tenant-safe",
+        hmac_secret="secret-safe",
+    )
+
+    assert event.tokens.model_dump() == {
+        "input": None,
+        "output": None,
+        "reasoning": None,
+        "cached_input": None,
+        "total": None,
+    }
+    assert event.provider_cache.hit_tokens is None
+    assert event.provider_cache.miss_tokens is None
+
+
+def test_deepseek_usage_uses_the_shared_integral_token_contract() -> None:
+    usage = normalize_deepseek_usage(
+        {
+            "prompt_tokens": 12.0,
+            "completion_tokens": 1.5,
+            "total_tokens": math.inf,
+            "prompt_cache_hit_tokens": True,
+            "prompt_cache_miss_tokens": -1,
+            "completion_tokens_details": {"reasoning_tokens": "7"},
+        }
+    )
+
+    assert usage.model_dump() == {
+        "input_tokens": 12,
+        "output_tokens": None,
+        "reasoning_tokens": None,
+        "provider_cache_hit_tokens": None,
+        "provider_cache_miss_tokens": None,
+        "total_tokens": None,
+    }

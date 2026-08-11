@@ -652,3 +652,25 @@ def test_foundry_and_deepseek_malformed_usage_is_unavailable_without_truncation(
         "cached_input_tokens": None,
         "total_tokens": None,
     }
+
+
+def test_orchestration_model_projection_preserves_route_evidence_to_run_store(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    meta = orchestrator._model_meta(
+        {
+            "response_id": "resp-routed",
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            "route": "fallback",
+            "route_evidence": "observed",
+        }
+    )
+    run_store.start_run("run-routed-meta", "workspace-safe", "route test")
+    run_store.record_event("run-routed-meta", "model_response", meta)
+    run_store.complete_run("run-routed-meta", final={"text": "done"}, artifact={})
+
+    assert run_store.get_run("run-routed-meta")["models"][0]["route_evidence"] == "observed"

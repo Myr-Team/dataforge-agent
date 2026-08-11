@@ -90,6 +90,26 @@ def test_sanitized_runner_fixture_never_emits_verified_roi() -> None:
             assert case[side]["net_verified_value"] is None
 
 
+def test_runner_rejects_verified_roi_evidence_in_external_sanitized_cases() -> None:
+    dataset = _dataset()
+    case = next(
+        item
+        for item in dataset["cases"]
+        if item["case_id"] == "unit-economics-scenario-comparability-001"
+    )
+    for side in ("baseline", "candidate"):
+        case[side]["verified_outcomes"] = 1
+        case[side]["outcome_evidence_status"] = "verified"
+        case[side]["monetized_benefit"]["status"] = "verified"
+    _refresh_digest(dataset)
+
+    with pytest.raises(
+        runner.DatasetValidationError,
+        match="sanitized fixtures cannot contain verified ROI evidence",
+    ):
+        _evaluate(dataset)
+
+
 def test_cli_passes_without_network_and_writes_same_stable_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

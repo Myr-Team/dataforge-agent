@@ -1941,6 +1941,7 @@ def _model_meta(result: dict[str, Any]) -> dict[str, Any]:
         "provider_type",
         "provider_id",
         "model_id",
+        "route_evidence",
         "provider_cache",
         "cost_estimate",
     ):

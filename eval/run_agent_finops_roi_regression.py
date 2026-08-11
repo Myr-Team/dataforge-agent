@@ -175,8 +175,14 @@ def validate_dataset(
         _text(case.get("capability"), f"cases[{index}].capability")
         _text(case.get("input_ref"), f"cases[{index}].input_ref")
         _mapping(case.get("expected"), f"cases[{index}].expected")
-        _mapping(case.get("baseline"), f"cases[{index}].baseline")
-        _mapping(case.get("candidate"), f"cases[{index}].candidate")
+        for side in ("baseline", "candidate"):
+            source = _mapping(case.get(side), f"cases[{index}].{side}")
+            if task_type != "unit_economics":
+                continue
+            benefit = source.get("monetized_benefit")
+            benefit_status = benefit.get("status") if isinstance(benefit, Mapping) else None
+            if source.get("outcome_evidence_status") == "verified" or benefit_status == "verified":
+                raise DatasetValidationError("sanitized fixtures cannot contain verified ROI evidence")
 
     computed_digest = compute_dataset_digest(dataset)
     compared_digests = {
