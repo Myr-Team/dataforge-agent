@@ -716,12 +716,12 @@ export async function loadSystemStatus() {
   return request("/api/system-status");
 }
 
-export async function loadWorkspaceSettings(workspaceId) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`);
+export async function loadWorkspaceSettings(workspaceId, options = {}) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/settings`, options);
 }
 
-export async function loadWorkspaceMembers(workspaceId) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`);
+export async function loadWorkspaceMembers(workspaceId, options = {}) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/members`, options);
 }
 
 export async function searchWorkspaceEntraUsers(workspaceId, query, limit = 8) {
@@ -793,8 +793,8 @@ export async function updateEnterpriseIdentityPolicy(workspaceId, trustedEmailDo
   });
 }
 
-export async function loadModelProviders() {
-  return request("/api/model-providers");
+export async function loadModelProviders(options = {}) {
+  return request("/api/model-providers", options);
 }
 
 export async function createModelProvider(payload) {
@@ -856,8 +856,8 @@ export async function disableModelProvider(providerId, baseRevision) {
   });
 }
 
-export async function loadIdentityGovernance() {
-  return request("/api/identity-governance");
+export async function loadIdentityGovernance(options = {}) {
+  return request("/api/identity-governance", options);
 }
 
 export async function searchIdentityGovernanceGroups(query, limit = 8) {
@@ -889,8 +889,8 @@ export async function disableIdentityGroupMapping(mappingId, baseRevision) {
   });
 }
 
-export async function loadWorkspaceModelRouting(workspaceId) {
-  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`);
+export async function loadWorkspaceModelRouting(workspaceId, options = {}) {
+  return request(`/api/workspaces/${encodeURIComponent(workspaceId)}/governance/model-routing`, options);
 }
 
 export async function updateWorkspaceModelRouting(workspaceId, policy) {
@@ -911,12 +911,12 @@ export async function updateWorkspaceModelPriceCard(workspaceId, priceCard) {
   });
 }
 
-export async function loadFinOpsOfficialPriceCatalog() {
-  return request("/api/finops/pricing/catalog");
+export async function loadFinOpsOfficialPriceCatalog(options = {}) {
+  return request("/api/finops/pricing/catalog", options);
 }
 
-export async function loadFinOpsOfficialPriceMappings() {
-  return request("/api/finops/pricing/mappings");
+export async function loadFinOpsOfficialPriceMappings(options = {}) {
+  return request("/api/finops/pricing/mappings", options);
 }
 
 export async function updateFinOpsOfficialPriceMapping(
@@ -960,20 +960,20 @@ function workspaceBudgetUrl(path, workspaceId, params = {}) {
   return `${path}?${query.toString()}`;
 }
 
-export async function loadMemberBudgets(workspaceId) {
-  return request(workspaceBudgetUrl("/api/finops/member-budgets", workspaceId, { limit: "100" }));
+export async function loadMemberBudgets(workspaceId, options = {}) {
+  return request(workspaceBudgetUrl("/api/finops/member-budgets", workspaceId, { limit: "100" }), options);
 }
 
-export async function loadMemberBudgetMembers(workspaceId) {
-  return request(workspaceBudgetUrl("/api/finops/member-budget-members", workspaceId, { limit: "100" }));
+export async function loadMemberBudgetMembers(workspaceId, options = {}) {
+  return request(workspaceBudgetUrl("/api/finops/member-budget-members", workspaceId, { limit: "100" }), options);
 }
 
-export async function loadMemberBudgetNotification(workspaceId) {
-  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId));
+export async function loadMemberBudgetNotification(workspaceId, options = {}) {
+  return request(workspaceBudgetUrl("/api/finops/notification-settings", workspaceId), options);
 }
 
-export async function loadMemberBudgetAlerts(workspaceId) {
-  return request(workspaceBudgetUrl("/api/finops/budget-alerts", workspaceId, { limit: "50" }));
+export async function loadMemberBudgetAlerts(workspaceId, options = {}) {
+  return request(workspaceBudgetUrl("/api/finops/budget-alerts", workspaceId, { limit: "50" }), options);
 }
 
 export async function saveMemberBudget({
@@ -1231,8 +1231,8 @@ export function runLogUrl(runId, format = "json") {
 export async function loadArtifactsList(workspaceId) {
   return loadWorkspaceArtifacts(workspaceId);
 }
-export async function loadMembers(workspaceId) {
-  return loadWorkspaceMembers(workspaceId);
+export async function loadMembers(workspaceId, options = {}) {
+  return loadWorkspaceMembers(workspaceId, options);
 }
 export async function searchEntraUsers(workspaceId, query, limit = 8) {
   return searchWorkspaceEntraUsers(workspaceId, query, limit);

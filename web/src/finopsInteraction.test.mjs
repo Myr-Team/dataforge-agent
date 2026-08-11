@@ -39,6 +39,32 @@ test("cache tooltip exposes only recorded cache states", () => {
 });
 
 
+test("cache tooltip explains unavailable savings without presenting zero as evidence", () => {
+  const tooltip = metricTooltip({
+    kind: "cache",
+    label: "缓存估算节省",
+    cache: {
+      hit: 1200,
+      miss: 800,
+      eligible: 2000,
+      avoidedTokens: null,
+      estimatedSavings: null,
+      reason: "avoided_tokens_not_recorded",
+    },
+    dataStatus: "unavailable",
+    evidenceState: "unavailable",
+  });
+
+  assert.equal(tooltip.rows.some((row) => row.label === "避免 Token"), false);
+  assert.equal(tooltip.rows.some((row) => row.label === "估算节省"), false);
+  assert.deepEqual(tooltip.rows.at(-1), {
+    label: "节省依据",
+    value: "缺少可追溯的避免 Token 与价目证据",
+    format: "text",
+  });
+});
+
+
 test("latency tooltip never guesses a cache result", () => {
   const tooltip = metricTooltip({
     kind: "quality",

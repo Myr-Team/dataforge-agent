@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CircleHelp,
   ExternalLink,
@@ -26,6 +26,8 @@ import {
   modelRoutingViewModel,
   officialPricePresentation,
 } from "./modelRoutingViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 function routeOptions(routes, capability) {
   return routes.filter((route) => route.capabilities.includes(capability));
@@ -87,6 +89,38 @@ function mappingByDeployment(items = []) {
   );
 }
 
+function routingDraftStamp(scopeKey, payload) {
+  if (!payload) return "";
+  // The embedded FinOps dialog predates the scoped Settings shell but still
+  // owns an authorized, revisioned routing view.  Keep it distinct from every
+  // scoped draft while allowing its hydrated revision to unlock writes.
+  return `${scopeKey || "embedded"}:${modelRoutingViewModel(payload).policyRevision}`;
+}
+
+function routingDraft(payload, mappingItems = []) {
+  if (!payload) return null;
+  const view = modelRoutingViewModel(payload);
+  const mappings = mappingByDeployment(mappingItems);
+  return {
+    assignments: view.assignments,
+    agentAssignments: view.agentAssignments,
+    defaultRouteId: String(payload?.policy?.default_route_id || view.defaultRouteId || ""),
+    mappingDraft: Object.fromEntries(view.routes.map((route) => [
+      route.deployment,
+      mappings[route.deployment]?.official_price_key || route.officialPriceKey || "",
+    ])),
+  };
+}
+
+function currentRoutingSnapshots(settingsScope) {
+  const routingKey = settingsResourceKey(settingsScope, "routing");
+  const mappingKey = settingsResourceKey(settingsScope, "pricingMapping");
+  return {
+    payload: routingKey ? peekSettingsResource(routingKey).value : null,
+    mappings: mappingKey ? peekSettingsResource(mappingKey).value?.items || [] : [],
+  };
+}
+
 function StateMessage({ state, onRetry }) {
   if (state.loading) {
     return (
@@ -132,12 +166,14 @@ export function priceMappingErrorMessage(error) {
 }
 
 
-export function ModelRoutingPage({
+function ModelRoutingPageContent({
   workspaceId = "",
+  settingsScope = null,
   embedded = false,
   onSettingsChanged = null,
 }) {
   const [state, setState] = useState({
+    scopeKey: "",
     loading: true,
     error: "",
     payload: null,
@@ -147,38 +183,81 @@ export function ModelRoutingPage({
     canManagePricing: false,
     pricingAuthorizationSource: "read_only",
   });
-  const [assignments, setAssignments] = useState({});
-  const [agentAssignments, setAgentAssignments] = useState({});
-  const [defaultRouteId, setDefaultRouteId] = useState("");
-  const [mappingDraft, setMappingDraft] = useState({});
+  const currentScopeKey = String(settingsScope?.key || "");
+  const [initialDraft] = useState(() => {
+    const snapshot = currentRoutingSnapshots(settingsScope);
+    return {
+      values: routingDraft(snapshot.payload, snapshot.mappings),
+      stamp: routingDraftStamp(currentScopeKey, snapshot.payload),
+    };
+  });
+  const [assignments, setAssignments] = useState(() => initialDraft.values?.assignments || {});
+  const [agentAssignments, setAgentAssignments] = useState(() => initialDraft.values?.agentAssignments || {});
+  const [defaultRouteId, setDefaultRouteId] = useState(() => initialDraft.values?.defaultRouteId || "");
+  const [mappingDraft, setMappingDraft] = useState(() => initialDraft.values?.mappingDraft || {});
+  const [draftInitializedFor, setDraftInitializedFor] = useState(initialDraft.stamp);
   const [saving, setSaving] = useState("");
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
+  const loadGeneration = useRef(0);
+  const visibleState = state.scopeKey === currentScopeKey ? state : {
+    scopeKey: currentScopeKey, loading: true, error: "", payload: null, catalog: [], catalogRevision: "", mappings: [], canManagePricing: false, pricingAuthorizationSource: "read_only",
+  };
+  const displayedDraftStamp = routingDraftStamp(currentScopeKey, visibleState.payload);
+  const writesEnabled = Boolean(displayedDraftStamp && draftInitializedFor === displayedDraftStamp && !saving);
 
-  const load = useCallback(async () => {
+  const hydrateDraft = useCallback((payload, mappings) => {
+    const values = routingDraft(payload, mappings);
+    if (!values) return;
+    setAssignments(values.assignments);
+    setAgentAssignments(values.agentAssignments);
+    setDefaultRouteId(values.defaultRouteId);
+    setMappingDraft(values.mappingDraft);
+    setDraftInitializedFor(routingDraftStamp(currentScopeKey, payload));
+  }, [currentScopeKey]);
+
+  const load = useCallback(async ({ force = false } = {}) => {
+    const generation = ++loadGeneration.current;
     if (!workspaceId) {
       setState((current) => ({ ...current, loading: false, error: "当前未选中工作区。" }));
       return;
     }
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const routingKey = settingsResourceKey(settingsScope, "routing");
+    const routingSnapshot = routingKey ? peekSettingsResource(routingKey) : null;
+    const catalogKey = settingsResourceKey(settingsScope, "pricingCatalog");
+    const mappingKey = settingsResourceKey(settingsScope, "pricingMapping");
+    const catalogSnapshot = catalogKey ? peekSettingsResource(catalogKey) : null;
+    const mappingSnapshot = mappingKey ? peekSettingsResource(mappingKey) : null;
+    const snapshotDraft = routingDraft(routingSnapshot?.value, mappingSnapshot?.value?.items || []);
+    if (snapshotDraft) hydrateDraft(routingSnapshot.value, mappingSnapshot?.value?.items || []);
+    if (routingSnapshot?.value || catalogSnapshot?.value || mappingSnapshot?.value) setState((current) => ({
+      ...current,
+      scopeKey: currentScopeKey,
+      loading: false,
+      error: [routingSnapshot, catalogSnapshot, mappingSnapshot].some((snapshot) => snapshot?.lastError) ? "更新失败，正在显示上次可用配置。" : "",
+      payload: routingSnapshot?.value || null,
+      catalog: Array.isArray(catalogSnapshot?.value?.items) ? catalogSnapshot.value.items : [],
+      catalogRevision: String(catalogSnapshot?.value?.revision || ""),
+      mappings: Array.isArray(mappingSnapshot?.value?.items) ? mappingSnapshot.value.items : [],
+      canManagePricing: mappingSnapshot?.value?.can_manage === true,
+      pricingAuthorizationSource: String(mappingSnapshot?.value?.authorization_source || "read_only"),
+    }));
+    else setState((current) => ({ ...current, scopeKey: currentScopeKey, loading: true, error: "", payload: null }));
     try {
+      const cached = (resource, loader) => {
+        const key = settingsResourceKey(settingsScope, resource);
+        return key ? loadSettingsResource(key, ({ signal }) => loader({ signal }), { force }) : loader({});
+      };
       const [payload, catalogPayload, mappingPayload] = await Promise.all([
-        loadWorkspaceModelRouting(workspaceId),
-        loadFinOpsOfficialPriceCatalog(),
-        loadFinOpsOfficialPriceMappings(),
+        cached("routing", (options) => loadWorkspaceModelRouting(workspaceId, options)),
+        cached("pricingCatalog", (options) => loadFinOpsOfficialPriceCatalog(options)),
+        cached("pricingMapping", (options) => loadFinOpsOfficialPriceMappings(options)),
       ]);
-      const view = modelRoutingViewModel(payload || {});
+      if (generation !== loadGeneration.current) return;
       const mappings = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
-      setAssignments(view.assignments);
-      setAgentAssignments(view.agentAssignments);
-      setDefaultRouteId(String(payload?.policy?.default_route_id || view.defaultRouteId || ""));
-      setMappingDraft(Object.fromEntries(
-        view.routes.map((route) => [
-          route.deployment,
-          mappingByDeployment(mappings)[route.deployment]?.official_price_key || route.officialPriceKey || "",
-        ]),
-      ));
+      hydrateDraft(payload, mappings);
       setState({
+        scopeKey: currentScopeKey,
         loading: false,
         error: "",
         payload,
@@ -189,35 +268,61 @@ export function ModelRoutingPage({
         pricingAuthorizationSource: String(mappingPayload?.authorization_source || "read_only"),
       });
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return;
+      const hasCurrentKeySnapshot = Boolean(routingSnapshot?.value || catalogSnapshot?.value || mappingSnapshot?.value);
       setState((current) => ({
         ...current,
+        scopeKey: currentScopeKey,
         loading: false,
-        error: error instanceof Error ? error.message : "模型配置读取失败",
+        error: hasCurrentKeySnapshot
+          ? "更新失败，正在显示上次可用配置。"
+          : error instanceof Error ? error.message : "模型配置读取失败",
+        // Preserve each current-key resource independently: a routing failure
+        // must not blank an already-authorized catalog or price mapping.
+        payload: routingSnapshot?.value || current.payload,
+        catalog: Array.isArray(catalogSnapshot?.value?.items) ? catalogSnapshot.value.items : current.catalog,
+        catalogRevision: String(catalogSnapshot?.value?.revision || current.catalogRevision || ""),
+        mappings: Array.isArray(mappingSnapshot?.value?.items) ? mappingSnapshot.value.items : current.mappings,
+        canManagePricing: mappingSnapshot?.value
+          ? mappingSnapshot.value.can_manage === true
+          : current.canManagePricing,
+        pricingAuthorizationSource: String(mappingSnapshot?.value?.authorization_source || current.pricingAuthorizationSource || "read_only"),
       }));
     }
-  }, [workspaceId]);
+  }, [currentScopeKey, hydrateDraft, settingsScope, workspaceId]);
 
-  useEffect(() => { load(); }, [load]);
+  const invalidate = (...resources) => resources.forEach((resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    if (key) invalidateSettingsResource(key);
+  });
 
-  const view = useMemo(() => modelRoutingViewModel(state.payload || {}), [state.payload]);
-  const mappings = useMemo(() => mappingByDeployment(state.mappings), [state.mappings]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
+
+  const view = useMemo(() => modelRoutingViewModel(visibleState.payload || {}), [visibleState.payload]);
+  const mappings = useMemo(() => mappingByDeployment(visibleState.mappings), [visibleState.mappings]);
   const mappedCount = view.routes.filter((route) => mappings[route.deployment]).length;
   const analysisRoutes = routeOptions(view.routes, "analysis");
   const chatRoutes = routeOptions(view.routes, "chat");
 
   const updateAssignment = (kindId, field, value) => {
+    if (!writesEnabled) return;
     setAssignments((current) => ({
       ...current,
       [kindId]: { ...(current[kindId] || {}), [field]: value },
     }));
   };
   const updateAgentAssignment = (agentId, field, value) => {
+    if (!writesEnabled) return;
     setAgentAssignments((current) => ({
       ...current,
       [agentId]: { ...(current[agentId] || {}), [field]: value },
     }));
   };
   const applyAllAgents = (routeId) => {
+    if (!writesEnabled) return;
     setAgentAssignments(Object.fromEntries(MODEL_AGENT_ROLES.map((agent) => [
       agent.id,
       {
@@ -229,6 +334,7 @@ export function ModelRoutingPage({
   };
 
   const saveRouting = async () => {
+    if (!writesEnabled) return;
     setSaving("routing");
     setSaveError("");
     setNotice("");
@@ -241,6 +347,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "model",
       );
+      invalidate("routing");
       setState((current) => ({
         ...current,
         payload: { ...(current.payload || {}), ...payload },
@@ -248,6 +355,7 @@ export function ModelRoutingPage({
       setNotice("模型分配已保存；新运行会按 Agent 分别记录模型、Token 与估算成本。");
     } catch (error) {
       if (error && error.status === 409) {
+        invalidate("routing");
         setSaveError("模型分配已被其他管理员更新，已为你载入最新版本，请复核后重新保存。");
         await load();
       } else {
@@ -259,23 +367,29 @@ export function ModelRoutingPage({
   };
 
   const governProviderRoute = async (remediation) => {
+    if (!writesEnabled) return;
     const providerId = String(remediation?.providerId || "").trim();
     if (!providerId) return;
     setSaving(`govern:${providerId}`);
     setSaveError("");
     setNotice("");
     try {
-      const providerPayload = await loadModelProviders();
+      const providerKey = settingsResourceKey(settingsScope, "provider");
+      const providerPayload = providerKey
+        ? await loadSettingsResource(providerKey, ({ signal }) => loadModelProviders({ signal }))
+        : await loadModelProviders();
       const provider = (Array.isArray(providerPayload?.items) ? providerPayload.items : [])
         .find((item) => String(item?.provider_id || "") === providerId);
       if (!provider || !Number.isInteger(provider.revision)) {
         throw new Error("DeepSeek 提供商状态尚未同步，请刷新后重试。");
       }
       await governModelProvider(providerId, provider.revision);
+      invalidate("provider", "routing");
       await load();
       setNotice(`${remediation.providerLabel} 已纳入模型路由，现在可以为 Agent 选择对应模型。`);
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("provider", "routing");
         setSaveError("DeepSeek 状态已被其他管理员更新，已重新载入，请复核后重试。");
         await load();
       } else if (error?.status === 403) {
@@ -289,6 +403,7 @@ export function ModelRoutingPage({
   };
 
   const saveMapping = async (deployment) => {
+    if (!writesEnabled) return;
     const officialPriceKey = String(mappingDraft[deployment] || "").trim();
     if (!officialPriceKey) {
       setSaveError("请选择一条官方价格记录；无法可靠匹配时请保留“未计价”。");
@@ -308,6 +423,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "price",
       );
+      invalidate("pricingMapping", "routing");
       const saved = result?.mapping;
       setState((value) => ({
         ...value,
@@ -319,13 +435,17 @@ export function ModelRoutingPage({
       setNotice(`${deployment} 已关联官方价格记录，新请求将按该版本估算。`);
     } catch (error) {
       setSaveError(priceMappingErrorMessage(error));
-      if (error?.status === 409) await load();
+      if (error?.status === 409) {
+        invalidate("pricingMapping", "routing");
+        await load();
+      }
     } finally {
       setSaving("");
     }
   };
 
   const removeMapping = async (deployment) => {
+    if (!writesEnabled) return;
     setSaving(`mapping:${deployment}`);
     setSaveError("");
     setNotice("");
@@ -338,6 +458,7 @@ export function ModelRoutingPage({
         onSettingsChanged,
         "price",
       );
+      invalidate("pricingMapping", "routing");
       setState((value) => ({
         ...value,
         mappings: value.mappings.filter((item) => item.deployment !== deployment),
@@ -346,7 +467,10 @@ export function ModelRoutingPage({
       setNotice(`${deployment} 已解除官方价格关联并恢复未计价，历史估算版本保持不变。`);
     } catch (error) {
       setSaveError(priceMappingErrorMessage(error));
-      if (error?.status === 409) await load();
+      if (error?.status === 409) {
+        invalidate("pricingMapping", "routing");
+        await load();
+      }
     } finally {
       setSaving("");
     }
@@ -369,7 +493,7 @@ export function ModelRoutingPage({
         ) : null}
 
         <StateMessage state={state} onRetry={load} />
-        {!state.loading && !state.error ? (
+        {!state.loading && (!state.error || Boolean(visibleState.payload)) ? (
           <>
             <section className="routing-summary" aria-label="模型配置状态">
               <div><span>工作区默认</span><b>{view.routes.find((route) => route.id === defaultRouteId)?.label || "服务端默认"}</b></div>
@@ -390,7 +514,7 @@ export function ModelRoutingPage({
                       className="primary-button"
                       type="button"
                       key={remediation.providerId}
-                      disabled={Boolean(saving)}
+                      disabled={!writesEnabled}
                       onClick={() => governProviderRoute(remediation)}
                     >
                       {saving === `govern:${remediation.providerId}` ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
@@ -410,7 +534,7 @@ export function ModelRoutingPage({
               </header>
               <label className="routing-default-field">
                 <span>默认模型</span>
-                <select value={defaultRouteId} onChange={(event) => setDefaultRouteId(event.target.value)}>
+                <select value={defaultRouteId} disabled={!writesEnabled} onChange={(event) => setDefaultRouteId(event.target.value)}>
                   <option value="">使用服务端默认</option>
                   <RouteOptions routes={chatRoutes} />
                 </select>
@@ -448,11 +572,11 @@ export function ModelRoutingPage({
                 ].map((item) => (
                   <div className="routing-assignment-row" key={item.id}>
                     <div><b>{item.label}</b><small>{item.description}</small></div>
-                    <select aria-label={`${item.label}主要模型`} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
+                    <select aria-label={`${item.label}主要模型`} disabled={!writesEnabled} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
                       <option value="">继承工作区默认</option>
                       <RouteOptions routes={item.routes} />
                     </select>
-                    <select aria-label={`${item.label}备用模型`} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
+                    <select aria-label={`${item.label}备用模型`} disabled={!writesEnabled} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
                       <option value="">不设置备用</option>
                       <RouteOptions routes={item.routes} />
                     </select>
@@ -469,7 +593,7 @@ export function ModelRoutingPage({
                 </div>
                 <label className="routing-apply-all">
                   <span>一键应用到全部</span>
-                  <select value="" onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
+                  <select value="" disabled={!writesEnabled} onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
                     <option value="">选择模型</option>
                     <RouteOptions routes={analysisRoutes} />
                   </select>
@@ -482,11 +606,11 @@ export function ModelRoutingPage({
                   return (
                     <div className="routing-assignment-row" key={agent.id}>
                       <div><b>{agent.label}</b><small>{agent.description}</small></div>
-                      <select aria-label={`${agent.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
+                      <select aria-label={`${agent.label}主要模型`} disabled={!writesEnabled} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
                         <RouteOptions routes={analysisRoutes} />
                       </select>
-                      <select aria-label={`${agent.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
+                      <select aria-label={`${agent.label}备用模型`} disabled={!writesEnabled} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
                         <RouteOptions routes={analysisRoutes} />
                       </select>
@@ -507,11 +631,11 @@ export function ModelRoutingPage({
                   return (
                     <div className="routing-assignment-row" key={kind.id}>
                       <div><b>{kind.label}</b><small>{kind.description}</small></div>
-                      <select aria-label={`${kind.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
+                      <select aria-label={`${kind.label}主要模型`} disabled={!writesEnabled} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
                         <RouteOptions routes={eligible} />
                       </select>
-                      <select aria-label={`${kind.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
+                      <select aria-label={`${kind.label}备用模型`} disabled={!writesEnabled} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
                         <RouteOptions routes={eligible} />
                       </select>
@@ -528,14 +652,14 @@ export function ModelRoutingPage({
                   <p>价格仅用于请求级预估，不是 Azure 账单。无法可靠匹配时保持“未计价”，不会填入猜测价格。</p>
                 </div>
                 <small className="routing-catalog-revision">
-                  {state.canManagePricing ? "可管理" : "只读"} · 目录 {state.catalogRevision || "未记录"}
+                  {visibleState.canManagePricing ? "可管理" : "只读"} · 目录 {visibleState.catalogRevision || "未记录"}
                 </small>
               </header>
               <div className="routing-price-table">
                 <div className="routing-official-price-row routing-price-head"><span>模型 deployment</span><span>状态</span><span>官方价格记录</span><span aria-label="操作" /></div>
                 {view.routes.map((route) => {
                   const mapping = mappings[route.deployment];
-                  const selected = state.catalog.find((item) => item.price_key === mappingDraft[route.deployment]);
+                  const selected = visibleState.catalog.find((item) => item.price_key === mappingDraft[route.deployment]);
                   const selectedPrice = selected ? officialPricePresentation(selected) : null;
                   const busy = saving === `mapping:${route.deployment}`;
                   return (
@@ -543,9 +667,9 @@ export function ModelRoutingPage({
                       <div><b>{route.label}</b><small>{route.providerLabel || "Azure Foundry"} · {route.deployment || "deployment 未记录"}</small></div>
                       <span className={`routing-price-status ${mapping ? "mapped" : "unpriced"}`}>{mapping ? "已计价" : "未计价"}</span>
                       <div className="routing-price-picker">
-                        <select disabled={!state.canManagePricing || busy} value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
+                        <select disabled={!writesEnabled || !visibleState.canManagePricing || busy} value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
                           <option value="">保留未计价</option>
-                          {state.catalog.map((item) => <option key={item.price_key} value={item.price_key}>{officialPricePresentation(item).label}</option>)}
+                          {visibleState.catalog.map((item) => <option key={item.price_key} value={item.price_key}>{officialPricePresentation(item).label}</option>)}
                         </select>
                         {selectedPrice ? (
                           <div className="routing-price-presentation" data-provider={selected?.provider || "unknown"}>
@@ -555,14 +679,14 @@ export function ModelRoutingPage({
                               ))}
                             </div>
                             <div className="routing-price-source-line">
-                              <span>{selectedPrice.currency} · 目录版本 {selectedPrice.revision || state.catalogRevision || "未记录"}</span>
+                              <span>{selectedPrice.currency} · 目录版本 {selectedPrice.revision || visibleState.catalogRevision || "未记录"}</span>
                               {selectedPrice.sourceUrl ? <a href={selectedPrice.sourceUrl} target="_blank" rel="noreferrer" title="查看官方价格来源"><ExternalLink size={13} />官方来源</a> : null}
                             </div>
                           </div>
                         ) : null}
                       </div>
                       <div className="routing-price-actions">
-                        <button className="routing-map-button" type="button" disabled={!state.canManagePricing || busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
+                        <button className="routing-map-button" type="button" disabled={!writesEnabled || !visibleState.canManagePricing || busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
                           {busy ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
                           关联
                         </button>
@@ -570,7 +694,7 @@ export function ModelRoutingPage({
                           <button
                             className="ghost-button routing-unmap-button"
                             type="button"
-                            disabled={!state.canManagePricing || busy}
+                            disabled={!writesEnabled || !visibleState.canManagePricing || busy}
                             onClick={() => removeMapping(route.deployment)}
                             aria-label={`解除${route.label}官方价格关联`}
                           >
@@ -590,7 +714,7 @@ export function ModelRoutingPage({
                 {notice ? <p className="routing-notice">{notice}</p> : null}
                 {saveError ? <p className="routing-error" role="alert">{saveError}</p> : null}
               </div>
-              <button className="primary-button" type="button" onClick={saveRouting} disabled={Boolean(saving)}>
+              <button className="primary-button" type="button" onClick={saveRouting} disabled={!writesEnabled}>
                 {saving === "routing" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
                 保存模型分配
               </button>
@@ -600,4 +724,8 @@ export function ModelRoutingPage({
       </section>
     </main>
   );
+}
+
+export function ModelRoutingPage(props) {
+  return <ModelRoutingPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

@@ -525,7 +525,94 @@ function safeScenario(raw) {
     badge: status.key === "estimated" ? "情景测算" : status.label,
     formulaRevision: safeRevision(result.formula_revision),
     result: projected,
+    demoEvidence: safeDemoEvidence(raw.demo_evidence),
   };
+}
+
+
+function safeDemoEvidence(raw) {
+  const source = isRecord(raw) ? raw : {};
+  const measured = isRecord(source.measured) ? source.measured : {};
+  const process = isRecord(source.process) ? source.process : {};
+  const actors = isRecord(source.actors) ? source.actors : {};
+  const window = isRecord(source.window) ? source.window : {};
+  const sourceRefs = isRecord(source.source_refs) ? source.source_refs : {};
+  if (source.provenance !== "synthetic_demo"
+    || source.production_quality_claim !== false
+    || boundedText(source.label, 80) !== "演示验证结果 · 合成数据"
+    || !Number.isInteger(finiteNumber(measured.paired_evaluations))
+    || finiteNumber(measured.paired_evaluations) < 1
+    || finiteNumber(measured.historical_hours) === null
+    || finiteNumber(measured.historical_hours) < 0
+    || finiteNumber(measured.assisted_hours) === null
+    || finiteNumber(measured.assisted_hours) < 0
+    || finiteNumber(measured.assisted_hours) > finiteNumber(measured.historical_hours)) return null;
+  const analysisTasks = finiteNumber(process.analysis_tasks);
+  const reports = finiteNumber(process.reports);
+  const evidenceReviews = finiteNumber(process.evidence_reviews);
+  const reviewedSavingsHours = finiteNumber(process.reviewed_savings_hours);
+  const safeRefs = Object.fromEntries([
+    ["runRef", safeIdentifier(sourceRefs.run_id)],
+    ["requestRef", safeIdentifier(sourceRefs.request_ref)],
+    ["correlationRef", safeIdentifier(sourceRefs.correlation_ref)],
+    ["attemptRef", safeIdentifier(sourceRefs.attempt_ref)],
+  ].filter(([, value]) => value));
+  const outcomeActorRef = safeIdentifier(actors.outcome_actor_ref);
+  const reviewerActorRef = safeIdentifier(actors.reviewer_actor_ref);
+  const from = boundedText(window.from, 32);
+  const to = boundedText(window.to, 32);
+  const currency = boundedText(window.currency, 3);
+  const safeWindow = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(from)
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(to)
+    && from < to
+    && /^[A-Z]{3}$/.test(currency)
+    ? { from, to, currency }
+    : null;
+  const evidenceItems = Number.isInteger(analysisTasks) && Number.isInteger(reports) && Number.isInteger(evidenceReviews)
+    ? {
+      analysisTasks: safeDemoEvidenceItems(source.evidence_items?.analysis_tasks, analysisTasks),
+      reports: safeDemoEvidenceItems(source.evidence_items?.reports, reports),
+      evidenceReviews: safeDemoEvidenceItems(source.evidence_items?.evidence_reviews, evidenceReviews),
+    }
+    : null;
+  return {
+    label: boundedText(source.label, 80),
+    productionQualityClaim: false,
+    pairedEvaluations: finiteNumber(measured.paired_evaluations),
+    historicalHours: finiteNumber(measured.historical_hours),
+    assistedHours: finiteNumber(measured.assisted_hours),
+    process: Number.isInteger(analysisTasks) && analysisTasks > 0
+      && Number.isInteger(reports) && reports > 0
+      && Number.isInteger(evidenceReviews) && evidenceReviews > 0
+      && reviewedSavingsHours !== null && reviewedSavingsHours >= 0
+      ? { analysisTasks, reports, evidenceReviews, reviewedSavingsHours }
+      : null,
+    sourceRefs: Object.keys(safeRefs).length === 4 ? safeRefs : null,
+    actors: outcomeActorRef && reviewerActorRef && outcomeActorRef !== reviewerActorRef
+      ? { outcomeActorRef, reviewerActorRef }
+      : null,
+    window: safeWindow,
+    evidenceItems: evidenceItems
+      && Object.values(evidenceItems).every((items) => items !== null)
+      ? evidenceItems
+      : null,
+  };
+}
+
+
+function safeDemoEvidenceItems(value, expectedCount) {
+  if (!Array.isArray(value) || value.length !== expectedCount) return null;
+  const seen = new Set();
+  const items = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    const id = safeIdentifier(item.id);
+    const title = boundedText(item.title, 160);
+    if (!id || !title || seen.has(id)) return null;
+    seen.add(id);
+    items.push({ id, title });
+  }
+  return items;
 }
 
 
@@ -639,6 +726,7 @@ export function roiDecisionView(payload) {
   const source = isRecord(payload) ? payload : {};
   const metrics = safeMetrics(source.metrics);
   const verified = safeVerifiedRoi(source.verified_roi);
+  const scenarios = records(source.scenarios).map(safeScenario).filter(Boolean).slice(0, 20);
   return {
     decision: safeDecision(source.decision),
     caseStory: safeCaseStory(source.case_story),
@@ -652,7 +740,8 @@ export function roiDecisionView(payload) {
     verifiedRoiStatus: verified.status,
     verifiedRoiBadge: verified.badge,
     capability: safeCapability(source.capability_explanation),
-    scenarios: records(source.scenarios).map(safeScenario).filter(Boolean).slice(0, 20),
+    scenarios,
+    demoEvidence: scenarios.map((item) => item.demoEvidence).find(Boolean) || null,
     evidenceGaps: boundedTexts(source.evidence_gaps, 12, 240),
   };
 }

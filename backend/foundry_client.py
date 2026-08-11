@@ -22,6 +22,7 @@ try:
     from .provider_client import ProviderInvocation, ProviderMessage, RequestsProviderTransport
     from .workspace_model_config import estimate_model_cost
     from .schemas import MarketQueryPlan
+    from .token_integrity import finite_nonnegative_integral_token_count
 except ImportError:
     from deepseek_provider import DeepSeekProvider
     from model_policy import current_model_price_card, current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
@@ -29,6 +30,7 @@ except ImportError:
     from provider_client import ProviderInvocation, ProviderMessage, RequestsProviderTransport
     from workspace_model_config import estimate_model_cost
     from schemas import MarketQueryPlan
+    from token_integrity import finite_nonnegative_integral_token_count
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -794,9 +796,31 @@ def _usage_value(usage: Any, *keys: str) -> int | None:
         values = {key: getattr(usage, key, None) for key in keys}
     for key in keys:
         value = values.get(key)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            return int(value)
+        normalized = finite_nonnegative_integral_token_count(value)
+        if normalized is not None:
+            return normalized
     return None
+
+
+def _usage_child(usage: Any, *keys: str) -> Any:
+    if usage is None:
+        return None
+    if hasattr(usage, "model_dump"):
+        dumped = usage.model_dump()
+        values = dumped if isinstance(dumped, dict) else {}
+        return next((values.get(key) for key in keys if values.get(key) is not None), None)
+    if isinstance(usage, dict):
+        return next((usage.get(key) for key in keys if usage.get(key) is not None), None)
+    return next((getattr(usage, key, None) for key in keys if getattr(usage, key, None) is not None), None)
+
+
+def _usage_detail_value(
+    usage: Any,
+    detail_keys: tuple[str, ...],
+    *value_keys: str,
+) -> int | None:
+    details = _usage_child(usage, *detail_keys)
+    return _usage_value(details, *value_keys)
 
 
 def _usage_has_known_keys(usage: Any) -> bool:
@@ -823,11 +847,28 @@ def _usage_dict(usage: Any) -> dict[str, Any]:
     cached_input = _usage_value(
         usage,
         "cached_input",
+        "cached_input_tokens",
         "provider_cache_hit_tokens",
         "prompt_cache_hit_tokens",
     )
+    if cached_input is None:
+        cached_input = _usage_detail_value(
+            usage,
+            ("input_tokens_details", "prompt_tokens_details"),
+            "cached_tokens",
+            "cached_input_tokens",
+        )
     if cached_input is not None:
         normalized["cached_input"] = cached_input
+    reasoning = _usage_value(usage, "reasoning", "reasoning_tokens")
+    if reasoning is None:
+        reasoning = _usage_detail_value(
+            usage,
+            ("output_tokens_details", "completion_tokens_details"),
+            "reasoning_tokens",
+        )
+    if reasoning is not None:
+        normalized["reasoning_tokens"] = reasoning
     return normalized
 
 
@@ -837,6 +878,13 @@ def _provider_cache_dict(usage: Any) -> dict[str, Any]:
         "provider_cache_hit_tokens",
         "prompt_cache_hit_tokens",
     )
+    if hit is None:
+        hit = _usage_detail_value(
+            usage,
+            ("input_tokens_details", "prompt_tokens_details"),
+            "cached_tokens",
+            "cached_input_tokens",
+        )
     miss = _usage_value(
         usage,
         "provider_cache_miss_tokens",
@@ -888,6 +936,11 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     fallback_reason = selected.fallback_reason
     if not _usage_observed(usage):
         fallback_reason = fallback_reason or "provider_usage_missing"
+    route_evidence = str(
+        getattr(response, "_dataforge_route_evidence", "selected") or "selected"
+    ).strip().lower()
+    if route_evidence not in {"observed", "selected", "inferred", "unavailable"}:
+        route_evidence = "selected"
     meta = {
         "mode": mode,
         "response_id": getattr(response, "id", None),
@@ -897,6 +950,7 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
         "provider_type": selected.route.provider_type,
         "provider_id": selected.route.provider_id,
         "model_id": selected.route.model_id,
+        "route_evidence": route_evidence,
         "selection": selected.selection,
         "fallback_reason": safe_fallback_reason(fallback_reason),
         "execution_kind": selected.execution_kind,
@@ -915,8 +969,9 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
     retry_attempts = getattr(response, "_dataforge_retry_attempts", 0)
     if retry_attempts:
         meta["retry_attempts"] = retry_attempts
-    if selected.route.provider_type != "azure_foundry":
-        meta["provider_cache"] = _provider_cache_dict(raw_usage)
+    provider_cache = _provider_cache_dict(raw_usage)
+    if provider_cache["evidence_state"] != "unavailable":
+        meta["provider_cache"] = provider_cache
     return meta
 
 

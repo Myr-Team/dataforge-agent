@@ -7,7 +7,12 @@ import {
   loadAuthSession,
   loadDashboard,
   loadFinOpsBootstrap,
+  loadMemberBudgetAlerts,
+  loadMemberBudgetNotification,
+  loadMemberBudgets,
   loadWorkspaceAccess,
+  loadWorkspaceModelRouting,
+  loadWorkspaceSettings,
   loadLatestAnalysis,
   loadObservability,
   loadArtifactJob,
@@ -25,12 +30,21 @@ import {
   prefetchFinOpsBootstrap,
 } from "./finopsPreload.js";
 import { clearFinOpsData } from "./finopsDataStore.js";
+import { clearSettingsScope } from "./settingsDataStore.js";
 import {
   finopsAuthorizationBoundary,
   finopsPreloadScope,
   reconcileFinOpsAuthorizationScope,
   scheduleFinOpsPreload,
 } from "./finopsNavigation.js";
+import {
+  prefetchSettingsHome,
+  reconcileSettingsAuthorizationScope,
+  scheduleSettingsPreload,
+  settingsAuthorizationBoundary,
+  settingsAuthorizationOwnerBoundary,
+  settingsPreloadScope,
+} from "./settingsNavigation.js";
 import { TaskCenter, expireTaskNotifications, isCurrentWorkspaceTaskResponse, stampTaskNotifications, taskViewModel, terminalTaskNotifications } from "./TaskCenter.jsx";
 import {
   extractArtifacts,
@@ -170,6 +184,7 @@ export function App() {
   const [notice, setNotice] = useState(null);
   const [user, setUser] = useState({});
   const [authState, setAuthState] = useState("pending");
+  const [authSessionRefresh, setAuthSessionRefresh] = useState(0);
   const [observability, setObservability] = useState(null);
   const activeViewRef = useRef(activeView);
   const [tasks, setTasks] = useState([]);
@@ -206,6 +221,7 @@ export function App() {
   const dashboardRequestRef = useRef(0);
   const taskAbortRef = useRef(null);
   const finopsAuthorizationRef = useRef("");
+  const settingsAuthorizationRef = useRef({ ownerKey: "", scopeKey: "" });
   const finopsScope = useMemo(
     () => finopsPreloadScope({
       authState,
@@ -244,6 +260,56 @@ export function App() {
       return null;
     });
   }, [finopsScope]);
+  const settingsPermissionsResolved = Boolean(
+    workspaceAccess
+    && String(workspaceAccess.workspace_id || "") === String(workspaceId)
+    && typeof workspaceAccess.authenticated === "boolean"
+    && typeof workspaceAccess.allowed === "boolean"
+    && governanceCapabilities
+    && String(governanceCapabilities.workspace_id || "") === String(workspaceId)
+    && governanceCapabilities.sections
+    && typeof governanceCapabilities.sections === "object"
+  );
+  const settingsAuthorizationOwnerKey = useMemo(() => settingsAuthorizationOwnerBoundary({
+    authState,
+    workspaceId,
+    user,
+  }), [authState, user, workspaceId]);
+  const settingsScope = useMemo(() => settingsPreloadScope({
+    authState,
+    workspaceId,
+    user,
+    capabilities: governanceCapabilities,
+    workspaceAccess,
+    permissionsResolved: settingsPermissionsResolved,
+  }), [authState, governanceCapabilities, settingsPermissionsResolved, user, workspaceAccess, workspaceId]);
+  const settingsAuthorizationKey = useMemo(() => settingsAuthorizationBoundary({
+    authState,
+    workspaceId,
+    user,
+    capabilities: governanceCapabilities,
+    workspaceAccess,
+    permissionsResolved: settingsPermissionsResolved,
+  }), [authState, governanceCapabilities, settingsPermissionsResolved, user, workspaceAccess, workspaceId]);
+  const preloadSettings = useCallback(() => {
+    if (!settingsScope) return Promise.resolve(null);
+    return prefetchSettingsHome(settingsScope, {
+      budget: ({ signal }) => loadMemberBudgets(settingsScope.workspaceId, { signal }),
+      notification: ({ signal }) => loadMemberBudgetNotification(settingsScope.workspaceId, { signal }),
+      alerts: ({ signal }) => loadMemberBudgetAlerts(settingsScope.workspaceId, { signal }),
+      workspaceSettings: ({ signal }) => loadWorkspaceSettings(settingsScope.workspaceId, { signal }),
+      routing: ({ signal }) => loadWorkspaceModelRouting(settingsScope.workspaceId, { signal }),
+    }).catch((error) => {
+      if (error?.name !== "AbortError") console.warn("Settings preload failed", error);
+      return null;
+    });
+  }, [settingsScope]);
+
+  useEffect(() => {
+    const refresh = () => setAuthSessionRefresh((current) => current + 1);
+    window.addEventListener("dataforge:refresh-session", refresh);
+    return () => window.removeEventListener("dataforge:refresh-session", refresh);
+  }, []);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -262,6 +328,18 @@ export function App() {
   }, [finopsAuthorizationKey]);
 
   useEffect(() => {
+    settingsAuthorizationRef.current = reconcileSettingsAuthorizationScope(
+      settingsAuthorizationRef.current,
+      {
+        ownerKey: settingsAuthorizationOwnerKey,
+        scopeKey: settingsAuthorizationKey,
+        permissionsResolved: settingsPermissionsResolved,
+      },
+      clearSettingsScope,
+    );
+  }, [settingsAuthorizationKey, settingsAuthorizationOwnerKey, settingsPermissionsResolved]);
+
+  useEffect(() => {
     if (!finopsScope) return undefined;
     const cancelScheduled = scheduleFinOpsPreload(
       () => preloadFinOps().catch((error) => {
@@ -273,6 +351,11 @@ export function App() {
     );
     return cancelScheduled;
   }, [finopsScope, preloadFinOps]);
+
+  useEffect(() => {
+    if (!settingsScope) return undefined;
+    return scheduleSettingsPreload(() => { preloadSettings(); }, window);
+  }, [preloadSettings, settingsScope]);
 
   const currentPlaybook = useMemo(
     () => PLAYBOOKS.find((item) => item.id === selectedPlaybook) || PLAYBOOKS[0],
@@ -646,10 +729,18 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const configuredEndpoint = import.meta.env.VITE_AUTH_SESSION || "";
+    const configuredEndpoint = import.meta.env.VITE_AUTH_SESSION || window.__DF_AUTH_SESSION_ENDPOINT__ || "";
+    const forceAuthenticatedSession = window.__DF_FORCE_AUTH_SESSION__ === true;
     const isLocal = ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
-    if (!configuredEndpoint && isLocal) {
-      setUser({ name: "Demo User", email: "local.demo@dataforge", tenantScope: "local-demo" });
+    if (!configuredEndpoint && isLocal && !forceAuthenticatedSession) {
+      setUser({
+        name: "Demo User",
+        email: "local.demo@dataforge",
+        tenantScope: "local-demo",
+        tenantRef: "tenant_local_demo_v1",
+        actorRef: "actor_local_demo_v1",
+        sessionRef: "session_local_demo_v1",
+      });
       setAuthState("local");
       return () => {
         cancelled = true;
@@ -664,7 +755,11 @@ export function App() {
           email: String(session?.email || ""),
           identityProvider: String(session?.identity_provider || "microsoft_entra"),
           identitySource: String(session?.identity_source || "trusted_proxy"),
+          tenantRef: String(session?.tenant_ref || ""),
+          actorRef: String(session?.actor_ref || ""),
+          sessionRef: String(session?.session_ref || ""),
         };
+        if (!next.tenantRef || !next.actorRef || !next.sessionRef) throw new Error("auth scope unavailable");
         if (!cancelled) {
           setUser(next);
           setAuthState("authenticated");
@@ -679,7 +774,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authSessionRefresh]);
 
   useEffect(() => {
     try {
@@ -1267,9 +1362,9 @@ export function App() {
         tasks={tasks}
         onOpenTaskCenter={() => setTaskDrawerOpen(true)}
       />
-      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} onFinOpsIntent={preloadFinOps} />
+      <ShellNav active={renderView} onChange={changePrimaryView} workspace={dashboard?.workspace} access={workspaceAccess} capabilities={governanceCapabilities} onInviteMembers={openMembersSettings} onFinOpsIntent={preloadFinOps} onSettingsIntent={preloadSettings} />
       <div className="workbench">
-        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} onFinOpsIntent={preloadFinOps} />
+        <MobileNav active={renderView} onChange={changePrimaryView} capabilities={governanceCapabilities} onFinOpsIntent={preloadFinOps} onSettingsIntent={preloadSettings} />
         <div className="workbench-grid">
           <WorkbenchMain
             view={renderView}
@@ -1311,6 +1406,7 @@ export function App() {
             governanceCapabilitiesError={governanceCapabilitiesError}
             onRetryGovernanceCapabilities={retryGovernanceCapabilities}
             finopsPreloadScope={finopsPortalScope}
+            settingsPreloadScope={settingsScope}
           />
         </div>
       </div>

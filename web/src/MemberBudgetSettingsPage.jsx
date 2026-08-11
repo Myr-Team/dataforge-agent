@@ -31,49 +31,64 @@ import {
   sendMemberBudgetTestEmail,
 } from "./api.js";
 import { memberBudgetViewModel, safeTestEmailResult, testEmailNoticeTone } from "./memberBudgetViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 const EMPTY_VIEW = memberBudgetViewModel();
 
-function safeFailureState(error) {
+export function safeMemberBudgetFailureState(error) {
   if (error?.status === 403) return "permission_required";
   if (error?.status === 404 && error?.message === "email_configuration_disabled") return "disabled";
   if (error?.status === 404) return "not_configured";
   return "unavailable";
 }
 
-async function loadBudgetView(workspaceId) {
+async function loadBudgetView(workspaceId, settingsScope, { force = false } = {}) {
+  const snapshot = (resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? peekSettingsResource(key).value : null;
+  };
+  const cached = (resource, loader) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? loadSettingsResource(key, ({ signal }) => loader({ signal }), { force }) : loader({});
+  };
   const [budgetsResult, membersResult, notificationResult, alertsResult] = await Promise.allSettled([
-    loadMemberBudgets(workspaceId),
-    loadMemberBudgetMembers(workspaceId),
-    loadMemberBudgetNotification(workspaceId),
-    loadMemberBudgetAlerts(workspaceId),
+    cached("budget", (options) => loadMemberBudgets(workspaceId, options)),
+    cached("budgetMembers", (options) => loadMemberBudgetMembers(workspaceId, options)),
+    cached("notification", (options) => loadMemberBudgetNotification(workspaceId, options)),
+    cached("alerts", (options) => loadMemberBudgetAlerts(workspaceId, options)),
   ]);
-  const budgetsState = budgetsResult.status === "fulfilled"
-    ? ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
-      ? budgetsResult.value.data_status
+  const budgetSnapshot = snapshot("budget");
+  const membersSnapshot = snapshot("budgetMembers");
+  const notificationSnapshot = snapshot("notification");
+  const alertsSnapshot = snapshot("alerts");
+  const budgets = budgetsResult.status === "fulfilled" ? budgetsResult.value : budgetSnapshot;
+  const members = membersResult.status === "fulfilled" ? membersResult.value : membersSnapshot;
+  const notification = notificationResult.status === "fulfilled" ? notificationResult.value : notificationSnapshot;
+  const alerts = alertsResult.status === "fulfilled" ? alertsResult.value : alertsSnapshot;
+  const budgetsState = budgets
+    ? ["complete", "partial", "unavailable"].includes(budgets.data_status)
+      ? budgets.data_status
       : "partial"
     : "unavailable";
-  const notificationState = notificationResult.status === "rejected"
-    ? safeFailureState(notificationResult.reason)
-    : notificationResult.value?.data_status === "unavailable"
+  const notificationState = notification?.data_status === "unavailable"
       ? "unavailable"
-      : "configured";
-  const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
-    ? "available"
-    : "unavailable";
+      : notification?.item ? "configured" : notificationResult.status === "rejected" ? safeMemberBudgetFailureState(notificationResult.reason) : "not_configured";
+  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : alerts ? "available" : "unavailable";
+  const refreshFailed = [budgetsResult, membersResult, notificationResult, alertsResult].some((result) => result.status === "rejected");
   const view = memberBudgetViewModel({
-    budgets: budgetsResult.status === "fulfilled" ? budgetsResult.value : {},
+    budgets: budgets || {},
     budgetsState,
-    members: membersResult.status === "fulfilled" ? membersResult.value : {},
-    notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
+    members: members || {},
+    notification: notification || null,
     notificationState,
-    alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
+    alerts: alerts || {},
     alertsState,
   });
   return {
-    state: budgetsState === "unavailable"
-      ? safeFailureState(budgetsResult.reason)
-      : membersResult.status === "rejected"
+    state: budgetsState === "unavailable" && !budgetSnapshot
+      ? safeMemberBudgetFailureState(budgetsResult.reason)
+      : refreshFailed
         || ["unavailable", "permission_required"].includes(notificationState)
         || alertsState === "unavailable"
         ? "partial"
@@ -81,7 +96,47 @@ async function loadBudgetView(workspaceId) {
           ? "available"
           : "empty",
     view,
+    refreshFailed,
   };
+}
+
+export function memberBudgetSnapshotView({ budgets = null, members = null, notification = null, alerts = null } = {}) {
+  if (!budgets && !members && !notification && !alerts) return null;
+  const budgetsState = budgets?.data_status || "unavailable";
+  const notificationState = notification?.data_status === "unavailable"
+    ? "unavailable"
+    : notification?.item ? "configured" : "unavailable";
+  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : alerts ? "available" : "unavailable";
+  const view = memberBudgetViewModel({
+    budgets: budgets || {},
+    budgetsState,
+    members: members || {},
+    notification,
+    notificationState,
+    alerts: alerts || {},
+    alertsState,
+  });
+  const hasMissingResource = !budgets || !members || !notification || !alerts;
+  return {
+    state: budgetsState === "unavailable"
+      ? "unavailable"
+      : hasMissingResource || notificationState === "unavailable" || alertsState === "unavailable"
+        ? "partial"
+        : view.rows.length ? "available" : "empty",
+    view,
+  };
+}
+
+function peekBudgetView(settingsScope) {
+  const read = (resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? peekSettingsResource(key).value : null;
+  };
+  const budgets = read("budget");
+  const members = read("budgetMembers");
+  const notification = read("notification");
+  const alerts = read("alerts");
+  return memberBudgetSnapshotView({ budgets, members, notification, alerts });
 }
 
 function MetricHelp({ label, children }) {
@@ -366,9 +421,12 @@ function MailForm({ notification, busy, error, onClose, onSave }) {
   );
 }
 
-export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, onChanged = () => {} }) {
+function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = null, onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
-  const [view, setView] = useState(EMPTY_VIEW);
+  const [storedView, setView] = useState(EMPTY_VIEW);
+  const [viewScopeKey, setViewScopeKey] = useState("");
+  const currentScopeKey = String(settingsScope?.key || "");
+  const view = viewScopeKey === currentScopeKey ? storedView : EMPTY_VIEW;
   const [query, setQuery] = useState("");
   const [department, setDepartment] = useState("");
   const [budgetModal, setBudgetModal] = useState(null);
@@ -376,13 +434,16 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
   const [busy, setBusy] = useState("");
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState(null);
+  const [refreshError, setRefreshError] = useState(false);
 
   const reload = async ({ preserveNotice = false } = {}) => {
     setState("loading");
     if (!preserveNotice) setNotice(null);
-    const loaded = await loadBudgetView(workspaceId);
+    const loaded = await loadBudgetView(workspaceId, settingsScope, { force: true });
     setView(loaded.view);
+    setViewScopeKey(currentScopeKey);
     setState(loaded.state);
+    setRefreshError(loaded.refreshFailed === true);
   };
 
   useEffect(() => {
@@ -391,15 +452,28 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
       setState("unavailable");
       return undefined;
     }
-    loadBudgetView(workspaceId).then((loaded) => {
+    const snapshot = peekBudgetView(settingsScope);
+    if (snapshot) {
+      setView(snapshot.view);
+      setViewScopeKey(currentScopeKey);
+      setState(snapshot.state);
+      setRefreshError(false);
+    }
+    loadBudgetView(workspaceId, settingsScope).then((loaded) => {
       if (cancelled) return;
       setView(loaded.view);
+      setViewScopeKey(currentScopeKey);
       setState(loaded.state);
+      setRefreshError(loaded.refreshFailed === true);
     });
     return () => {
       cancelled = true;
     };
-  }, [workspaceId]);
+  }, [currentScopeKey, settingsScope, workspaceId]);
+  const invalidate = (...resources) => resources.forEach((resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    if (key) invalidateSettingsResource(key);
+  });
 
   const departments = useMemo(
     () => [...new Set(view.rows.map((row) => row.departmentLabel).filter(Boolean))],
@@ -422,12 +496,14 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await saveMemberBudget({ ...payload, workspaceId });
+      invalidate("budget", "alerts");
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已保存" });
       onChanged();
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("budget", "alerts");
         setBudgetModal(null);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
@@ -446,12 +522,14 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await disableMemberBudget(workspaceId, row.budgetId, row.revision);
+      invalidate("budget", "alerts");
       setBudgetModal(null);
       setNotice({ tone: "success", text: "预算已停用" });
       onChanged();
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("budget", "alerts");
         setBudgetModal(null);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
@@ -470,12 +548,14 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setFormError("");
     try {
       await saveMemberBudgetNotification({ ...payload, workspaceId });
+      invalidate("notification");
       setMailModal(false);
       setNotice({ tone: "success", text: "邮件设置已保存" });
       onChanged();
       await reload({ preserveNotice: true });
     } catch (error) {
       if (error?.status === 409) {
+        invalidate("notification");
         setMailModal(false);
         setNotice({ tone: "warning", text: "配置已更新，正在重新载入" });
         await reload({ preserveNotice: true });
@@ -496,6 +576,7 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
     setNotice(null);
     try {
       const result = safeTestEmailResult(await sendMemberBudgetTestEmail(workspaceId));
+      invalidate("notification");
       setNotice({ tone: testEmailNoticeTone(result.state), text: result.label });
       if (result.state === "accepted") await reload({ preserveNotice: true });
     } catch (error) {
@@ -541,6 +622,12 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
         <div className={`member-budget-notice ${notice.tone}`} role="status">
           {notice.tone === "success" ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
           <span>{notice.text}</span>
+        </div>
+      ) : null}
+      {refreshError ? (
+        <div className="member-budget-notice warning" role="status">
+          <AlertCircle size={15} />
+          <span>更新失败，正在显示上次可用配置。</span>
         </div>
       ) : null}
 
@@ -755,4 +842,8 @@ export function MemberBudgetSettingsPage({ workspaceId = "", onBack = () => {}, 
       ) : null}
     </main>
   );
+}
+
+export function MemberBudgetSettingsPage(props) {
+  return <MemberBudgetSettingsPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

@@ -30,6 +30,13 @@ const FINOPS_POLICY_LABELS = Object.freeze({
   cache_hit_rate: "缓存命中率",
 });
 
+const CACHE_ECONOMICS_REASONS = new Set(["avoided_tokens_not_recorded"]);
+
+function cacheEconomicsReason(value) {
+  const key = String(value || "").trim();
+  return CACHE_ECONOMICS_REASONS.has(key) ? key : "";
+}
+
 export function finopsPolicyLabel(value) {
   const key = String(value || "").trim();
   return FINOPS_POLICY_LABELS[key] || "运营规则";
@@ -92,7 +99,7 @@ export function formatFinOpsCost(value, status = "") {
   if (!hasNumber(value)) return ["unavailable", "unpriced"].includes(status) ? "未计价" : "未记录";
   const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
   return `$${value.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
+    minimumFractionDigits: value >= 1 ? 2 : 0,
     maximumFractionDigits: digits,
   })}`;
 }
@@ -162,6 +169,9 @@ export function finopsMetricCards(payload = {}) {
   const tokens = metrics.tokens || {};
   const cache = metrics.cache || {};
   const dataStatus = payload?.data_status || "unavailable";
+  const cacheReason = cacheEconomicsReason(cache.reason);
+  const avoidedTokensUnavailable = cache.avoided_tokens == null;
+  const savingsUnavailable = cache.estimated_savings == null;
   return [
     {
       id: "cost",
@@ -295,6 +305,7 @@ export function finopsMetricCards(payload = {}) {
           avoidedTokens: cache.avoided_tokens ?? null,
           estimatedSavings: cache.estimated_savings ?? null,
           status: cache.data_status || "unavailable",
+          reason: cacheReason,
         },
         dataStatus,
         evidenceState: cache.eligible_requests ? "observed" : "unavailable",
@@ -304,8 +315,10 @@ export function finopsMetricCards(payload = {}) {
       id: "cache_avoided_tokens",
       label: "缓存避免 Token",
       value: formatFinOpsNumber(cache.avoided_tokens),
-      meta: cache.data_status === "partial" ? "部分命中缺少完整计量" : "来自已记录的结果复用",
-      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      meta: avoidedTokensUnavailable
+        ? "缺少可追溯的避免 Token 证据"
+        : cache.data_status === "partial" ? "部分命中缺少完整计量" : "来自已记录的结果复用",
+      tone: avoidedTokensUnavailable || cache.data_status === "partial" ? "warning" : "neutral",
       metric: {
         id: "cache_avoided_tokens",
         label: "缓存避免 Token",
@@ -321,6 +334,7 @@ export function finopsMetricCards(payload = {}) {
           avoidedTokens: cache.avoided_tokens ?? null,
           estimatedSavings: cache.estimated_savings ?? null,
           status: cache.data_status || "unavailable",
+          reason: cacheReason,
         },
         dataStatus,
         evidenceState: cache.avoided_tokens == null ? "unavailable" : (cache.data_status || "observed"),
@@ -330,8 +344,10 @@ export function finopsMetricCards(payload = {}) {
       id: "cache_savings",
       label: "缓存估算节省",
       value: formatFinOpsCost(cache.estimated_savings),
-      meta: cache.data_status === "partial" ? "仅统计可可靠计价的命中" : "按当前价目映射估算",
-      tone: cache.data_status === "partial" ? "warning" : "neutral",
+      meta: savingsUnavailable
+        ? "缺少 Token 与价目版本，无法估算"
+        : cache.data_status === "partial" ? "仅统计可可靠计价的命中" : "按当前价目映射估算",
+      tone: savingsUnavailable || cache.data_status === "partial" ? "warning" : "neutral",
       metric: {
         id: "cache_estimated_savings",
         label: "缓存估算节省",
@@ -347,6 +363,7 @@ export function finopsMetricCards(payload = {}) {
           avoidedTokens: cache.avoided_tokens ?? null,
           estimatedSavings: cache.estimated_savings ?? null,
           status: cache.data_status || "unavailable",
+          reason: cacheReason,
         },
         dataStatus,
         evidenceState: cache.estimated_savings == null ? "unavailable" : (cache.data_status || "estimated"),
@@ -386,6 +403,9 @@ export function finopsTrendViewModel(payload = {}) {
       avoidedTokens: item?.cache?.avoided_tokens ?? null,
       estimatedSavings: item?.cache?.estimated_savings ?? null,
       status: item?.cache?.data_status || "unavailable",
+      ...(cacheEconomicsReason(item?.cache?.reason)
+        ? { reason: cacheEconomicsReason(item?.cache?.reason) }
+        : {}),
     },
     status: item.data_status || "unavailable",
   }));

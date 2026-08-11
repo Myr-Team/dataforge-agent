@@ -21,7 +21,7 @@ class ManagedAnomaly(DetectedAnomaly):
     model_config = ConfigDict(extra="forbid")
 
     tenant_ref: str
-    origin: Literal["runtime", "operations_demo"] = "runtime"
+    origin: Literal["runtime", "operations_demo", "synthetic_demo"] = "runtime"
     first_detected_at: str
     updated_at: str
     acknowledged_by: str | None = None
@@ -119,7 +119,7 @@ class FinOpsAnomalyService:
         *,
         tenant_ref: str,
         findings: list[DetectedAnomaly],
-        origin: Literal["runtime", "operations_demo"] = "runtime",
+        origin: Literal["runtime", "operations_demo", "synthetic_demo"] = "runtime",
     ) -> list[ManagedAnomaly]:
         """Create or refresh only the supplied findings.
 

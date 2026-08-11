@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleAlert,
@@ -19,9 +19,11 @@ import {
   updateIdentityGroupMapping,
 } from "./api.js";
 import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionViewModel } from "./identityAccessViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
-export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "unavailable", workspaceAccess = null }) {
-  const [state, setState] = useState({ loading: true, error: "", payload: null });
+function IdentityAccessPageContent({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null }) {
+  const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
   const [selectedGroup, setSelectedGroup] = useState(null);
@@ -31,23 +33,42 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const loadGeneration = useRef(0);
+  const currentKey = settingsResourceKey(settingsScope, "identity");
+  const visiblePayload = state.key === currentKey ? state.payload : null;
 
   const load = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const generation = ++loadGeneration.current;
+    const key = settingsResourceKey(settingsScope, "identity");
+    const snapshot = key ? peekSettingsResource(key) : null;
+    if (snapshot?.value) setState({ key, loading: false, error: snapshot.lastError ? "更新失败，正在显示上次可用配置。" : "", payload: snapshot.value });
+    else setState({ key, loading: true, error: "", payload: null });
     try {
-      const payload = await loadIdentityGovernance();
-      setState({ loading: false, error: "", payload });
+      const payload = key
+        ? await loadSettingsResource(key, ({ signal }) => loadIdentityGovernance({ signal }))
+        : await loadIdentityGovernance();
+      if (generation !== loadGeneration.current) return;
+      setState({ key, loading: false, error: "", payload });
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return;
       setState({
+        key,
         loading: false,
         error: error instanceof Error ? error.message : "身份治理读取失败",
-        payload: null,
+        payload: snapshot?.value || null,
       });
     }
-  }, []);
+  }, [settingsScope]);
+  const invalidate = () => {
+    const key = settingsResourceKey(settingsScope, "identity");
+    if (key) invalidateSettingsResource(key);
+  };
 
-  useEffect(() => { load(); }, [load]);
-  const view = useMemo(() => identityAccessViewModel(state.payload || {}, workspaceId), [state.payload, workspaceId]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
+  const view = useMemo(() => identityAccessViewModel(visiblePayload || {}, workspaceId), [visiblePayload, workspaceId]);
   const session = useMemo(
     () => identitySessionViewModel({ user, authState, access: workspaceAccess }),
     [authState, user, workspaceAccess],
@@ -55,7 +76,7 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
 
   useEffect(() => {
     setRoleDraft(Object.fromEntries(view.mappings.map((item) => [item.mappingId, item.role])));
-  }, [state.payload, workspaceId]);
+  }, [visiblePayload, workspaceId]);
 
   const searchGroups = async (event) => {
     event?.preventDefault();
@@ -97,10 +118,12 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
     setNotice("");
     try {
       await action();
+      invalidate();
       setNotice(successMessage);
       await load();
     } catch (error) {
       if (error?.status === 409) {
+        invalidate();
         setActionError("映射已被其他管理员更新，已重新加载最新版本，请复核后再试。");
         await load();
       } else {
@@ -323,4 +346,8 @@ export function IdentityAccessPage({ workspaceId = "", user = {}, authState = "u
       {actionError ? <p className="governance-error" role="alert">{actionError}</p> : null}
     </section>
   );
+}
+
+export function IdentityAccessPage(props) {
+  return <IdentityAccessPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

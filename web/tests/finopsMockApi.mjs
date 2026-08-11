@@ -860,7 +860,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     }
 
     if (path === "/api/workspaces/demo-corpus/access") {
-      body = { allowed: true, role: "owner", workspace_id: "demo-corpus" };
+      body = { authenticated: true, allowed: true, role: "owner", workspace_id: "demo-corpus" };
     } else if (path === "/api/workspaces/demo-corpus/governance/capabilities") {
       if (control.capabilityDelayMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, control.capabilityDelayMs));
@@ -901,7 +901,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/observability") {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
-      body = control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
+      const basePayload = control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
+      body = {
+        ...basePayload,
+        trend: options.trendPayload || basePayload.trend,
+        anomalies: options.anomaliesPayload || basePayload.anomalies,
+      };
     } else if (
       control.memberBudgetAccessState === "permission_required"
       && request.method() === "GET"
@@ -1610,7 +1615,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         ? { view: { view_id: "view-a", name: "财务视图" } }
         : { items: [], count: 0 };
     } else if (path === "/api/finops/trends") {
-      body = bootstrapPayload.trend;
+      body = options.trendPayload || bootstrapPayload.trend;
     } else if (path === "/api/finops/anomalies") {
       body = {
         ...bootstrapPayload,

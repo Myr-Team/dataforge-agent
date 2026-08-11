@@ -10,6 +10,7 @@ from backend.finops.anomalies import AnomalyEvaluationInput, evaluate_default_an
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.member_budgets import MemberBudget
 from backend.finops.repository import InMemoryFinOpsRepository
+from backend.finops.synthetic_demo import DEMO_ANCHOR, DEMO_BATCH_ID
 
 
 NOW = datetime(2026, 8, 7, 8, 0, tzinfo=timezone.utc)
@@ -406,3 +407,22 @@ def test_seed_rejects_non_allowlisted_workspace_without_writes() -> None:
         workspace_id="ws-other",
         batch="operations-v1",
     ) == ()
+
+
+def test_allowlisted_demo_corpus_seed_projects_the_reconciled_shenzhen_bundle() -> None:
+    result = seed_demo_workspace(
+        InMemoryFinOpsRepository(),
+        InMemoryDemoSeedRepository(),
+        tenant_ref="tenant_demo",
+        workspace_id="demo-corpus",
+        allowed_workspace_id="demo-corpus",
+        batch=DEMO_BATCH_ID,
+        now=DEMO_ANCHOR,
+    )
+
+    assert result.event_count == 2480
+    assert result.batch == DEMO_BATCH_ID
+    assert result.canonical_digest
+    assert len(result.run_evidence) == 2480
+    assert all(item["provenance"] == "synthetic_demo" for item in result.run_evidence)
+    assert all(item["model_attempt"]["route_evidence"] == "synthetic" for item in result.run_evidence)

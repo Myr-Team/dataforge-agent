@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 import backend.run_store as run_store
 
 
@@ -140,3 +142,34 @@ def test_model_record_preserves_route_provider_and_both_cache_layers(tmp_path, m
     assert model["gateway_coverage"] == "apim_governed"
     assert model["result_cache"]["state"] == "miss"
     assert model["provider_cache"]["hit_tokens"] == 800
+
+
+@pytest.mark.parametrize("amount", [float("nan"), float("inf"), float("-inf"), True, -0.01])
+def test_safe_cost_estimate_downgrades_invalid_money_to_unavailable(amount: object) -> None:
+    result = run_store._safe_cost_estimate(
+        {
+            "status": "estimated",
+            "amount": amount,
+            "currency": "USD",
+            "price_card_revision": 7,
+            "route_id": "analysis",
+        }
+    )
+
+    assert result == {"status": "unavailable", "reason": "price_not_configured"}
+
+
+@pytest.mark.parametrize("amount", [0, 0.0123])
+def test_safe_cost_estimate_preserves_finite_nonnegative_money(amount: float) -> None:
+    result = run_store._safe_cost_estimate(
+        {
+            "status": "estimated",
+            "amount": amount,
+            "currency": "USD",
+            "price_card_revision": 7,
+            "route_id": "analysis",
+        }
+    )
+
+    assert result["status"] == "estimated"
+    assert result["amount"] == amount

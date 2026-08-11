@@ -51,6 +51,7 @@ def upsert_demo_roi_scenario(
     clean_seed_key = _identifier(seed_key, "seed_key", required=True)
     data = dict(payload or {})
     data.pop("seed_batch", None)
+    demo_evidence = _synthetic_demo_evidence(workspace, data)
     inputs = _scenario_inputs(data)
     scenario_id = (
         "roi_scenario_"
@@ -87,6 +88,8 @@ def upsert_demo_roi_scenario(
             "updated_at": now,
             "seed_batch": clean_seed_key,
         }
+        if demo_evidence:
+            scenario["demo_evidence"] = demo_evidence
         scenarios = [
             item
             for item in scenarios
@@ -173,7 +176,7 @@ def scenario_projection(workspace_id: str, scenario: Mapping[str, Any]) -> dict[
         for key in ("name", "actor_id", "source")
         if str(actor.get(key) or "").strip()
     }
-    return {
+    projection = {
         "scenario_id": scenario_id,
         "title": str(scenario.get("title") or ""),
         "status": "estimated",
@@ -185,7 +188,128 @@ def scenario_projection(workspace_id: str, scenario: Mapping[str, Any]) -> dict[
         "actor": public_actor_view,
         "created_at": str(scenario.get("created_at") or ""),
         "updated_at": str(scenario.get("updated_at") or ""),
+        "demo_evidence": _project_demo_evidence(scenario.get("demo_evidence")),
     }
+    return projection
+
+
+def _synthetic_demo_evidence(workspace: str, data: dict[str, Any]) -> dict[str, Any]:
+    keys = {
+        "provenance",
+        "scenario_id",
+        "canonical_digest",
+        "production_quality_claim",
+        "demo_verified_label",
+        "measured",
+        "process",
+        "actors",
+        "window",
+        "source_refs",
+        "evidence_items",
+        "scenario_monthly_benefit_usd",
+        "scenario_roi_pct",
+    }
+    present = {key: data.pop(key) for key in tuple(data) if key in keys}
+    if not present:
+        return {}
+    if workspace != "demo-corpus" or present.get("provenance") != "synthetic_demo":
+        raise ValueError("synthetic demo evidence is only allowed for demo-corpus")
+    if present.get("scenario_id") != "shenzhen-site-selection-v1":
+        raise ValueError("synthetic demo scenario is not recognized")
+    digest = str(present.get("canonical_digest") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", digest):
+        raise ValueError("synthetic demo digest is invalid")
+    if present.get("production_quality_claim") is not False:
+        raise ValueError("synthetic demo cannot make a production-quality claim")
+    label = str(present.get("demo_verified_label") or "").strip()
+    if label != "演示验证结果 · 合成数据":
+        raise ValueError("synthetic demo label is invalid")
+    measured = present.get("measured") if isinstance(present.get("measured"), Mapping) else {}
+    paired = _positive_int(measured.get("paired_evaluations"), "paired_evaluations", 100000)
+    historical = _money(measured.get("historical_hours"), "historical_hours")
+    assisted = _money(measured.get("assisted_hours"), "assisted_hours")
+    if historical < assisted:
+        raise ValueError("synthetic demo assisted hours cannot exceed historical hours")
+    evidence = {
+        "provenance": "synthetic_demo",
+        "scenario_id": "shenzhen-site-selection-v1",
+        "canonical_digest": digest,
+        "production_quality_claim": False,
+        "label": label,
+        "measured": {"paired_evaluations": paired, "historical_hours": historical, "assisted_hours": assisted},
+    }
+    if "process" not in present:
+        return evidence
+    process = present["process"] if isinstance(present["process"], Mapping) else {}
+    evidence["process"] = {
+        "analysis_tasks": _positive_int(process.get("analysis_tasks"), "analysis_tasks", 100000),
+        "reports": _positive_int(process.get("reports"), "reports", 100000),
+        "evidence_reviews": _positive_int(process.get("evidence_reviews"), "evidence_reviews", 100000),
+        "reviewed_savings_hours": _money(process.get("reviewed_savings_hours"), "reviewed_savings_hours"),
+    }
+    actors = present.get("actors") if isinstance(present.get("actors"), Mapping) else {}
+    evidence["actors"] = {
+        "outcome_actor_ref": _identifier(actors.get("outcome_actor_ref"), "outcome_actor_ref", required=True),
+        "reviewer_actor_ref": _identifier(actors.get("reviewer_actor_ref"), "reviewer_actor_ref", required=True),
+    }
+    if evidence["actors"]["outcome_actor_ref"] == evidence["actors"]["reviewer_actor_ref"]:
+        raise ValueError("synthetic demo reviewers must be independent")
+    window = present.get("window") if isinstance(present.get("window"), Mapping) else {}
+    from_at = str(window.get("from") or "").strip()
+    to_at = str(window.get("to") or "").strip()
+    currency = str(window.get("currency") or "").strip().upper()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", from_at) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", to_at) or from_at >= to_at or not _CURRENCY.fullmatch(currency):
+        raise ValueError("synthetic demo window is invalid")
+    evidence["window"] = {"from": from_at, "to": to_at, "currency": currency}
+    source_refs = present.get("source_refs") if isinstance(present.get("source_refs"), Mapping) else {}
+    evidence["source_refs"] = {
+        key: _identifier(source_refs.get(key), key, required=True)
+        for key in ("run_id", "request_ref", "correlation_ref", "attempt_ref")
+    }
+    item_groups = present.get("evidence_items") if isinstance(present.get("evidence_items"), Mapping) else {}
+    evidence["evidence_items"] = {
+        key: _demo_evidence_items(item_groups.get(key), key)
+        for key in ("analysis_tasks", "reports", "evidence_reviews")
+    }
+    return evidence
+
+
+def _project_demo_evidence(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, Mapping) or value.get("provenance") != "synthetic_demo":
+        return None
+    if value.get("production_quality_claim") is not False:
+        return None
+    label = str(value.get("label") or "").strip()
+    measured = value.get("measured") if isinstance(value.get("measured"), Mapping) else {}
+    if label != "演示验证结果 · 合成数据":
+        return None
+    projection = {
+        "provenance": "synthetic_demo",
+        "production_quality_claim": False,
+        "label": label,
+        "measured": {
+            "paired_evaluations": measured.get("paired_evaluations"),
+            "historical_hours": measured.get("historical_hours"),
+            "assisted_hours": measured.get("assisted_hours"),
+        },
+    }
+    for key in ("process", "actors", "window", "source_refs", "evidence_items"):
+        if isinstance(value.get(key), Mapping):
+            projection[key] = dict(value[key])
+    return projection
+
+
+def _demo_evidence_items(value: Any, field: str) -> list[dict[str, str]]:
+    if not isinstance(value, list) or len(value) > 100000:
+        raise ValueError(f"{field} is invalid")
+    items: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise ValueError(f"{field} is invalid")
+        identifier = _identifier(item.get("id"), f"{field}.id", required=True)
+        title = _text(item.get("title"), f"{field}.title", 160)
+        items.append({"id": identifier, "title": title})
+    return items
 
 
 def _scenario_inputs(payload: Mapping[str, Any]) -> dict[str, Any]:

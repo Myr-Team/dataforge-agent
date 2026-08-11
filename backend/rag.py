@@ -45,10 +45,9 @@ def _terraform_output(name: str) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
+def _local_documents(workspace_id: str) -> list[dict[str, Any]]:
     workspace_root = ROOT / "workspaces" / workspace_id
     workspace = workspace_root / "raw_docs"
-    terms = _query_terms(query)
     local_docs: list[dict[str, Any]] = []
     profile_path = workspace_root / "profile.json"
     if profile_path.exists() and profile_search_content is not None:
@@ -73,8 +72,22 @@ def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, A
     elif excel_to_records is not None:
         for path in workspace.glob("*.xlsx"):
             local_docs.extend(excel_to_records(path, f"raw_docs/{path.name}", workspace_id))
+    return local_docs
+
+
+def _local_adapter_documents(workspace_id: str) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    for document in _local_documents(workspace_id):
+        item = dict(document)
+        _apply_customer_hit_title(item)
+        documents.append(item)
+    return documents
+
+
+def _local_search(workspace_id: str, query: str, top_k: int) -> list[dict[str, Any]]:
+    terms = _query_terms(query)
     hits: list[dict[str, Any]] = []
-    for doc in local_docs:
+    for doc in _local_documents(workspace_id):
         haystack = f"{doc.get('title', '')} {doc.get('content', '')}".lower()
         score = _score_text(haystack, terms)
         if score:
@@ -106,7 +119,112 @@ def _score_text(haystack: str, terms: list[str]) -> int:
     return sum(haystack.count(term.lower()) for term in terms)
 
 
+def _trusted_allowed_corpus_refs(workspace_id: str) -> tuple[str, ...] | None:
+    """Read the server-maintained corpus scope for a local adapter request.
+
+    Local adapters have no request actor of their own, so their public entry point
+    must consume an explicit, workspace-scoped authorization decision rather than
+    treating an omitted scope as permission for every local document.
+    """
+
+    workspace_base = (ROOT / "workspaces").resolve()
+    metadata_path = (workspace_base / workspace_id / "workspace.json").resolve()
+    if metadata_path.parent.parent != workspace_base or not metadata_path.is_file():
+        return None
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    refs = metadata.get("authorized_corpus_refs")
+    if not isinstance(refs, list):
+        return None
+    normalized = tuple(dict.fromkeys(str(ref).strip() for ref in refs if str(ref).strip()))
+    return normalized
+
+
 def search(
+    workspace_id: str,
+    query: str,
+    top_k: int = 5,
+    *,
+    use_vector: bool = True,
+    prefer_local: bool = False,
+) -> list[dict[str, Any]]:
+    try:
+        from backend.retrieval_adapters import (
+            RetrievalAdapterError,
+            RetrievalRequest,
+            create_search_adapter,
+            legacy_fallback,
+            offline_legacy_fallback,
+        )
+    except ImportError:
+        from retrieval_adapters import (
+            RetrievalAdapterError,
+            RetrievalRequest,
+            create_search_adapter,
+            legacy_fallback,
+            offline_legacy_fallback,
+        )
+
+    backend = os.environ.get("DF_RETRIEVAL_BACKEND", "legacy").strip().lower() or "legacy"
+    local_backends = {"local_keyword", "local_graph", "local_hybrid_graph"}
+    allowed_corpus_refs: tuple[str, ...] = ()
+    authorization_applied = False
+    if backend in local_backends:
+        resolved_scope = _trusted_allowed_corpus_refs(workspace_id)
+        if resolved_scope is None:
+            return []
+        allowed_corpus_refs = resolved_scope
+        authorization_applied = True
+    request = RetrievalRequest(
+        workspace_id=workspace_id,
+        query=query,
+        top_k=top_k,
+        allowed_corpus_refs=allowed_corpus_refs,
+        authorization_applied=authorization_applied,
+        mode=backend,
+        graph_path=os.environ.get("DF_LOCAL_GRAPH_PATH") or None,
+        use_vector=use_vector,
+        prefer_local=prefer_local,
+    )
+    try:
+        adapter = create_search_adapter(
+            backend,
+            legacy_search=_legacy_search,
+            document_loader=_local_adapter_documents,
+            workspace_base=ROOT / "workspaces",
+        )
+    except RetrievalAdapterError as exc:
+        return legacy_fallback(_legacy_search, request, exc)
+    if backend == "legacy":
+        return adapter.search(request)
+    try:
+        return adapter.search(request)
+    except Exception as exc:
+        return offline_legacy_fallback(_offline_local_search, request, exc)
+
+
+def _offline_local_search(
+    workspace_id: str,
+    query: str,
+    top_k: int = 5,
+    *,
+    use_vector: bool = True,
+    prefer_local: bool = False,
+) -> list[dict[str, Any]]:
+    del use_vector, prefer_local
+    try:
+        from backend.retrieval_adapters import validate_workspace_root
+    except ImportError:
+        from retrieval_adapters import validate_workspace_root
+    validate_workspace_root(ROOT / "workspaces", workspace_id)
+    return _local_search(workspace_id, query, top_k)
+
+
+def _legacy_search(
     workspace_id: str,
     query: str,
     top_k: int = 5,

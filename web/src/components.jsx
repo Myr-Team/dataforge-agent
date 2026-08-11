@@ -20,6 +20,9 @@ import { monitoringSnapshotViewModel } from "./monitoringViewModel.js";
 import { auditPageFailure, auditPageSuccess, createGovernanceRequestGuard, createWorkspaceRequestGuard, emptyGovernanceData, workspaceBoundGovernanceData, workspaceBoundMemberContract } from "./governanceRequestState.js";
 import { GovernanceCenter } from "./GovernanceCenter.jsx";
 import { finopsIntentHandlers } from "./finopsNavigation.js";
+import { settingsIntentHandlers } from "./settingsNavigation.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource, settingsDataKey } from "./settingsDataStore.js";
+import { settingsResourceKeys } from "./settingsNavigation.js";
 import { ModelGovernanceSettings } from "./ModelGovernanceSettings.jsx";
 import { MemberBudgetSettingsPage } from "./MemberBudgetSettingsPage.jsx";
 import { memberBudgetHomeSummaryViewModel } from "./memberBudgetViewModel.js";
@@ -91,7 +94,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadSystemStatus, loadWorkspaceSettings, loadWorkspaceModelRouting, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts, loadEnterpriseIdentityPolicy, updateEnterpriseIdentityPolicy } from "./api.js";
+import { API_BASE, artifactLink, compareExperiments, loadDataOverview, loadExperiments, loadFlagship, loadPlanMetrics, loadPlaybookDetail, loadRun, setFlagship, loadArtifactsList, loadRunSummary, loadRunTrace, runLogUrl, loadRunLog, loadWorkspaceSettings, loadWorkspaceModelRouting, loadMembers, searchEntraUsers, inviteEntraMember, removeMember, updateMemberRole, loadWorkspaceGovernance, loadWorkspaceTraceStatus, loadWorkspaceTraceMetrics, loadWorkspaceCostValue, createWorkspaceRoiScenario, loadWorkspaceChargeback, loadWorkspaceGovernanceAuditEvents, loadWorkspaceInvitationHistory, loadMemberBudgets, loadMemberBudgetNotification, loadMemberBudgetAlerts, loadEnterpriseIdentityPolicy, updateEnterpriseIdentityPolicy } from "./api.js";
 import {
   AGENTS,
   ARTIFACT_GROUPS,
@@ -127,7 +130,7 @@ function memberRoleLabel(role) {
   return cleanUserValue(role) || "成员";
 }
 
-export function ShellNav({ active = "workspaces", onChange = () => {}, onFinOpsIntent = () => {} }) {
+export function ShellNav({ active = "workspaces", onChange = () => {}, onFinOpsIntent = () => {}, onSettingsIntent = () => {} }) {
   const navGroups = visibleNavGroups();
   return (
     <nav className="shell-nav" aria-label="Primary">
@@ -146,6 +149,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, onFinOpsI
                     title={item.label}
                     onClick={() => onChange(item.id)}
                     {...finopsIntentHandlers(item, onFinOpsIntent)}
+                    {...settingsIntentHandlers(item, onSettingsIntent)}
                   >
                     <Icon size={19} />
                     <span>{item.label}</span>
@@ -160,7 +164,7 @@ export function ShellNav({ active = "workspaces", onChange = () => {}, onFinOpsI
   );
 }
 
-export function MobileNav({ active = "workspaces", onChange = () => {}, capabilities = null, onFinOpsIntent = () => {} }) {
+export function MobileNav({ active = "workspaces", onChange = () => {}, capabilities = null, onFinOpsIntent = () => {}, onSettingsIntent = () => {} }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile primary">
       {visibleNavItems(capabilities).map((item) => {
@@ -172,6 +176,7 @@ export function MobileNav({ active = "workspaces", onChange = () => {}, capabili
             type="button"
             onClick={() => onChange(item.id)}
             {...finopsIntentHandlers(item, onFinOpsIntent)}
+            {...settingsIntentHandlers(item, onSettingsIntent)}
           >
             <Icon size={17} />
             <span>{item.label}</span>
@@ -626,6 +631,7 @@ function WorkbenchMainInner({
   governanceCapabilitiesError,
   onRetryGovernanceCapabilities,
   finopsPreloadScope,
+  settingsPreloadScope,
 }) {
   const resolvedView = view === "governance" ? "lineage" : view === "cost-value" ? "monitor" : view;
   if (resolvedView === "conversations") {
@@ -697,7 +703,7 @@ function WorkbenchMainInner({
     );
   }
   if (resolvedView === "settings") {
-    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsInitialTab} />;
+    return <SettingsCenter dashboard={dashboard} observability={observability} user={user} authState={authState} workspaceAccess={workspaceAccess} settingsScope={settingsPreloadScope} initialTab={settingsInitialTab} />;
   }
   if (["members", "lineage", "monitor", "model-routing"].includes(resolvedView)) {
     return (
@@ -3296,15 +3302,22 @@ function governanceIsoWindow(value) {
   return { from: from.toISOString(), to: to.toISOString() };
 }
 
-function SettingsCenter({ dashboard, observability, user, authState = "unavailable", workspaceAccess = null, initialTab = "about", governanceOnly = false }) {
+function SettingsCenter({ dashboard, observability, user, authState = "unavailable", workspaceAccess = null, settingsScope = null, initialTab = "about", governanceOnly = false }) {
   const health = dashboard?.health || {};
   const workspaceId = dashboard?.workspace_id || dashboard?.workspace?.workspace_id || "";
+  const settingsKeys = useMemo(() => settingsResourceKeys(settingsScope), [settingsScope]);
+  const membersKey = useMemo(() => (
+    settingsScope?.key && workspaceId
+      ? settingsDataKey(settingsScope.key, "members", { workspaceId, schemaRevision: "settings-v1" })
+      : ""
+  ), [settingsScope, workspaceId]);
   const [tab, setTab] = useState(() => governanceOnly ? "governance" : "about");
   const [probing, setProbing] = useState(false);
   const [probedAt, setProbedAt] = useState(null);
-  const [sys, setSys] = useState(null);
+  const [sysEntry, setSysEntry] = useState({ key: "", value: null });
   const [memberRows, setMemberRows] = useState([]);
   const [memberMeta, setMemberMeta] = useState(null);
+  const [memberScopeKey, setMemberScopeKey] = useState("");
   const [memberWorkspaceId, setMemberWorkspaceId] = useState("");
   const [membersLoading, setMembersLoading] = useState(false);
   const [memberLoadError, setMemberLoadError] = useState("");
@@ -3328,24 +3341,40 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   const governanceToken = useRef(null);
   const memberRequestVersion = useRef(0);
   const invitationRequestVersion = useRef(0);
-  const [workspaceSettings, setWorkspaceSettings] = useState(null);
-  const [workspaceRouting, setWorkspaceRouting] = useState(null);
+  const [workspaceSettingsEntry, setWorkspaceSettingsEntry] = useState({ key: "", value: null });
+  const [workspaceRoutingEntry, setWorkspaceRoutingEntry] = useState({ key: "", value: null });
+  const setSys = (value, key = settingsKeys.workspaceSettings) => setSysEntry({ key, value });
+  const setWorkspaceSettings = (value, key = settingsKeys.workspaceSettings) => setWorkspaceSettingsEntry({ key, value });
+  const setWorkspaceRouting = (value, key = settingsKeys.routing) => setWorkspaceRoutingEntry({ key, value });
+  const sys = sysEntry.key === settingsKeys.workspaceSettings ? sysEntry.value : null;
+  const workspaceSettings = workspaceSettingsEntry.key === settingsKeys.workspaceSettings ? workspaceSettingsEntry.value : null;
+  const workspaceRouting = workspaceRoutingEntry.key === settingsKeys.routing ? workspaceRoutingEntry.value : null;
   const [settingsDrawer, setSettingsDrawer] = useState(null);
   const [settingsPage, setSettingsPage] = useState("home");
-  const [memberBudgetHome, setMemberBudgetHome] = useState({
+  const [memberBudgetHomeEntry, setMemberBudgetHomeEntry] = useState({ key: "", value: {
     state: "loading",
     stateLabel: "正在读取",
     nearBudgetLabel: "预算状态读取中",
     mailLabel: "邮件状态读取中",
-  });
+  } });
+  const setMemberBudgetHome = (value, key = settingsKeys.budget) => setMemberBudgetHomeEntry({ key, value });
+  const memberBudgetHome = memberBudgetHomeEntry.key === settingsKeys.budget
+    ? memberBudgetHomeEntry.value
+    : { state: "loading", stateLabel: "正在读取", nearBudgetLabel: "预算状态读取中", mailLabel: "邮件状态读取中" };
   const [memberBudgetRevision, setMemberBudgetRevision] = useState(0);
   const memberBudgetHomeRequestVersion = useRef(0);
   const applyMemberPayload = (data, sourceWorkspaceId = workspaceId) => {
     setMemberRows(Array.isArray(data?.members) ? data.members : []);
     setMemberMeta(data || null);
+    setMemberScopeKey(membersKey);
     setMemberWorkspaceId(sourceWorkspaceId);
   };
-  const memberContract = workspaceBoundMemberContract(workspaceId, memberWorkspaceId, memberRows, memberMeta);
+  const memberContract = workspaceBoundMemberContract(
+    workspaceId,
+    memberScopeKey === membersKey ? memberWorkspaceId : "",
+    memberScopeKey === membersKey ? memberRows : [],
+    memberScopeKey === membersKey ? memberMeta : null,
+  );
   const memberPermissions = governancePermissions(memberContract.meta || {});
   const permissionsReady = memberContract.ready && !membersLoading && !memberLoadError;
   const currentGovernanceData = workspaceBoundGovernanceData(workspaceId, governanceData);
@@ -3353,37 +3382,56 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     ? invitationState
     : { workspaceId, loading: Boolean(workspaceId), data: null, error: "" };
   useEffect(() => {
-    if (governanceOnly) return undefined;
+    if (governanceOnly || !settingsKeys.budget) return undefined;
     const requestVersion = ++memberBudgetHomeRequestVersion.current;
     let cancelled = false;
-    setMemberBudgetHome({
-      state: "loading",
-      stateLabel: "正在读取",
-      nearBudgetLabel: "预算状态读取中",
-      mailLabel: "邮件状态读取中",
-    });
+    const cached = [
+      peekSettingsResource(settingsKeys.budget),
+      peekSettingsResource(settingsKeys.notification),
+      peekSettingsResource(settingsKeys.alerts),
+    ];
+    if (cached.every((entry) => entry.value !== null && entry.value !== undefined)) {
+      setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
+        budgets: cached[0].value,
+        budgetsState: cached[0].value?.data_status || "partial",
+        notification: cached[1].value,
+        notificationState: cached[1].value?.data_status === "unavailable" ? "unavailable" : "configured",
+        alerts: cached[2].value,
+        alertsState: cached[2].value?.data_status === "unavailable" ? "unavailable" : "available",
+      }));
+    } else {
+      setMemberBudgetHome({
+        state: "loading",
+        stateLabel: "正在读取",
+        nearBudgetLabel: "预算状态读取中",
+        mailLabel: "邮件状态读取中",
+      });
+    }
     Promise.allSettled([
-      loadMemberBudgets(workspaceId),
-      loadMemberBudgetNotification(workspaceId),
-      loadMemberBudgetAlerts(workspaceId),
+      loadSettingsResource(settingsKeys.budget, ({ signal }) => loadMemberBudgets(workspaceId, { signal })),
+      loadSettingsResource(settingsKeys.notification, ({ signal }) => loadMemberBudgetNotification(workspaceId, { signal })),
+      loadSettingsResource(settingsKeys.alerts, ({ signal }) => loadMemberBudgetAlerts(workspaceId, { signal })),
     ]).then(([budgetsResult, notificationResult, alertsResult]) => {
       if (cancelled || requestVersion !== memberBudgetHomeRequestVersion.current) return;
-      if (budgetsResult.status === "rejected") {
+      if (budgetsResult.status === "rejected" && !cached[0].value) {
         setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
           status: budgetsResult.reason?.status === 403 ? "permission_required" : "unavailable",
         }));
         return;
       }
-      const budgetsState = ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
-        ? budgetsResult.value.data_status
+      const budgets = budgetsResult.status === "fulfilled" ? budgetsResult.value : cached[0].value;
+      const notification = notificationResult.status === "fulfilled" ? notificationResult.value : cached[1].value;
+      const alerts = alertsResult.status === "fulfilled" ? alertsResult.value : cached[2].value;
+      const budgetsState = ["complete", "partial", "unavailable"].includes(budgets?.data_status)
+        ? budgets.data_status
         : "partial";
       const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
         ? "available"
         : "unavailable";
       setMemberBudgetHome(memberBudgetHomeSummaryViewModel({
-        budgets: budgetsResult.value,
+        budgets,
         budgetsState,
-        notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
+        notification: notification || null,
         notificationState: notificationResult.status === "fulfilled"
           ? notificationResult.value?.data_status === "unavailable"
             ? "unavailable"
@@ -3396,26 +3444,30 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
               : notificationResult.reason?.status === 403
                 ? "permission_required"
               : "unavailable",
-        alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
+        alerts: alerts || {},
         alertsState,
       }));
     });
     return () => {
       cancelled = true;
     };
-  }, [governanceOnly, memberBudgetRevision, workspaceId]);
+  }, [governanceOnly, memberBudgetRevision, settingsKeys.alerts, settingsKeys.budget, settingsKeys.notification, workspaceId]);
   const memberPermissionReason = !permissionsReady ? (memberLoadError || "正在读取服务端操作权限") : memberPermissions.reasons["member.manage"];
   const loadMembersContract = async () => {
     if (!workspaceId) return;
     const requestWorkspaceId = workspaceId;
     const requestVersion = ++memberRequestVersion.current;
-    setMemberRows([]);
-    setMemberMeta(null);
-    setMemberWorkspaceId("");
+    const cached = membersKey ? peekSettingsResource(membersKey) : null;
+    if (!cached?.value) {
+      setMemberRows([]);
+      setMemberMeta(null);
+      setMemberWorkspaceId("");
+    }
     setMembersLoading(true);
     setMemberLoadError("");
     try {
-      const data = await loadMembers(requestWorkspaceId);
+      if (!membersKey) throw new Error("settings authorization scope unavailable");
+      const data = await loadSettingsResource(membersKey, ({ signal }) => loadMembers(requestWorkspaceId, { signal }));
       if (requestVersion !== memberRequestVersion.current) return;
       if (String(data?.workspace_id || requestWorkspaceId) !== requestWorkspaceId) throw new Error("workspace mismatch");
       applyMemberPayload(data, requestWorkspaceId);
@@ -3428,6 +3480,9 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     } finally {
       if (requestVersion === memberRequestVersion.current) setMembersLoading(false);
     }
+  };
+  const invalidateMembers = () => {
+    if (membersKey) invalidateSettingsResource(membersKey);
   };
   const openIdentityPolicy = async () => {
     if (!workspaceId || !memberPermissions.canManageMembers) return;
@@ -3443,6 +3498,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setIdentityPolicy((current) => ({ ...current, busy: true, error: "" }));
     try {
       await updateEnterpriseIdentityPolicy(workspaceId, domains);
+      invalidateMembers();
       setIdentityPolicy({ open: false, busy: false, error: "", domains });
       await loadMembersContract();
       setMemberNotice("企业身份展示策略已更新。");
@@ -3519,7 +3575,6 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       if (governanceGuard.current.isCurrent(requestToken, workspaceId)) setGovernanceLoadingMore(false);
     }
   };
-  useEffect(() => { loadSystemStatus().then(setSys).catch(() => {}); }, []);
   useEffect(() => {
     if (governanceOnly) {
       setTab("governance");
@@ -3559,20 +3614,32 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     governanceGuard.current.begin(workspaceId);
     setGovernanceData(emptyGovernanceData(workspaceId, true));
     setInvitationState({ workspaceId, loading: true, data: null, error: "" });
-    loadMembersContract();
+    if (tab === "members" || governanceOnly) loadMembersContract();
     return () => { memberRequestVersion.current += 1; };
-  }, [workspaceId]);
+  }, [governanceOnly, membersKey, tab, workspaceId]);
   useEffect(() => {
-    if (!workspaceId) return undefined;
+    if (!workspaceId || !settingsKeys.workspaceSettings) return undefined;
     let cancelled = false;
-    loadWorkspaceSettings(workspaceId)
-      .then((data) => { if (!cancelled) setWorkspaceSettings(data); })
-      .catch(() => { if (!cancelled) setWorkspaceSettings(null); });
+    const snapshot = peekSettingsResource(settingsKeys.workspaceSettings);
+    if (snapshot.value) {
+      setWorkspaceSettings(snapshot.value);
+      setSys(snapshot.value?.system_status || null);
+    }
+    loadSettingsResource(settingsKeys.workspaceSettings, ({ signal }) => loadWorkspaceSettings(workspaceId, { signal }))
+      .then((data) => {
+        if (cancelled) return;
+        setWorkspaceSettings(data);
+        setSys(data?.system_status || null);
+      })
+      .catch((error) => {
+        if (!cancelled && error?.name !== "AbortError" && !snapshot.value) setWorkspaceSettings(null);
+      });
     return () => { cancelled = true; };
-  }, [workspaceId]);
+  }, [settingsKeys.workspaceSettings, workspaceId]);
   const refreshWorkspaceRouting = () => {
     if (!workspaceId) return Promise.resolve(null);
-    return loadWorkspaceModelRouting(workspaceId)
+    if (!settingsKeys.routing) return Promise.resolve(null);
+    return loadSettingsResource(settingsKeys.routing, ({ signal }) => loadWorkspaceModelRouting(workspaceId, { signal }), { force: true })
       .then((payload) => {
         setWorkspaceRouting(payload || null);
         return payload;
@@ -3584,15 +3651,17 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
   };
   useEffect(() => {
     let cancelled = false;
-    if (!workspaceId) {
+    if (!workspaceId || !settingsKeys.routing) {
       setWorkspaceRouting(null);
       return undefined;
     }
-    loadWorkspaceModelRouting(workspaceId)
+    const snapshot = peekSettingsResource(settingsKeys.routing);
+    if (snapshot.value) setWorkspaceRouting(snapshot.value);
+    loadSettingsResource(settingsKeys.routing, ({ signal }) => loadWorkspaceModelRouting(workspaceId, { signal }))
       .then((payload) => { if (!cancelled) setWorkspaceRouting(payload || null); })
-      .catch(() => { if (!cancelled) setWorkspaceRouting(null); });
+      .catch((error) => { if (!cancelled && error?.name !== "AbortError" && !snapshot.value) setWorkspaceRouting(null); });
     return () => { cancelled = true; };
-  }, [workspaceId]);
+  }, [settingsKeys.routing, workspaceId]);
   useEffect(() => {
     if (!governanceOnly) {
       governanceGuard.current.begin("");
@@ -3658,9 +3727,16 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     return null;
   };
   const reprobe = () => {
-    if (probing) return;
+    if (probing || !settingsKeys.workspaceSettings) return;
     setProbing(true);
-    loadSystemStatus().then(setSys).catch(() => {}).finally(() => {
+    loadSettingsResource(
+      settingsKeys.workspaceSettings,
+      ({ signal }) => loadWorkspaceSettings(workspaceId, { signal }),
+      { force: true },
+    ).then((data) => {
+      setWorkspaceSettings(data);
+      setSys(data?.system_status || null);
+    }).catch(() => {}).finally(() => {
       window.setTimeout(() => { setProbing(false); setProbedAt(new Date()); }, 1200);
     });
   };
@@ -3738,6 +3814,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
       redirect_url: window.location.origin,
     })
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setInviteForm({ email: "", name: "", role: "editor", selectionRef: "", subjectLabel: "" });
@@ -3767,6 +3844,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setMemberNotice("");
     removeMember(workspaceId, target)
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setMemberNotice("成员已从当前工作区移除。");
@@ -3788,6 +3866,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     setMemberNotice("");
     updateMemberRole(workspaceId, target, role)
       .then((data) => {
+        invalidateMembers();
         applyMemberPayload(data);
         loadInvitationHistory();
         setMemberNotice("成员角色已更新，后续运行会按新角色展示协作与用量归因。");
@@ -3900,6 +3979,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
     return (
       <MemberBudgetSettingsPage
         workspaceId={workspaceId}
+        settingsScope={settingsScope}
         onChanged={() => setMemberBudgetRevision((revision) => revision + 1)}
         onBack={() => {
           setMemberBudgetRevision((revision) => revision + 1);
@@ -4162,7 +4242,7 @@ function SettingsCenter({ dashboard, observability, user, authState = "unavailab
         wide={["models", "identity"].includes(settingsDrawer)}
       >
         {["models", "identity"].includes(settingsDrawer)
-          ? <ModelGovernanceSettings workspaceId={workspaceId} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsDrawer === "identity" ? "identity" : "agents"} onSettingsChanged={refreshWorkspaceRouting} />
+          ? <ModelGovernanceSettings workspaceId={workspaceId} settingsScope={settingsScope} user={user} authState={authState} workspaceAccess={workspaceAccess} initialTab={settingsDrawer === "identity" ? "identity" : "agents"} onSettingsChanged={refreshWorkspaceRouting} />
           : (
             <div className="settings-info-drawer">
               {(settingsDrawerCopy[settingsDrawer]?.body || []).map((line, index) => <p key={index}>{line}</p>)}

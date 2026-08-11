@@ -412,6 +412,7 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
         "provider_type": "azure_foundry",
         "provider_id": None,
         "model_id": "gpt-5.1",
+        "route_evidence": "selected",
         "selection": "policy",
         "fallback_reason": None,
         "execution_kind": "direct_reply",

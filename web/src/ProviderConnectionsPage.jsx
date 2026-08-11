@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CheckCircle2,
   CircleAlert,
@@ -23,6 +23,8 @@ import {
 } from "./api.js";
 import { AwsBedrockConnectionForm } from "./AwsBedrockConnectionForm.jsx";
 import { providerConnectionsViewModel } from "./providerConnectionsViewModel.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
+import { settingsResourceKey } from "./settingsNavigation.js";
 
 const DEEPSEEK_ENDPOINT = "https://api.deepseek.com";
 
@@ -70,8 +72,8 @@ function bedrockRefreshNotice(payload, verb, providerId = "") {
     : `AWS Bedrock 凭据${verb}，测试结果已刷新。`;
 }
 
-export function ProviderConnectionsPage() {
-  const [state, setState] = useState({ loading: true, error: "", payload: null });
+function ProviderConnectionsPageContent({ settingsScope = null }) {
+  const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
     displayName: "DeepSeek 原厂",
     apiKey: "",
@@ -80,25 +82,46 @@ export function ProviderConnectionsPage() {
   const [busy, setBusy] = useState("");
   const [notice, setNotice] = useState("");
   const [actionError, setActionError] = useState("");
+  const loadGeneration = useRef(0);
+  const currentKey = settingsResourceKey(settingsScope, "provider");
+  const visiblePayload = state.key === currentKey ? state.payload : null;
 
   const load = useCallback(async () => {
-    setState((current) => ({ ...current, loading: true, error: "" }));
+    const generation = ++loadGeneration.current;
+    const key = settingsResourceKey(settingsScope, "provider");
+    const snapshot = key ? peekSettingsResource(key) : null;
+    if (snapshot?.value) setState({ key, loading: false, error: snapshot.lastError ? "更新失败，正在显示上次可用配置。" : "", payload: snapshot.value });
+    else setState({ key, loading: true, error: "", payload: null });
     try {
-      const payload = await loadModelProviders();
-      setState({ loading: false, error: "", payload });
+      const payload = key
+        ? await loadSettingsResource(key, ({ signal }) => loadModelProviders({ signal }))
+        : await loadModelProviders();
+      if (generation !== loadGeneration.current) return null;
+      setState({ key, loading: false, error: "", payload });
       return payload;
     } catch (error) {
+      if (generation !== loadGeneration.current || error?.name === "AbortError") return null;
       setState({
+        key,
         loading: false,
         error: "无法读取模型提供商配置，请重试。",
-        payload: null,
+        payload: snapshot?.value || null,
       });
       return null;
     }
-  }, []);
+  }, [settingsScope]);
+  const invalidate = () => {
+    ["provider", "routing"].forEach((resource) => {
+      const key = settingsResourceKey(settingsScope, resource);
+      if (key) invalidateSettingsResource(key);
+    });
+  };
 
-  useEffect(() => { load(); }, [load]);
-  const view = useMemo(() => providerConnectionsViewModel(state.payload || {}), [state.payload]);
+  useEffect(() => {
+    load();
+    return () => { loadGeneration.current += 1; };
+  }, [load]);
+  const view = useMemo(() => providerConnectionsViewModel(visiblePayload || {}), [visiblePayload]);
 
   const runAction = async (key, action, successMessage) => {
     setBusy(key);
@@ -106,12 +129,14 @@ export function ProviderConnectionsPage() {
     setNotice("");
     try {
       await action();
+      invalidate();
       const refreshed = await load();
       setNotice(typeof successMessage === "function" ? successMessage(refreshed) : successMessage);
       return true;
     } catch (error) {
       if (error?.status === 409) {
         setActionError(safeConnectionMessage(error));
+        invalidate();
         await load();
       } else {
         setActionError(safeConnectionMessage(error));
@@ -139,6 +164,7 @@ export function ProviderConnectionsPage() {
         base_url: DEEPSEEK_ENDPOINT,
         api_key: apiKey,
       });
+      invalidate();
       setNotice("DeepSeek 已保存到安全凭据存储，并完成首次连通性检测。");
       await load();
     } catch (error) {
@@ -428,4 +454,8 @@ export function ProviderConnectionsPage() {
       {actionError ? <p className="governance-error" role="alert">{actionError}</p> : null}
     </section>
   );
+}
+
+export function ProviderConnectionsPage(props) {
+  return <ProviderConnectionsPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

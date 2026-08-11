@@ -469,3 +469,224 @@ def test_maf_live_event_uses_the_completed_agents_assigned_route(monkeypatch) ->
     assert model_payload["deployment"] == "gpt-5.6-terra"
     assert model_payload["selection"] == "agent_policy"
     assert model_payload["policy_revision"] == 9
+
+
+def test_provider_reasoning_identity_and_cache_survive_the_run_model_ledger(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    route = ModelRoute(
+        "deepseek-primary",
+        "deepseek-v4-pro",
+        "DeepSeek V4 Pro",
+        frozenset({"analysis"}),
+        provider_id="provider-primary",
+        provider_type="deepseek",
+        model_id="deepseek-v4-pro",
+    )
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-deepseek-observed",
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 40,
+                "total_tokens": 140,
+                "prompt_cache_hit_tokens": 70,
+                "prompt_cache_miss_tokens": 30,
+                "completion_tokens_details": {"reasoning_tokens": 12},
+            },
+            "_dataforge_route_evidence": "observed",
+        },
+    )()
+
+    with model_route_scope(route=route, execution_kind="full_analysis"):
+        meta = foundry_client._response_meta(response, "provider_gateway")
+
+    assert meta["usage"] == {
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "total_tokens": 140,
+        "cached_input": 70,
+        "reasoning_tokens": 12,
+    }
+    run_store.start_run("run-provider-observed", "workspace-provider", "provider test")
+    run_store.record_event(
+        "run-provider-observed",
+        "model_response",
+        {"agent": "df-feasibility-analyst", **meta},
+    )
+    run_store.complete_run("run-provider-observed", final={"text": "done"}, artifact={})
+
+    model = run_store.get_run("run-provider-observed")["models"][0]
+    assert model["provider_type"] == "deepseek"
+    assert model["provider_id"] == "provider-primary"
+    assert model["model_id"] == "deepseek-v4-pro"
+    assert model["route_evidence"] == "observed"
+    assert model["usage"] == {
+        "prompt": 100,
+        "completion": 40,
+        "total": 140,
+        "cached_input": 70,
+        "reasoning": 12,
+    }
+    assert model["provider_cache"] == {
+        "state": "partial_hit",
+        "hit_tokens": 70,
+        "miss_tokens": 30,
+        "hit_rate_pct": 70.0,
+        "evidence_state": "observed",
+    }
+
+
+def test_foundry_cached_tokens_project_as_partial_provider_cache_evidence(tmp_path, monkeypatch) -> None:
+    from backend.local_agent_observation import build_local_model_observation
+
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    route = ModelRoute(
+        "foundry-primary",
+        "gpt-5.1",
+        "Foundry Primary",
+        frozenset({"analysis"}),
+        provider_type="azure_foundry",
+        model_id="gpt-5.1",
+    )
+    response = type(
+        "Response",
+        (),
+        {
+            "id": "resp-foundry-cache-observed",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 40,
+                "total_tokens": 140,
+                "input_tokens_details": {"cached_tokens": 70},
+            },
+        },
+    )()
+
+    with model_route_scope(route=route, execution_kind="full_analysis"):
+        meta = foundry_client._response_meta(response, "provider_gateway")
+
+    assert meta["provider_cache"] == {
+        "state": "unavailable",
+        "hit_tokens": 70,
+        "miss_tokens": None,
+        "hit_rate_pct": None,
+        "evidence_state": "partial",
+    }
+    run_store.start_run("run-foundry-cache-observed", "workspace-provider", "provider test")
+    run_store.record_event(
+        "run-foundry-cache-observed",
+        "model_response",
+        {"agent": "df-feasibility-analyst", **meta},
+    )
+    run_store.complete_run("run-foundry-cache-observed", final={"text": "done"}, artifact={})
+
+    model = run_store.get_run("run-foundry-cache-observed")["models"][0]
+    assert model["provider_cache"] == meta["provider_cache"]
+    observation = build_local_model_observation(run_store.get_run("run-foundry-cache-observed"))
+    assert observation.provider_cache.model_dump() == meta["provider_cache"]
+
+
+def test_provider_cache_accepts_finite_nonnegative_integral_float_counts() -> None:
+    assert run_store.normalize_provider_cache_meter(
+        {
+            "state": "partial_hit",
+            "hit_tokens": 12.0,
+            "miss_tokens": 8.0,
+        }
+    ) == {
+        "state": "partial_hit",
+        "hit_tokens": 12,
+        "miss_tokens": 8,
+        "hit_rate_pct": 60.0,
+        "evidence_state": "observed",
+    }
+
+
+def test_foundry_and_deepseek_malformed_usage_is_unavailable_without_truncation(
+    tmp_path, monkeypatch
+) -> None:
+    from backend.local_agent_observation import build_local_model_observation
+
+    foundry_usage = foundry_client._usage_dict(
+        {
+            "input_tokens": 12.9,
+            "output_tokens": float("nan"),
+            "total_tokens": float("inf"),
+            "input_tokens_details": {"cached_tokens": True},
+            "output_tokens_details": {"reasoning_tokens": -1},
+        }
+    )
+    assert foundry_usage == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+    }
+
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    run_store.start_run("run-deepseek-malformed-usage", "workspace-provider", "usage test")
+    run_store.record_event(
+        "run-deepseek-malformed-usage",
+        "model_response",
+        {
+            "provider_type": "deepseek",
+            "provider_id": "provider-primary",
+            "usage": {
+                "prompt_tokens": 12.9,
+                "completion_tokens": "bad",
+                "total_tokens": float("inf"),
+                "cached_input": True,
+                "reasoning_tokens": -1,
+            },
+        },
+    )
+    run_store.complete_run("run-deepseek-malformed-usage", final={"text": "done"}, artifact={})
+
+    run = run_store.get_run("run-deepseek-malformed-usage")
+    assert run["models"][0]["usage"] == {
+        "prompt": None,
+        "completion": None,
+        "total": None,
+        "cached_input": None,
+        "reasoning": None,
+    }
+    observation = build_local_model_observation(run)
+    assert observation.usage.model_dump() == {
+        "input_tokens": None,
+        "output_tokens": None,
+        "reasoning_tokens": None,
+        "cached_input_tokens": None,
+        "total_tokens": None,
+    }
+
+
+def test_orchestration_model_projection_preserves_route_evidence_to_run_store(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *args, **kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *args, **kwargs: {})
+    run_store._ACTIVE.clear()
+    meta = orchestrator._model_meta(
+        {
+            "response_id": "resp-routed",
+            "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+            "route": "fallback",
+            "route_evidence": "observed",
+        }
+    )
+    run_store.start_run("run-routed-meta", "workspace-safe", "route test")
+    run_store.record_event("run-routed-meta", "model_response", meta)
+    run_store.complete_run("run-routed-meta", final={"text": "done"}, artifact={})
+
+    assert run_store.get_run("run-routed-meta")["models"][0]["route_evidence"] == "observed"

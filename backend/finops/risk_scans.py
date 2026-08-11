@@ -292,17 +292,37 @@ def _bind_representative_evidence(
     findings: list[RiskScanFinding],
     events: list,
 ) -> list[RiskScanFinding]:
-    return [
-        finding
-        if finding.evidence_refs
-        else finding.model_copy(
-            update={"evidence_refs": _representative_refs(events, finding.policy_type)}
-        )
-        for finding in findings
-    ]
+    allocated: set[str] = set()
+    result: list[RiskScanFinding] = []
+    for finding in findings:
+        refs = [ref for ref in finding.evidence_refs if ref not in allocated][:3]
+        if len(refs) < 3:
+            refs.extend(
+                ref
+                for ref in _representative_refs(
+                    events,
+                    finding.policy_type,
+                    excluded_refs=allocated | set(refs),
+                )
+                if ref not in refs
+            )
+        if not refs:
+            refs = list(finding.evidence_refs)[:3] or _representative_refs(
+                events,
+                finding.policy_type,
+            )
+        refs = refs[:3]
+        allocated.update(refs)
+        result.append(finding.model_copy(update={"evidence_refs": refs}))
+    return result
 
 
-def _representative_refs(events: list, policy_type: RiskPolicyType) -> list[str]:
+def _representative_refs(
+    events: list,
+    policy_type: RiskPolicyType,
+    *,
+    excluded_refs: set[str] | None = None,
+) -> list[str]:
     recent = sorted(
         events,
         key=lambda event: (event.occurred_at, event.request_ref),
@@ -338,7 +358,14 @@ def _representative_refs(events: list, policy_type: RiskPolicyType) -> list[str]
             for event in recent
             if event.cache.eligible is True and event.cache.state in {"miss", "bypassed"}
         ] or [event for event in recent if event.cache.eligible is True] or recent
-    return list(dict.fromkeys(event.request_ref for event in candidates[:3]))
+    excluded = excluded_refs or set()
+    return list(
+        dict.fromkeys(
+            event.request_ref
+            for event in candidates
+            if event.request_ref not in excluded
+        )
+    )[:3]
 
 
 def _evaluate_rule_basis(

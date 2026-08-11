@@ -6,6 +6,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
+from ..token_integrity import finite_nonnegative_integral_token_count
 from .models import (
     CacheEvidence,
     EstimatedCost,
@@ -137,11 +138,15 @@ def normalize_run_event(
 def _usage(value: object) -> TokenUsage:
     raw = value if isinstance(value, Mapping) else {}
     return TokenUsage(
-        input=_non_negative_int(raw.get("input") if "input" in raw else raw.get("prompt")),
-        output=_non_negative_int(raw.get("output") if "output" in raw else raw.get("completion")),
-        cached_input=_non_negative_int(raw.get("cached_input")),
-        reasoning=_non_negative_int(raw.get("reasoning")),
-        total=_non_negative_int(raw.get("total")),
+        input=finite_nonnegative_integral_token_count(
+            raw.get("input") if "input" in raw else raw.get("prompt")
+        ),
+        output=finite_nonnegative_integral_token_count(
+            raw.get("output") if "output" in raw else raw.get("completion")
+        ),
+        cached_input=finite_nonnegative_integral_token_count(raw.get("cached_input")),
+        reasoning=finite_nonnegative_integral_token_count(raw.get("reasoning")),
+        total=finite_nonnegative_integral_token_count(raw.get("total")),
     )
 
 
@@ -156,7 +161,7 @@ def _cache(value: object) -> CacheEvidence:
     return CacheEvidence(
         state=state,
         eligible=eligible,
-        avoided_tokens=_non_negative_int(raw.get("avoided_tokens")),
+        avoided_tokens=finite_nonnegative_integral_token_count(raw.get("avoided_tokens")),
     )
 
 
@@ -197,8 +202,8 @@ def _result_cache(value: object) -> ResultCacheEvidence:
 
 def _provider_cache(value: object) -> ProviderCacheEvidence:
     raw = value if isinstance(value, Mapping) else {}
-    hit = _non_negative_int(raw.get("hit_tokens"))
-    miss = _non_negative_int(raw.get("miss_tokens"))
+    hit = finite_nonnegative_integral_token_count(raw.get("hit_tokens"))
+    miss = finite_nonnegative_integral_token_count(raw.get("miss_tokens"))
     if hit is None or miss is None:
         return ProviderCacheEvidence(
             state="unavailable",

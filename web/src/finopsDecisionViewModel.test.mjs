@@ -160,6 +160,45 @@ test("ROI view never labels an estimated scenario as verified", () => {
   assert.equal(partial.scenarios[0].badge, "部分证据");
 });
 
+test("synthetic demo review is labeled separately from production verified ROI", () => {
+  const view = roiDecisionView({
+    verified_roi: { status: "unavailable", value: null },
+    scenarios: [{
+      scenario_id: "roi_scenario_demo",
+      status: "estimated",
+      result: {},
+      demo_evidence: {
+        provenance: "synthetic_demo",
+        production_quality_claim: false,
+        label: "演示验证结果 · 合成数据",
+        measured: { paired_evaluations: 20, historical_hours: 20, assisted_hours: 10 },
+        process: { analysis_tasks: 96, reports: 78, evidence_reviews: 18, reviewed_savings_hours: 174.6 },
+        actors: { outcome_actor_ref: "synthetic_outcome_reviewer", reviewer_actor_ref: "synthetic_finance_reviewer" },
+        window: { from: "2026-07-12T12:00:00Z", to: "2026-08-11T12:00:00Z", currency: "USD" },
+        source_refs: { run_id: "synthetic-shenzhen-site-selection-0001", request_ref: "req_shenzhen_00000001", correlation_ref: "corr_shenzhen_00000001", attempt_ref: "attempt_shenzhen_00000001" },
+        evidence_items: {
+          analysis_tasks: Array.from({ length: 96 }, (_, index) => ({ id: `task_${index + 1}`, title: `分析任务 ${index + 1}` })),
+          reports: Array.from({ length: 78 }, (_, index) => ({ id: `report_${index + 1}`, title: `报告 ${index + 1}` })),
+          evidence_reviews: Array.from({ length: 18 }, (_, index) => ({ id: `review_${index + 1}`, title: `审阅 ${index + 1}` })),
+        },
+      },
+    }],
+  });
+
+  assert.equal(view.verifiedRoiStatus, "unavailable");
+  assert.equal(view.demoEvidence.label, "演示验证结果 · 合成数据");
+  assert.equal(view.demoEvidence.productionQualityClaim, false);
+  assert.equal(view.demoEvidence.pairedEvaluations, 20);
+  assert.equal(view.demoEvidence.historicalHours, 20);
+  assert.deepEqual(view.demoEvidence.process, { analysisTasks: 96, reports: 78, evidenceReviews: 18, reviewedSavingsHours: 174.6 });
+  assert.equal(view.demoEvidence.sourceRefs.requestRef, "req_shenzhen_00000001");
+  assert.deepEqual(view.demoEvidence.actors, { outcomeActorRef: "synthetic_outcome_reviewer", reviewerActorRef: "synthetic_finance_reviewer" });
+  assert.deepEqual(view.demoEvidence.window, { from: "2026-07-12T12:00:00Z", to: "2026-08-11T12:00:00Z", currency: "USD" });
+  assert.equal(view.demoEvidence.evidenceItems.analysisTasks.length, 96);
+  assert.equal(view.demoEvidence.evidenceItems.reports.length, 78);
+  assert.equal(view.demoEvidence.evidenceItems.evidenceReviews.length, 18);
+});
+
 
 test("ROI regression view exposes error metrics without calling them verified ROI", () => {
   const view = roiDecisionView({

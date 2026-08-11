@@ -4,6 +4,7 @@ from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .token_integrity import finite_nonnegative_integral_token_count
 
 class ProviderUsage(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -23,7 +24,7 @@ class ProviderCacheEvidence(BaseModel):
     hit_tokens: int | None = Field(default=None, ge=0)
     miss_tokens: int | None = Field(default=None, ge=0)
     hit_rate_pct: float | None = Field(default=None, ge=0, le=100)
-    evidence_state: Literal["observed", "partial", "unavailable"]
+    evidence_state: Literal["observed", "partial", "synthetic", "unavailable"]
 
 
 def normalize_deepseek_usage(value: object) -> ProviderUsage:
@@ -65,9 +66,7 @@ def provider_cache_evidence(usage: ProviderUsage) -> ProviderCacheEvidence:
 
 
 def _token(value: Any) -> int | None:
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        return None
-    return value
+    return finite_nonnegative_integral_token_count(value)
 
 
 __all__ = [

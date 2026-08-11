@@ -536,6 +536,8 @@ function TrendBars({
   const axis = niceFinOpsAxis(values, 5);
   const maximum = axis.max;
   if (!rows.length) return <EmptyState />;
+  const visibleRows = rows.slice(-14);
+  const trendContentMinWidth = visibleRows.length * 48 + Math.max(0, visibleRows.length - 1) * 10;
   return (
     <div className={`finops-trend-chart metric-${metric}`}>
       <div className="finops-trend-legend">
@@ -552,14 +554,25 @@ function TrendBars({
         )}
         {rows.some((row) => row.bucketStatus === "in_progress") ? <span><i className="progress" />进行中</span> : null}
       </div>
-      <div className="finops-trend-gridlines" aria-hidden="true">
-        {axis.ticks.map((tick) => <i key={tick} />)}
-      </div>
-      <div className="finops-trend-scale" aria-hidden="true">
-        {axis.ticks.map((tick) => <span key={tick}>{formatValue(tick)}</span>)}
-      </div>
-      <div className="finops-trend-columns">
-        {rows.slice(-14).map((row, visibleIndex, visibleRows) => {
+      <div className="finops-trend-body">
+        <div className="finops-trend-scale" aria-hidden="true">
+          <div className="finops-trend-axis-track">
+            {axis.ticks.map((tick) => <span key={tick}>{formatValue(tick)}</span>)}
+          </div>
+          <span className="finops-trend-axis-label-spacer" />
+        </div>
+        <div className="finops-trend-viewport">
+          <div
+            className="finops-trend-columns"
+            style={{
+              "--trend-point-count": visibleRows.length,
+              "--trend-content-min-width": `${trendContentMinWidth}px`,
+            }}
+          >
+            <div className="finops-trend-gridlines" aria-hidden="true">
+              {axis.ticks.map((tick) => <i key={tick} />)}
+            </div>
+            {visibleRows.map((row, visibleIndex) => {
           const rawValue = metricValue(row);
           const value = Number(rawValue || 0);
           const height = finopsBarPercent(value, maximum);
@@ -593,7 +606,9 @@ function TrendBars({
               formatValue={formatValue}
             />
           );
-        })}
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );
