@@ -209,7 +209,7 @@ export function RoiDecisionPage({
             <aside className="finops-decision-roi-verified" aria-label="演示验证结果">
               <span>{view.demoEvidence.label}</span>
               <div><strong>{view.demoEvidence.pairedEvaluations} 组配对评估</strong><DecisionBadge status="estimated">合成流程</DecisionBadge></div>
-              <small>17.8h 历史流程对比 8.1h 辅助流程；不构成生产已验证 ROI。</small>
+              <small>{view.demoEvidence.historicalHours}h 历史流程对比 {view.demoEvidence.assistedHours}h 辅助流程；不构成生产已验证 ROI。</small>
             </aside>
           ) : null}
           <div className="finops-decision-roi-banner-actions">

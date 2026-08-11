@@ -275,6 +275,7 @@ def _seed_shenzhen_demo_workspace(
 
 
 def _shenzhen_roi_scenario(bundle: SyntheticDemoBundle) -> dict[str, Any]:
+    source = bundle.request_facts[0]
     return {
         "title": "深圳选址评估（合成演示）",
         "currency": "USD",
@@ -285,6 +286,7 @@ def _shenzhen_roi_scenario(bundle: SyntheticDemoBundle) -> dict[str, Any]:
         "monthly_fixed_cost": bundle.roi.monthly_operating_input_usd - bundle.monthly_ai_operating_cost_usd,
         "model_cost": bundle.monthly_ai_operating_cost_usd,
         "evaluation_months": 12,
+        "linked_run_id": source.run_id,
         "evidence_revision": 1,
         "seed_batch": bundle.batch_id,
         "provenance": "synthetic_demo",
@@ -299,6 +301,32 @@ def _shenzhen_roi_scenario(bundle: SyntheticDemoBundle) -> dict[str, Any]:
             "historical_hours": bundle.roi.measured_historical_hours,
             "assisted_hours": bundle.roi.measured_assisted_hours,
         },
+        "process": {
+            "analysis_tasks": len(bundle.analysis_tasks),
+            "reports": len(bundle.reports),
+            "evidence_reviews": len(bundle.evidence_review_tasks),
+            "reviewed_savings_hours": bundle.roi.demo_reviewed_savings_hours,
+        },
+        "actors": {
+            "outcome_actor_ref": bundle.roi.outcome_actor_ref,
+            "reviewer_actor_ref": bundle.roi.reviewer_actor_ref,
+        },
+        "window": {
+            "from": (bundle.anchor_at - timedelta(days=30)).isoformat().replace("+00:00", "Z"),
+            "to": bundle.anchor_at.isoformat().replace("+00:00", "Z"),
+            "currency": "USD",
+        },
+        "source_refs": {
+            "run_id": source.run_id,
+            "request_ref": source.request_ref,
+            "correlation_ref": source.correlation_ref,
+            "attempt_ref": source.attempt_ref,
+        },
+        "evidence_items": {
+            "analysis_tasks": [{"id": item.task_id, "title": item.title} for item in bundle.analysis_tasks],
+            "reports": [{"id": item.report_id, "title": item.title} for item in bundle.reports],
+            "evidence_reviews": [{"id": item.review_id, "title": item.title} for item in bundle.evidence_review_tasks],
+        },
     }
 
 
@@ -310,9 +338,14 @@ def _shenzhen_outcomes(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any], ...
             "baseline_value": bundle.roi.measured_historical_hours,
             "observed_value": bundle.roi.measured_assisted_hours,
             "observed_at": bundle.anchor_at.isoformat(),
-            "provenance": "observed",
+            "provenance": "synthetic_demo",
             "verification_state": "unverified",
-            "source": {"run_id": bundle.runs[0].run_id},
+            "source": {
+                "run_id": bundle.runs[0].run_id,
+                "request_ref": bundle.request_facts[0].request_ref,
+                "correlation_ref": bundle.request_facts[0].correlation_ref,
+                "attempt_ref": bundle.request_facts[0].attempt_ref,
+            },
             "seed_batch": bundle.batch_id,
         },
     )
@@ -320,9 +353,12 @@ def _shenzhen_outcomes(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any], ...
 
 def _shenzhen_run_evidence(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any], ...]:
     rows: list[dict[str, Any]] = []
+    request_by_run = {item.run_id: item for item in bundle.request_facts}
+    event_by_run = {item.run_id: item for item in bundle.events}
     for run in bundle.runs:
         attempt = run.model_attempts[0]
-        request = next(item for item in bundle.request_facts if item.run_id == run.run_id)
+        request = request_by_run[run.run_id]
+        event = event_by_run[run.run_id]
         rows.append(
             {
                 "run_id": run.run_id,
@@ -332,9 +368,13 @@ def _shenzhen_run_evidence(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any],
                 "provenance": "synthetic_demo",
                 "request_ref": request.request_ref,
                 "correlation_ref": run.correlation_ref,
+                "result_id": request.result_id,
                 "steps": tuple({"event": step["event"], "data": {"label": step["label"]}} for step in run.steps if step["event"] != "model_response"),
                 "model_attempt": {
                     "attempt_ref": attempt.attempt_ref,
+                    "request_ref": request.request_ref,
+                    "correlation_ref": run.correlation_ref,
+                    "result_id": request.result_id,
                     "provider_type": attempt.provider_type,
                     "model_id": attempt.model_id,
                     "route": attempt.route,
@@ -342,6 +382,7 @@ def _shenzhen_run_evidence(bundle: SyntheticDemoBundle) -> tuple[dict[str, Any],
                     "tokens": attempt.tokens.model_dump(),
                     "provider_cache": attempt.provider_cache.model_dump(),
                     "result_cache": request.result_cache.model_dump(),
+                    "gateway_coverage": event.gateway_coverage,
                     "official_price_key": attempt.official_price_key,
                     "price_card_revision": attempt.price_card_revision,
                     "cost_usd": attempt.cost_usd,

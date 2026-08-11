@@ -134,6 +134,33 @@ def test_allowlisted_synthetic_demo_projection_exposes_a_non_production_review_l
         "label": "演示验证结果 · 合成数据",
         "measured": {"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
     }
+
+
+def test_synthetic_demo_projection_persists_process_scale_actors_window_and_full_lineage(monkeypatch, tmp_path: Path) -> None:
+    _configure_store(monkeypatch, tmp_path)
+    payload = _dataforge_payload(
+        title="深圳选址评估（合成演示）",
+        provenance="synthetic_demo",
+        scenario_id="shenzhen-site-selection-v1",
+        canonical_digest="b" * 64,
+        production_quality_claim=False,
+        demo_verified_label="演示验证结果 · 合成数据",
+        measured={"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
+        process={"analysis_tasks": 96, "reports": 78, "evidence_reviews": 18, "reviewed_savings_hours": 174.6},
+        actors={"outcome_actor_ref": "synthetic_site_selection_outcome_reviewer", "reviewer_actor_ref": "synthetic_site_selection_finance_reviewer"},
+        window={"from": "2026-07-12T12:00:00Z", "to": "2026-08-11T12:00:00Z", "currency": "USD"},
+        source_refs={"run_id": "synthetic-shenzhen-site-selection-0001", "request_ref": "req_12345678", "correlation_ref": "corr_12345678", "attempt_ref": "attempt_12345678"},
+        evidence_items={"analysis_tasks": [{"id": "task_0001", "title": "深圳候选点位分析 001"}], "reports": [{"id": "report_0001", "title": "深圳选址评估报告 001"}], "evidence_reviews": [{"id": "review_0001", "title": "深圳选址证据审阅 001"}]},
+    )
+
+    scenario = roi_scenario_store.upsert_demo_roi_scenario("demo-corpus", payload, actor=None, seed_key="shenzhen-site-selection-20260811-v1")
+    evidence = roi_scenario_store.scenario_projection("demo-corpus", scenario)["demo_evidence"]
+
+    assert evidence["process"] == {"analysis_tasks": 96, "reports": 78, "evidence_reviews": 18, "reviewed_savings_hours": 174.6}
+    assert evidence["actors"]["outcome_actor_ref"] != evidence["actors"]["reviewer_actor_ref"]
+    assert evidence["window"]["currency"] == "USD"
+    assert set(evidence["source_refs"]) == {"run_id", "request_ref", "correlation_ref", "attempt_ref"}
+    assert evidence["evidence_items"]["analysis_tasks"][0]["title"] == "深圳候选点位分析 001"
 def test_demo_roi_scenario_upsert_is_stable_and_keeps_internal_seed_batch(monkeypatch, tmp_path: Path) -> None:
     _configure_store(monkeypatch, tmp_path)
     payload = {**_dataforge_payload(), "seed_batch": "operations-v1"}

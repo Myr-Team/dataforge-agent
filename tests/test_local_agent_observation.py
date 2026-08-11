@@ -150,3 +150,30 @@ def test_local_observation_keeps_unknown_or_unsafe_values_unavailable() -> None:
     assert observation.provider_cache.state == "unavailable"
     assert observation.usage.total_tokens is None
     assert observation.status == "unknown"
+
+
+def test_local_observation_preserves_synthetic_provenance_without_observed_cache_claim() -> None:
+    run = {
+        "run_id": "synthetic-shenzhen-site-selection-0001",
+        "workspace_id": "demo-corpus",
+        "status": "completed",
+        "models": [{
+            "response_id": "req_synthetic_0001",
+            "route_evidence": "synthetic",
+            "provenance": "synthetic_demo",
+            "usage": {"prompt": 100, "completion": 200, "total": 300},
+            "provider_cache": {
+                "state": "hit",
+                "hit_tokens": 80,
+                "miss_tokens": 20,
+                "hit_rate_pct": 80.0,
+                "evidence_state": "synthetic",
+            },
+        }],
+    }
+
+    observation = build_local_model_observation(run)
+
+    assert observation.provenance == "synthetic_demo"
+    assert observation.route_evidence == "synthetic"
+    assert observation.provider_cache.evidence_state == "synthetic"

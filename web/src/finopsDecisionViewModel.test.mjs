@@ -171,7 +171,7 @@ test("synthetic demo review is labeled separately from production verified ROI",
         provenance: "synthetic_demo",
         production_quality_claim: false,
         label: "演示验证结果 · 合成数据",
-        measured: { paired_evaluations: 18, historical_hours: 17.8, assisted_hours: 8.1 },
+        measured: { paired_evaluations: 20, historical_hours: 20, assisted_hours: 10 },
       },
     }],
   });
@@ -179,6 +179,8 @@ test("synthetic demo review is labeled separately from production verified ROI",
   assert.equal(view.verifiedRoiStatus, "unavailable");
   assert.equal(view.demoEvidence.label, "演示验证结果 · 合成数据");
   assert.equal(view.demoEvidence.productionQualityClaim, false);
+  assert.equal(view.demoEvidence.pairedEvaluations, 20);
+  assert.equal(view.demoEvidence.historicalHours, 20);
 });
 
 

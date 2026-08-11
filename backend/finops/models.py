@@ -11,8 +11,8 @@ CallClass = Literal["model", "tool", "embedding", "image", "speech", "mcp"]
 CacheState = Literal["hit", "miss", "bypassed", "unavailable"]
 ProviderCacheState = Literal["hit", "partial_hit", "miss", "unavailable"]
 GatewayCoverage = Literal["apim_governed", "app_observed", "unmanaged", "unknown"]
-EvidenceState = Literal["observed", "estimated", "partial", "unavailable"]
-UsageSource = Literal["provider", "application", "apim", "unknown"]
+EvidenceState = Literal["observed", "estimated", "partial", "synthetic_demo", "unavailable"]
+UsageSource = Literal["provider", "application", "apim", "synthetic_demo", "unknown"]
 _APIM_CORRELATION = re.compile(
     r"^(?:[0-9a-f]{32}|[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})$",
     re.IGNORECASE,
@@ -82,7 +82,7 @@ class ProviderCacheEvidence(BaseModel):
     hit_tokens: int | None = Field(default=None, ge=0)
     miss_tokens: int | None = Field(default=None, ge=0)
     hit_rate_pct: float | None = Field(default=None, ge=0, le=100)
-    evidence_state: Literal["observed", "partial", "unavailable"] = "unavailable"
+    evidence_state: Literal["observed", "partial", "synthetic", "unavailable"] = "unavailable"
 
     @model_validator(mode="after")
     def validate_populations(self) -> "ProviderCacheEvidence":
@@ -152,6 +152,11 @@ class FinOpsRequestEvent(BaseModel):
     correlation_ref: str | None = Field(default=None, max_length=128)
     apim_correlation_id: str | None = Field(default=None, max_length=36)
     usage_source: UsageSource = "unknown"
+    provenance: Literal["runtime", "synthetic_demo"] = "runtime"
+    scenario_id: str | None = Field(default=None, max_length=128)
+    seed_batch: str | None = Field(default=None, max_length=160)
+    attempt_ref: str | None = Field(default=None, max_length=128)
+    result_id: str | None = Field(default=None, max_length=160)
     streaming: bool | None = None
     internal_correlation_key: str | None = Field(default=None, exclude=True, repr=False)
 

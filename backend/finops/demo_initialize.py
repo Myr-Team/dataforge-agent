@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -92,9 +93,10 @@ def initialize_demo_workspace(
                 AnomalyEvaluationInput(
                     events=list(result.events),
                     trailing_token_median=1120,
+                    daily_budget_usd=5 if clean_workspace_id == "demo-corpus" else None,
                 )
             ),
-            origin="runtime",
+            origin="synthetic_demo" if workspace_id == "demo-corpus" else "runtime",
         )
     if insight_repository is not None:
         _persist_demo_insights(insight_repository, tenant_ref=clean_tenant_ref, workspace_id=clean_workspace_id, result=result, now=anchor)
@@ -104,7 +106,7 @@ def initialize_demo_workspace(
 def _persist_demo_insights(repository: Any, *, tenant_ref: str, workspace_id: str, result: DemoSeedResult, now: datetime) -> None:
     generated = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
     expires = generated + timedelta(days=1)
-    findings = evaluate_default_anomalies(AnomalyEvaluationInput(events=list(result.events), trailing_token_median=1120))
+    findings = evaluate_default_anomalies(AnomalyEvaluationInput(events=list(result.events), trailing_token_median=1120, daily_budget_usd=5 if workspace_id == "demo-corpus" else None))
     refs = [ref for finding in findings for ref in finding.evidence_refs][:5]
     outcome_refs = [str(item.get("source", {}).get("run_id")) for item in result.outcome_events if item.get("source", {}).get("run_id")]
     specs = (("finops", "demo_finops", "成本、缓存、失败与入口覆盖均有可追溯运营证据。", refs), ("roi", "demo_roi", "ROI 为场景估算；业务结果仍为未验证观察，不能视为已验证 ROI。", outcome_refs))
@@ -115,7 +117,7 @@ def _persist_demo_insights(repository: Any, *, tenant_ref: str, workspace_id: st
             window=InsightWindow(**{"from": generated - timedelta(days=30), "to": generated}), trigger_type=trigger_type,
             trigger_ref=result.batch, trigger_fingerprint=fingerprint, title="FinOps 运营就绪" if kind == "finops" else "ROI 证据就绪",
             summary=summary, findings=[AgentFinding(kind="risk" if kind == "finops" else "roi", statement=summary, evidence_refs=evidence_refs[:1])],
-            evidence_refs=evidence_refs, evidence_state="observed" if kind == "finops" else "estimated", confidence=0.8 if kind == "finops" else 0.6,
+            evidence_refs=evidence_refs, evidence_state="synthetic_demo" if workspace_id == "demo-corpus" and kind == "finops" else "estimated", confidence=0.8 if kind == "finops" else 0.6,
             source_revisions={"demo_seed": result.batch}, evidence_gaps=["业务结果尚未独立验证"] if kind == "roi" else [], generated_at=generated, expires_at=expires, status="ready",
         )
         existing = repository.get_by_fingerprint(tenant_ref=tenant_ref, agent_kind=kind, trigger_fingerprint=fingerprint)
@@ -138,6 +140,7 @@ def persist_demo_run_evidence(
 ) -> dict[str, int]:
     created = 0
     reused = 0
+    replaced = 0
     artifacts_created = 0
     artifacts_reused = 0
     for value in values:
@@ -145,6 +148,8 @@ def persist_demo_run_evidence(
         message = str(value.get("message") or "").strip()
         if not run_id or not message:
             raise ValueError("demo run evidence is incomplete")
+        provenance = str(value.get("provenance") or "").strip()
+        evidence_digest = _demo_run_evidence_digest(value) if provenance == "synthetic_demo" else ""
         try:
             current = get_run_fn(run_id)
         except (FileNotFoundError, ValueError):
@@ -157,9 +162,13 @@ def persist_demo_run_evidence(
                 or str(current.get("message") or "") != message
             ):
                 raise RuntimeError("demo run id is already owned by another record")
-            reused += 1
-        else:
-            provenance = str(value.get("provenance") or "").strip()
+            current_digest = str((current.get("final") or {}).get("demo_evidence_digest") or "")
+            if provenance == "synthetic_demo" and current_digest != evidence_digest:
+                replaced += 1
+                current = {}
+            else:
+                reused += 1
+        if not current:
             start_run_fn(
                 run_id,
                 workspace_id,
@@ -188,16 +197,17 @@ def persist_demo_run_evidence(
                         "agent": "synthetic_demo",
                         "execution_kind": "maf_agent",
                         "response_id": str(attempt.get("attempt_ref") or ""),
+                        "request_ref": attempt.get("request_ref") or value.get("request_ref"),
+                        "correlation_ref": attempt.get("correlation_ref") or value.get("correlation_ref"),
+                        "attempt_ref": attempt.get("attempt_ref"),
+                        "result_id": attempt.get("result_id") or value.get("result_id"),
                         "provider_type": attempt.get("provider_type"),
                         "model_id": attempt.get("model_id"),
                         "model": attempt.get("model_id"),
                         "deployment": attempt.get("model_id"),
                         "route": attempt.get("route"),
-                        # L0 only permits selected/observed/inferred/unavailable.
-                        # Keep the true synthetic designation separate and never
-                        # claim the fixture route was provider-observed.
-                        "route_evidence": "selected",
-                        "synthetic_route_evidence": attempt.get("route_evidence"),
+                        "route_evidence": attempt.get("route_evidence"),
+                        "provenance": provenance,
                         "usage": {
                             "prompt": tokens.get("input"),
                             "completion": tokens.get("output"),
@@ -208,20 +218,30 @@ def persist_demo_run_evidence(
                         "result_cache": {**result_cache, "provider": "redis"},
                         "cache": {**result_cache, "provider": "redis"},
                         "provider_cache": provider_cache,
-                        "gateway_coverage": "apim_governed",
-                        "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
+                        "gateway_coverage": attempt.get("gateway_coverage"),
+                        "cost_estimate": (
+                            {
+                                "status": "estimated",
+                                "amount": attempt.get("cost_usd"),
+                                "currency": "USD",
+                                "official_price_key": attempt.get("official_price_key"),
+                                "price_card_revision": attempt.get("price_card_revision"),
+                            }
+                            if attempt.get("cost_usd") is not None
+                            else {"status": "unavailable", "reason": "price_not_configured"}
+                        ),
                     },
                 )
                 record_event_fn(
                     run_id,
                     "audit",
-                    {"provenance": provenance, "request_ref": value.get("request_ref"), "correlation_ref": value.get("correlation_ref")},
+                    {"provenance": provenance, "request_ref": value.get("request_ref"), "correlation_ref": value.get("correlation_ref"), "attempt_ref": (attempt or {}).get("attempt_ref")},
                 )
             final_text = str(value.get("final_text") or "").strip()
             persisted = complete_run_fn(
                 run_id,
                 status=str(value.get("status") or "completed"),
-                final={"text": final_text} if final_text else None,
+                final=({"text": final_text, "demo_evidence_digest": evidence_digest} if final_text else {"demo_evidence_digest": evidence_digest}) if provenance == "synthetic_demo" else ({"text": final_text} if final_text else None),
             )
             if not persisted:
                 raise RuntimeError("demo run evidence could not be persisted")
@@ -237,6 +257,8 @@ def persist_demo_run_evidence(
         "reused": reused,
         "seed_batch": seed_key,
     }
+    if replaced:
+        result["replaced"] = replaced
     if artifact_writer_fn is not None:
         result.update(
             {
@@ -245,6 +267,14 @@ def persist_demo_run_evidence(
             }
         )
     return result
+
+
+def _demo_run_evidence_digest(value: Mapping[str, Any]) -> str:
+    safe = {
+        key: value.get(key)
+        for key in ("run_id", "message", "final_text", "status", "provenance", "request_ref", "correlation_ref", "steps", "model_attempt")
+    }
+    return hashlib.sha256(json.dumps(safe, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
 
 
 def persist_demo_artifact_evidence(

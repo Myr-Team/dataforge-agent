@@ -181,9 +181,13 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                 "mode": plain.get("mode"),
                 "time": now,
             }
+            for key in ("request_ref", "correlation_ref", "attempt_ref", "result_id"):
+                reference = _safe_model_reference(plain.get(key))
+                if reference:
+                    model_record[key] = reference
             # Persist only opaque configured-provider references while retaining
             # the current route and gateway coverage evidence from mainline.
-            for key in ("provider_type", "provider_id", "model_id", "route_evidence"):
+            for key in ("provider_type", "provider_id", "model_id", "route_evidence", "provenance"):
                 value = _safe_model_observation_value(key, plain.get(key))
                 if value is not None:
                     model_record[key] = value
@@ -3746,12 +3750,18 @@ def _sanitize_model_response_event_data(data: dict[str, Any]) -> dict[str, Any]:
             sanitized["provider_cache"] = provider_cache
         else:
             sanitized.pop("provider_cache", None)
-    for key in ("provider_type", "provider_id", "model_id", "route_evidence"):
+    for key in ("provider_type", "provider_id", "model_id", "route_evidence", "provenance"):
         safe_value = _safe_model_observation_value(key, data.get(key))
         if safe_value is None:
             sanitized.pop(key, None)
         else:
             sanitized[key] = safe_value
+    for key in ("request_ref", "correlation_ref", "attempt_ref", "result_id"):
+        reference = _safe_model_reference(data.get(key))
+        if reference is None:
+            sanitized.pop(key, None)
+        else:
+            sanitized[key] = reference
     return sanitized
 
 
@@ -3818,8 +3828,9 @@ def normalize_provider_cache_meter(value: Any) -> dict[str, Any]:
         return {}
     hit = finite_nonnegative_integral_token_count(data.get("hit_tokens"))
     miss = finite_nonnegative_integral_token_count(data.get("miss_tokens"))
+    synthetic = str(data.get("evidence_state") or "").strip().lower() == "synthetic"
     evidence_state = (
-        "observed"
+        "synthetic" if synthetic and hit is not None and miss is not None else "observed"
         if hit is not None and miss is not None
         else "partial"
         if hit is not None or miss is not None
@@ -3849,21 +3860,26 @@ def _safe_cost_estimate(value: Any) -> dict[str, Any]:
         not isinstance(amount, (int, float))
         or isinstance(amount, bool)
         or amount < 0
-        or not isinstance(revision, int)
-        or isinstance(revision, bool)
-        or revision < 0
-        or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", route_id)
+        or not (
+            (isinstance(revision, int) and not isinstance(revision, bool) and revision >= 0)
+            or (isinstance(revision, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", revision))
+        )
+        or not (re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", route_id) or str(data.get("official_price_key") or "").strip())
         or not re.fullmatch(r"[A-Z]{3}", currency)
     ):
         return {"status": "unavailable", "reason": "price_not_configured"}
-    return {
+    safe = {
         "status": "estimated",
         "currency": currency,
         "amount": round(float(amount), 6),
         "price_card_revision": revision,
-        "route_id": route_id,
+        **({"route_id": route_id} if route_id else {}),
         "formula": "input_tokens/1_000_000*input_per_million + output_tokens/1_000_000*output_per_million",
     }
+    key = str(data.get("official_price_key") or "").strip()
+    if key and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,239}", key):
+        safe["official_price_key"] = key
+    return safe
 
 
 def _sanitize_context_pack_metadata(data: Any) -> dict[str, Any]:
@@ -4249,8 +4265,16 @@ def _safe_model_observation_value(key: str, value: Any) -> str | None:
         return text if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}", text) else None
     if key == "route_evidence":
         normalized = text.lower()
-        return normalized if normalized in {"observed", "selected", "inferred", "unavailable"} else None
+        return normalized if normalized in {"observed", "selected", "inferred", "synthetic", "unavailable"} else None
+    if key == "provenance":
+        normalized = text.lower()
+        return normalized if normalized in {"runtime", "synthetic_demo"} else None
     return None
+
+
+def _safe_model_reference(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{7,159}", text) else None
 
 
 def _normalized_observed_usage(data: Any) -> dict[str, int | None]:

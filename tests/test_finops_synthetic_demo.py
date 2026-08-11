@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -10,6 +11,7 @@ from backend.finops.synthetic_demo import (
     DEMO_BATCH_ID,
     DEMO_SCENARIO_ID,
     build_synthetic_demo_bundle,
+    canonical_digest_for_bundle,
     reconcile_synthetic_demo,
 )
 
@@ -28,6 +30,7 @@ def test_shenzhen_bundle_is_deterministic_and_has_the_declared_scale() -> None:
     second = _bundle()
 
     assert first.canonical_digest == second.canonical_digest
+    assert first.canonical_digest == "08fa3fbd248570d7b861da20f45371d8c03c646cf1d48fb9ae08ef8d83513083"
     assert first.anchor_at == datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
     assert first.scenario_id == DEMO_SCENARIO_ID
     assert first.batch_id == DEMO_BATCH_ID
@@ -52,6 +55,35 @@ def test_bundle_reconciles_request_run_correlation_attempt_and_safe_trace() -> N
     assert len({item.attempt_ref for item in bundle.request_facts}) == 2480
     assert all(item.steps and item.model_attempts for item in bundle.runs)
     assert all(item.route_evidence == "synthetic" for item in bundle.model_attempts)
+
+
+def test_bundle_reconciliation_fails_closed_for_exact_token_mutation() -> None:
+    bundle = _bundle()
+    first_event = bundle.events[0]
+    invalid_event = first_event.model_copy(
+        update={
+            "tokens": first_event.tokens.model_copy(
+                update={"total": (first_event.tokens.total or 0) + 1}
+            )
+        }
+    )
+
+    report = reconcile_synthetic_demo(
+        replace(bundle, events=(invalid_event, *bundle.events[1:]))
+    )
+
+    assert report.ok is False
+    assert any("token total mismatch" in error for error in report.errors)
+
+
+def test_bundle_digest_covers_roi_evidence_content() -> None:
+    bundle = _bundle()
+    changed = replace(
+        bundle,
+        roi=replace(bundle.roi, demo_reviewed_savings_hours=173.6),
+    )
+
+    assert canonical_digest_for_bundle(changed) != bundle.canonical_digest
 
 
 def test_bundle_prices_only_exact_catalog_mappings_and_keeps_cache_layers_separate() -> None:

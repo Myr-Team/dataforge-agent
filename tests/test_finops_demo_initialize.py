@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import pytest
+import backend.run_store as run_store
 
 from backend.finops.demo_initialize import (
     initialize_demo_workspace,
@@ -21,6 +22,7 @@ from backend.finops.demo_workspace_seed import seed_demo_workspace
 from backend.finops.member_budget_repository import InMemoryMemberBudgetRepository
 from backend.finops.repository import InMemoryFinOpsRepository
 from backend.finops.synthetic_demo import DEMO_ANCHOR
+from backend.local_agent_observation import build_local_model_observation
 
 
 NOW = datetime(2026, 7, 30, 8, 0, tzinfo=timezone.utc)
@@ -250,8 +252,84 @@ def test_demo_run_writer_projects_safe_trace_steps_and_model_attempts() -> None:
     assert result["created"] == 1
     assert [event for _, event, _ in recorded] == ["retrieval", "model_response", "audit"]
     model_data = recorded[1][2]
-    assert model_data["route_evidence"] == "selected"
-    assert model_data["synthetic_route_evidence"] == "synthetic"
+    assert model_data["route_evidence"] == "synthetic"
+    assert model_data["provenance"] == "synthetic_demo"
+    assert model_data["attempt_ref"] == "attempt_0001"
+
+
+def test_synthetic_demo_run_writer_replaces_stale_owned_run_content() -> None:
+    stored = {
+        "synthetic-shenzhen-site-selection-0001": {
+            "run_id": "synthetic-shenzhen-site-selection-0001",
+            "workspace_id": "demo-corpus",
+            "message": "深圳选址评估 · 合成数据",
+            "origin": "synthetic_demo",
+            "models": [{"route_evidence": "selected"}],
+        }
+    }
+    starts: list[str] = []
+    values = ({
+        "run_id": "synthetic-shenzhen-site-selection-0001",
+        "message": "深圳选址评估 · 合成数据",
+        "final_text": "合成演示结果，非生产观测。",
+        "status": "completed",
+        "provenance": "synthetic_demo",
+        "model_attempt": {"attempt_ref": "attempt_0001", "route_evidence": "synthetic", "tokens": {"input": 100, "output": 200, "total": 300}},
+    },)
+
+    def start(run_id: str, workspace_id: str, message: str, **kwargs):
+        starts.append(run_id)
+        stored[run_id] = {"run_id": run_id, "workspace_id": workspace_id, "message": message, "origin": kwargs["origin"]}
+
+    result = persist_demo_run_evidence(
+        "demo-corpus", values, seed_key="shenzhen-site-selection-20260811-v1",
+        get_run_fn=lambda run_id: stored[run_id], start_run_fn=start,
+        complete_run_fn=lambda run_id, **_kwargs: stored[run_id],
+    )
+
+    assert result["replaced"] == 1
+    assert starts == ["synthetic-shenzhen-site-selection-0001"]
+
+
+def test_synthetic_demo_persisted_run_and_local_observation_keep_ledger_semantics(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(run_store, "RUN_DIR", tmp_path / "runs")
+    monkeypatch.setattr(run_store, "upload_blob_json", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_store, "download_blob_json", lambda *_args, **_kwargs: {})
+    run_store._ACTIVE.clear()
+    values = ({
+        "run_id": "synthetic-shenzhen-site-selection-0001",
+        "message": "深圳选址评估 · 合成数据",
+        "final_text": "合成演示结果，非生产观测。",
+        "status": "completed",
+        "provenance": "synthetic_demo",
+        "request_ref": "req_12345678",
+        "correlation_ref": "corr_12345678",
+        "result_id": "result-shenzhen-0000",
+        "model_attempt": {
+            "attempt_ref": "attempt_12345678",
+            "request_ref": "req_12345678",
+            "correlation_ref": "corr_12345678",
+            "result_id": "result-shenzhen-0000",
+            "provider_type": "azure_foundry", "model_id": "gpt-5.6-terra",
+            "route": "shenzhen-site-selection", "route_evidence": "synthetic",
+            "gateway_coverage": "app_observed", "tokens": {"input": 100, "output": 200, "total": 300},
+            "provider_cache": {"state": "hit", "hit_tokens": 80, "miss_tokens": 20, "hit_rate_pct": 80, "evidence_state": "synthetic"},
+            "result_cache": {"state": "miss", "eligible": True, "reason": "eligible", "policy_revision": 1},
+            "official_price_key": "azure-openai:gpt-5.6-terra:global-standard:global", "price_card_revision": "2026-07-27", "cost_usd": 0.00325,
+        },
+    },)
+
+    persist_demo_run_evidence("demo-corpus", values, seed_key="shenzhen-site-selection-20260811-v1")
+    run = run_store.get_run("synthetic-shenzhen-site-selection-0001")
+    model = run["models"][0]
+    observation = build_local_model_observation(run)
+
+    assert model["route_evidence"] == "synthetic"
+    assert model["provenance"] == "synthetic_demo"
+    assert model["gateway_coverage"] == "app_observed"
+    assert model["cost_estimate"]["official_price_key"] == "azure-openai:gpt-5.6-terra:global-standard:global"
+    assert observation.provenance == "synthetic_demo"
+    assert observation.provider_cache.evidence_state == "synthetic"
 
 
 def test_demo_run_writer_persists_each_declared_artifact_once() -> None:

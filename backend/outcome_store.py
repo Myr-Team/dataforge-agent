@@ -29,7 +29,7 @@ OUTCOME_DIR = ROOT / "generated-outputs" / "outcomes"
 OUTCOME_BLOB_PREFIX = "outcomes"
 
 _LOCK = threading.RLock()
-_PROVENANCE = {"assumption", "target", "observed", "synthetic"}
+_PROVENANCE = {"assumption", "target", "observed", "synthetic", "synthetic_demo"}
 _VERIFIED_OUTCOME_TRIGGER: Callable[[dict[str, Any]], None] | None = None
 _SOURCE_KEYS = (
     "file_id",
@@ -40,6 +40,9 @@ _SOURCE_KEYS = (
     "artifact_id",
     "query_hash",
     "table_name",
+    "request_ref",
+    "correlation_ref",
+    "attempt_ref",
 )
 
 
@@ -215,18 +218,15 @@ def upsert_demo_outcome_events(
         observed_at = _required_text(
             value.get("observed_at"), "observed_at", 64
         )
-        if (
-            str(value.get("provenance") or "").strip() != "observed"
-            or observed_value is None
-            or not source
-            or not source_is_valid(normalized_workspace, source)
-        ):
+        provenance = str(value.get("provenance") or "").strip()
+        synthetic = provenance == "synthetic_demo"
+        if (provenance not in {"observed", "synthetic_demo"} or observed_value is None or not source or not source_is_valid(normalized_workspace, source)):
             raise ValueError(
-                "demo outcomes require source-linked observed evidence"
+                "demo outcomes require source-linked evidence"
             )
         digest = hashlib.sha256(
             (
-                f"{normalized_workspace}\0operations_demo\0"
+                f"{normalized_workspace}\0{'synthetic_demo' if synthetic else 'operations_demo'}\0"
                 f"{metric_name}\0{unit}"
             ).encode("utf-8")
         ).hexdigest()[:16]
@@ -249,7 +249,7 @@ def upsert_demo_outcome_events(
                     "attribution_window_days",
                     maximum=3650,
                 ),
-                "provenance": "observed",
+                "provenance": "synthetic_demo" if synthetic else "observed",
                 "source": source,
                 "actor": {},
                 "trusted_identity": False,
@@ -257,7 +257,7 @@ def upsert_demo_outcome_events(
                 "created_at": now,
                 "updated_at": now,
                 "demo_seed": {
-                    "owner": "operations_demo",
+                    "owner": "synthetic_demo" if synthetic else "operations_demo",
                     "batch": normalized_seed,
                 },
             }
@@ -272,7 +272,7 @@ def upsert_demo_outcome_events(
             str(item.get("event_id") or ""): item
             for item in current
             if isinstance(item.get("demo_seed"), Mapping)
-            and item["demo_seed"].get("owner") == "operations_demo"
+            and item["demo_seed"].get("owner") in {"operations_demo", "synthetic_demo"}
         }
         preserved = [
             item

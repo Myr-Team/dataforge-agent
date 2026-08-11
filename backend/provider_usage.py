@@ -24,7 +24,7 @@ class ProviderCacheEvidence(BaseModel):
     hit_tokens: int | None = Field(default=None, ge=0)
     miss_tokens: int | None = Field(default=None, ge=0)
     hit_rate_pct: float | None = Field(default=None, ge=0, le=100)
-    evidence_state: Literal["observed", "partial", "unavailable"]
+    evidence_state: Literal["observed", "partial", "synthetic", "unavailable"]
 
 
 def normalize_deepseek_usage(value: object) -> ProviderUsage:

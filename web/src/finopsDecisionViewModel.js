@@ -536,15 +536,19 @@ function safeDemoEvidence(raw) {
   if (source.provenance !== "synthetic_demo"
     || source.production_quality_claim !== false
     || boundedText(source.label, 80) !== "演示验证结果 · 合成数据"
-    || finiteNumber(measured.paired_evaluations) !== 18
-    || finiteNumber(measured.historical_hours) !== 17.8
-    || finiteNumber(measured.assisted_hours) !== 8.1) return null;
+    || !Number.isInteger(finiteNumber(measured.paired_evaluations))
+    || finiteNumber(measured.paired_evaluations) < 1
+    || finiteNumber(measured.historical_hours) === null
+    || finiteNumber(measured.historical_hours) < 0
+    || finiteNumber(measured.assisted_hours) === null
+    || finiteNumber(measured.assisted_hours) < 0
+    || finiteNumber(measured.assisted_hours) > finiteNumber(measured.historical_hours)) return null;
   return {
-    label: "演示验证结果 · 合成数据",
+    label: boundedText(source.label, 80),
     productionQualityClaim: false,
-    pairedEvaluations: 18,
-    historicalHours: 17.8,
-    assistedHours: 8.1,
+    pairedEvaluations: finiteNumber(measured.paired_evaluations),
+    historicalHours: finiteNumber(measured.historical_hours),
+    assistedHours: finiteNumber(measured.assisted_hours),
   };
 }
 

@@ -14,7 +14,7 @@ from .token_integrity import finite_nonnegative_integral_token_count
 _SCHEMA_VERSION = "dataforge.local-model-observation.v1"
 _SAFE_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _PROVIDER_TYPES = frozenset({"azure_foundry", "deepseek"})
-_ROUTE_EVIDENCE = frozenset({"observed", "selected", "inferred", "unavailable"})
+_ROUTE_EVIDENCE = frozenset({"observed", "selected", "inferred", "synthetic", "unavailable"})
 
 
 class LocalTokenUsage(BaseModel):
@@ -47,6 +47,7 @@ class LocalCostEvidence(BaseModel):
     currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     status: Literal["estimated", "partial", "unavailable"] = "unavailable"
     price_card_revision: str | None = Field(default=None, max_length=128)
+    official_price_key: str | None = Field(default=None, max_length=240)
 
     @model_validator(mode="after")
     def validate_evidence(self) -> "LocalCostEvidence":
@@ -71,7 +72,8 @@ class LocalModelObservation(BaseModel):
     model_id: str | None = Field(default=None, max_length=160)
     route: str | None = Field(default=None, max_length=160)
     deployment: str | None = Field(default=None, max_length=160)
-    route_evidence: Literal["observed", "selected", "inferred", "unavailable"] = "unavailable"
+    route_evidence: Literal["observed", "selected", "inferred", "synthetic", "unavailable"] = "unavailable"
+    provenance: Literal["runtime", "synthetic_demo", "unavailable"] = "unavailable"
     usage: LocalTokenUsage = Field(default_factory=LocalTokenUsage)
     provider_cache: ProviderCacheEvidence = Field(
         default_factory=lambda: ProviderCacheEvidence(
@@ -127,6 +129,7 @@ def build_local_model_observation(
             model.get("deployment") or model.get("model_deployment") or model.get("model")
         ),
         route_evidence=_route_evidence(model.get("route_evidence")),
+        provenance=_provenance(model.get("provenance")),
         usage=LocalTokenUsage(
             input_tokens=_nonnegative_int(usage.get("prompt")),
             output_tokens=_nonnegative_int(usage.get("completion")),
@@ -189,7 +192,7 @@ def _provider_cache(value: Any) -> ProviderCacheEvidence:
         hit_tokens=hit,
         miss_tokens=miss,
         hit_rate_pct=round(hit / denominator * 100, 2) if denominator else None,
-        evidence_state="observed",
+        evidence_state="synthetic" if str(data.get("evidence_state") or "").strip().lower() == "synthetic" else "observed",
     )
 
 
@@ -218,7 +221,13 @@ def _cost_evidence(value: Any) -> LocalCostEvidence:
         currency=currency,
         status=status,
         price_card_revision=revision_text,
+        official_price_key=_safe_identifier(data.get("official_price_key"), max_length=240),
     )
+
+
+def _provenance(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in {"runtime", "synthetic_demo"} else "unavailable"
 
 
 def _run_status(value: Any) -> str:

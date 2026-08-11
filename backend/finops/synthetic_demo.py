@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -212,9 +212,17 @@ def build_synthetic_demo_bundle(
         workspace_id=workspace_id,
         batch_id=batch_id,
         anchor=anchor,
+        seed=seed,
         corpus_digest=corpus_digest,
+        analysis_tasks=tasks,
         request_facts=request_facts,
+        events=events,
+        model_attempts=attempts,
+        runs=runs,
+        reports=reports,
+        evidence_review_tasks=reviews,
         roi=roi,
+        monthly_ai_operating_cost_usd=round(sum(event.estimated_cost.amount or 0.0 for event in events), 2),
     )
     bundle = SyntheticDemoBundle(
         workspace_id=workspace_id,
@@ -242,6 +250,8 @@ def build_synthetic_demo_bundle(
 
 def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationReport:
     errors: list[str] = []
+    if bundle.canonical_digest != canonical_digest_for_bundle(bundle):
+        errors.append("canonical digest mismatch")
     events = bundle.events
     facts = bundle.request_facts
     attempts = bundle.model_attempts
@@ -262,16 +272,36 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             continue
         if event.run_id != fact.run_id or event.correlation_ref != fact.correlation_ref:
             errors.append(f"event lineage mismatch for {fact.request_ref}")
-        if attempt.attempt_ref != fact.attempt_ref or attempt.run_id != fact.run_id:
+        if event.attempt_ref != fact.attempt_ref or event.result_id != fact.result_id:
+            errors.append(f"event reference mismatch for {fact.request_ref}")
+        if event.provenance != "synthetic_demo" or event.usage_source != "synthetic_demo":
+            errors.append(f"event provenance mismatch for {fact.request_ref}")
+        if attempt.attempt_ref != fact.attempt_ref or attempt.run_id != fact.run_id or attempt.correlation_ref != fact.correlation_ref:
             errors.append(f"attempt lineage mismatch for {fact.request_ref}")
         if not run.steps or not run.model_attempts:
             errors.append(f"trace is incomplete for {fact.request_ref}")
         if event.tokens.total is not None and event.tokens.input is not None and event.tokens.output is not None:
-            if event.tokens.total < event.tokens.input + event.tokens.output:
+            if event.tokens.total != event.tokens.input + event.tokens.output:
                 errors.append(f"token total mismatch for {fact.request_ref}")
+        if event.tokens.cached_input is not None and event.tokens.input is not None and event.tokens.cached_input > event.tokens.input:
+            errors.append(f"cached input exceeds input for {fact.request_ref}")
+        if event.tokens.reasoning is not None and event.tokens.output is not None and event.tokens.reasoning > event.tokens.output:
+            errors.append(f"reasoning exceeds output for {fact.request_ref}")
+        if event.tokens.model_dump() != attempt.tokens.model_dump():
+            errors.append(f"event usage mismatch for {fact.request_ref}")
+        if event.provider_cache.model_dump() != attempt.provider_cache.model_dump():
+            errors.append(f"provider cache mismatch for {fact.request_ref}")
+        if attempt.route_evidence != "synthetic":
+            errors.append(f"route evidence mismatch for {fact.request_ref}")
         if event.estimated_cost.amount is not None:
             if not attempt.official_price_key or not attempt.price_card_revision:
                 errors.append(f"price mapping missing for {fact.request_ref}")
+            else:
+                expected = estimate_official_cost(attempt.official_price_key, 1, attempt.tokens)
+                if expected is None or event.estimated_cost.model_dump() != expected.model_dump() or attempt.cost_usd != expected.amount:
+                    errors.append(f"price recomputation mismatch for {fact.request_ref}")
+        elif attempt.cost_usd is not None or attempt.official_price_key or attempt.price_card_revision:
+            errors.append(f"unpriced attempt mismatch for {fact.request_ref}")
         if fact.result_cache.state == "hit" and not fact.result_cache.source_result_version:
             errors.append(f"result-cache hit lacks source for {fact.request_ref}")
     if len(events) != 2480 or len(facts) != 2480 or len(attempts) != 2480 or len(runs) != 2480:
@@ -283,6 +313,13 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
         errors.append("synthetic demo cannot make a production-quality claim")
     if bundle.roi.outcome_actor_ref == bundle.roi.reviewer_actor_ref:
         errors.append("outcome and reviewer actors must be distinct")
+    if bundle.roi.demo_reviewed_savings_hours != round(
+        (bundle.roi.measured_historical_hours - bundle.roi.measured_assisted_hours) * bundle.roi.measured_paired_evaluations,
+        1,
+    ):
+        errors.append("reviewed savings mismatch")
+    if bundle.roi.scenario_monthly_benefit_usd <= 0 or bundle.roi.monthly_operating_input_usd <= 0:
+        errors.append("ROI currency/window inputs are incomplete")
     return ReconciliationReport(
         ok=not errors,
         request_count=len(facts),
@@ -329,7 +366,7 @@ def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datet
             price_key = None
             revision = None
         occurred_at = _occurred_at(index, anchor)
-        result_cache = _result_cache(index)
+        result_cache = _result_cache(index, batch_id)
         provider_cache = _provider_cache(index)
         tokens = TokenUsage(input=input_tokens, output=output_tokens, total=input_tokens + output_tokens)
         estimate = estimate_official_cost(price_key, 1, tokens) if price_key else None
@@ -359,9 +396,14 @@ def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datet
             "estimated_cost": (
                 estimate.model_dump() if estimate is not None else {"status": "unavailable", "currency": "USD"}
             ),
-            "evidence_state": "estimated" if estimate is not None else "partial",
+            "evidence_state": "synthetic_demo",
             "correlation_ref": correlation_ref,
-            "usage_source": "provider",
+            "usage_source": "synthetic_demo",
+            "provenance": "synthetic_demo",
+            "scenario_id": DEMO_SCENARIO_ID,
+            "seed_batch": batch_id,
+            "attempt_ref": attempt_ref,
+            "result_id": result_id,
         })
         attempt = SafeModelAttempt(
             attempt_ref=attempt_ref,
@@ -408,23 +450,33 @@ def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datet
     return tuple(event_rows), tuple(facts), tuple(attempts), tuple(runs)
 
 
-def _result_cache(index: int) -> ResultCacheEvidence:
+def _result_cache(index: int, batch_id: str) -> ResultCacheEvidence:
     if index == 0:
         return ResultCacheEvidence(eligible=True, state="miss", reason="eligible", policy_revision=1)
     if index == 1:
-        return ResultCacheEvidence(eligible=True, state="hit", reason="eligible", policy_revision=1, source_result_version="result-shenzhen-0000")
+        return _result_cache_hit(0, batch_id)
     if index % 9 == 0:
-        return ResultCacheEvidence(eligible=True, state="hit", reason="eligible", policy_revision=1, source_result_version=f"result-shenzhen-{index - 9:04d}")
+        return _result_cache_hit(index - 9, batch_id)
     if index % 3:
         return ResultCacheEvidence(eligible=True, state="miss", reason="eligible", policy_revision=1)
     return ResultCacheEvidence(eligible=False, state="bypassed", reason="live_data", policy_revision=1)
 
 
+def _result_cache_hit(source_index: int, batch_id: str) -> ResultCacheEvidence:
+    return ResultCacheEvidence(
+        eligible=True,
+        state="hit",
+        reason="eligible",
+        policy_revision=1,
+        source_result_version=f"result-shenzhen-{source_index:04d}",
+    )
+
+
 def _provider_cache(index: int) -> ProviderCacheEvidence:
     if index == 0:
-        return ProviderCacheEvidence(state="miss", hit_tokens=0, miss_tokens=100, hit_rate_pct=0, evidence_state="observed")
+        return ProviderCacheEvidence(state="miss", hit_tokens=0, miss_tokens=100, hit_rate_pct=0, evidence_state="synthetic")
     if index == 1:
-        return ProviderCacheEvidence(state="hit", hit_tokens=80, miss_tokens=20, hit_rate_pct=80, evidence_state="observed")
+        return ProviderCacheEvidence(state="hit", hit_tokens=80, miss_tokens=20, hit_rate_pct=80, evidence_state="synthetic")
     return ProviderCacheEvidence(state="unavailable", evidence_state="unavailable")
 
 
@@ -434,20 +486,65 @@ def _occurred_at(index: int, anchor: datetime) -> datetime:
     return anchor - timedelta(days=30) + timedelta(minutes=index * 17)
 
 
-def _canonical_digest(*, workspace_id: str, batch_id: str, anchor: datetime, corpus_digest: str, request_facts: tuple[SyntheticRequestFact, ...], roi: RoiEvidence) -> str:
+def canonical_digest_for_bundle(bundle: SyntheticDemoBundle) -> str:
+    """Return the canonical digest for every nonvolatile synthetic demo fact."""
+    return _canonical_digest(
+        workspace_id=bundle.workspace_id,
+        batch_id=bundle.batch_id,
+        anchor=bundle.anchor_at,
+        seed=bundle.seed,
+        corpus_digest=bundle.corpus_digest,
+        analysis_tasks=bundle.analysis_tasks,
+        request_facts=bundle.request_facts,
+        events=bundle.events,
+        model_attempts=bundle.model_attempts,
+        runs=bundle.runs,
+        reports=bundle.reports,
+        evidence_review_tasks=bundle.evidence_review_tasks,
+        roi=bundle.roi,
+        monthly_ai_operating_cost_usd=bundle.monthly_ai_operating_cost_usd,
+    )
+
+
+def _canonical_digest(*, workspace_id: str, batch_id: str, anchor: datetime, seed: str, corpus_digest: str, analysis_tasks: tuple[AnalysisTask, ...], request_facts: tuple[SyntheticRequestFact, ...], events: tuple[FinOpsRequestEvent, ...], model_attempts: tuple[SafeModelAttempt, ...], runs: tuple[SyntheticRun, ...], reports: tuple[Report, ...], evidence_review_tasks: tuple[EvidenceReviewTask, ...], roi: RoiEvidence, monthly_ai_operating_cost_usd: float) -> str:
     payload = {
         "schema_version": "dataforge.synthetic-demo.v1",
         "workspace_id": workspace_id,
         "scenario_id": DEMO_SCENARIO_ID,
         "batch_id": batch_id,
         "anchor_at": anchor.isoformat().replace("+00:00", "Z"),
+        "seed": seed,
         "corpus_digest": corpus_digest,
-        "request_refs": [item.request_ref for item in request_facts],
-        "run_ids": [item.run_id for item in request_facts],
-        "roi": {"scenario_roi_pct": roi.scenario_roi_pct, "production_quality_claim": roi.production_quality_claim},
+        "analysis_tasks": _canonical_value(analysis_tasks),
+        "request_facts": _canonical_value(request_facts),
+        "events": _canonical_value(events),
+        "model_attempts": _canonical_value(model_attempts),
+        "runs": _canonical_value(runs),
+        "reports": _canonical_value(reports),
+        "evidence_review_tasks": _canonical_value(evidence_review_tasks),
+        "roi": _canonical_value(roi),
+        "monthly_ai_operating_cost_usd": monthly_ai_operating_cost_usd,
     }
     encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _canonical_value(value: object) -> object:
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, list):
+        return [_canonical_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _canonical_value(item) for key, item in value.items()}
+    if hasattr(value, "model_dump"):
+        return _canonical_value(value.model_dump(mode="json"))
+    if hasattr(value, "__dataclass_fields__"):
+        return _canonical_value(asdict(value))
+    return value
 
 
 def _corpus_digest() -> str:
@@ -489,5 +586,6 @@ __all__ = [
     "ReconciliationReport",
     "SyntheticDemoBundle",
     "build_synthetic_demo_bundle",
+    "canonical_digest_for_bundle",
     "reconcile_synthetic_demo",
 ]

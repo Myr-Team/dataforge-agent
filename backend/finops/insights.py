@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 AgentKind = Literal["finops", "roi"]
 InsightStatus = Literal["ready", "insufficient_data", "failed", "stale"]
 FindingKind = Literal["cost_driver", "risk", "optimization", "roi", "evidence_gap"]
-EvidenceState = Literal["observed", "estimated", "partial", "unavailable"]
+EvidenceState = Literal["observed", "estimated", "partial", "synthetic_demo", "unavailable"]
 ActionType = Literal[
     "apim_token_limit",
     "model_route",
