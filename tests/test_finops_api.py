@@ -2040,3 +2040,98 @@ def test_finops_apim_action_rejects_unsupported_token_window_at_creation(
     )
 
     assert response.status_code == 422
+
+
+def test_finops_model_scope_loads_actor_external_provider_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.model_policy import ModelRoute
+    from backend.model_provider_runtime import (
+        ActorProviderRuntime,
+        current_provider_connection,
+    )
+
+    deepseek_route = ModelRoute(
+        route_id="deepseek-provider-flash",
+        deployment="deepseek-v4-flash",
+        label="DeepSeek V4 Flash",
+        capabilities=frozenset({"chat", "analysis"}),
+        provider_id="deepseek-provider",
+        provider_type="deepseek",
+        model_id="deepseek-v4-flash",
+    )
+    connection = {
+        "tenant_ref": "tenant-safe",
+        "provider_id": "deepseek-provider",
+        "provider_type": "deepseek",
+        "base_url": "https://api.deepseek.com",
+        "secret_ref": "kv:deepseek-provider",
+    }
+    monkeypatch.setenv("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED", "1")
+    monkeypatch.setenv("DF_MODEL_ROUTE_ALLOWLIST", _operations_route_allowlist())
+    monkeypatch.setattr(
+        finops_router,
+        "load_workspace_model_configuration",
+        lambda _workspace_id: {
+            "policy": {
+                "revision": 7,
+                "default_route_id": "deepseek-provider-flash",
+                "assignments": {},
+            },
+            "price_card": {"revision": 2, "currency": "USD", "entries": []},
+            "policy_persisted": True,
+        },
+    )
+    monkeypatch.setattr(
+        finops_router,
+        "load_actor_provider_runtime",
+        lambda actor: ActorProviderRuntime(
+            routes=(deepseek_route,),
+            connections=(connection,),
+        )
+        if actor and actor.get("tenant_id") == "tenant-a"
+        else ActorProviderRuntime(),
+        raising=False,
+    )
+
+    with finops_router._finops_model_route_scope(
+        workspace_id="demo-corpus",
+        agent_id=None,
+        actor={"tenant_id": "tenant-a", "identity_source": "easy_auth"},
+    ) as selected:
+        assert selected.route.route_id == "deepseek-provider-flash"
+        assert current_provider_connection("deepseek-provider") == connection
+
+
+def test_finops_background_analysis_preserves_actor_provider_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from contextlib import contextmanager
+
+    observed: dict[str, object] = {}
+
+    @contextmanager
+    def scope(**kwargs):
+        observed.update(kwargs)
+        yield None
+
+    class _Service:
+        def analyze(self, **kwargs):
+            observed["analyze"] = kwargs
+            return "ok"
+
+    monkeypatch.setattr(finops_router, "_finops_model_route_scope", scope)
+    result = finops_router._analyze_insight_with_workspace_route(
+        _Service(),
+        workspace_id="demo-corpus",
+        agent_kind="roi",
+        actor={"tenant_id": "tenant-a", "identity_source": "easy_auth"},
+        tenant_ref="tenant-safe",
+    )
+
+    assert result == "ok"
+    assert observed["actor"] == {
+        "tenant_id": "tenant-a",
+        "identity_source": "easy_auth",
+    }
+    assert observed["analyze"] == {"tenant_ref": "tenant-safe", "agent_kind": "roi"}

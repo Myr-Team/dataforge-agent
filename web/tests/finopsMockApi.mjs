@@ -1871,6 +1871,19 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
             ? "内部知识：DataForge 成本与计价方法 / 请求级估算成本"
             : "内部知识：DataForge 风险判定与证据手册 / 风险规则与代表证据"]
           : [],
+        generation: assistantReady ? {
+          model_id: "deepseek-v4-flash",
+          provider_type: "deepseek",
+          gateway_coverage: "app_observed",
+          latency_ms: 345,
+          provider_cache: {
+            state: "partial_hit",
+            hit_tokens: 80,
+            miss_tokens: 40,
+            hit_rate_pct: 66.67,
+            evidence_state: "observed",
+          },
+        } : null,
         suggested_questions: assistantReady
           ? (isCostQuestion ? ["价目覆盖率如何影响成本可信度？", "哪些模型最适合优先优化？"] : ["与上一周期相比如何？"])
           : [],

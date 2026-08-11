@@ -37,6 +37,9 @@ test("operations assistant is a compact anchored popover rather than a dashboard
   assert.match(component, /影响/);
   assert.match(component, /建议/);
   assert.match(component, /判断边界/);
+  assert.match(component, /finops-ai-generation/);
+  assert.match(component, /DeepSeek V4 Flash/);
+  assert.match(component, /模型输入缓存/);
   assert.doesNotMatch(component, /backdrop/i);
   assert.match(portal, /<FinOpsAssistant/);
   assert.doesNotMatch(portal, /title="FinOps Agent"/);

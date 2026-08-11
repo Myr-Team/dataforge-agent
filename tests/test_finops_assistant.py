@@ -86,6 +86,44 @@ def test_assistant_request_defaults_to_quick_and_bounds_model_output() -> None:
     assert calls == [650, 1200]
 
 
+def test_assistant_exposes_safe_generation_evidence_for_the_model_that_answered() -> None:
+    def runner(*_args: object, **_kwargs: object) -> dict[str, object]:
+        return {
+            "structured": {
+                "conclusion": "当前缓存命中率可复核。",
+                "basis": "依据来自授权证据。",
+                "impact": "缓存命中能够降低重复输入成本。",
+                "recommendation": "继续观察命中与未命中输入。",
+                "caveat": "仅限当前窗口。",
+                "evidence_refs": ["req_safe"],
+            },
+            "provider_type": "deepseek",
+            "model_id": "deepseek-v4-flash",
+            "gateway_coverage": "app_observed",
+            "latency_ms": 345,
+            "provider_cache": {
+                "state": "partial_hit",
+                "hit_tokens": 80,
+                "miss_tokens": 40,
+                "hit_rate_pct": 66.67,
+                "evidence_state": "observed",
+            },
+        }
+
+    result = FinOpsAssistantService(model_runner=runner).answer(
+        request=_request(),
+        evidence_payload={"evidence_refs": ["req_safe"]},
+    )
+
+    assert result.generation is not None
+    assert result.generation.model_id == "deepseek-v4-flash"
+    assert result.generation.provider_type == "deepseek"
+    assert result.generation.gateway_coverage == "app_observed"
+    assert result.generation.latency_ms == 345
+    assert result.generation.provider_cache is not None
+    assert result.generation.provider_cache.hit_rate_pct == 66.67
+
+
 def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> None:
     captured: dict[str, object] = {}
 

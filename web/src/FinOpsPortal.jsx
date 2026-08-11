@@ -537,7 +537,7 @@ function TrendBars({
   const maximum = axis.max;
   if (!rows.length) return <EmptyState />;
   return (
-    <div className="finops-trend-chart">
+    <div className={`finops-trend-chart metric-${metric}`}>
       <div className="finops-trend-legend">
         {metric === "total" ? (
           <>

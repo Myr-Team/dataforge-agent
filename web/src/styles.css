@@ -5453,6 +5453,11 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-legend span { display: inline-flex; align-items: center; gap: 5px; }
 .finops-trend-legend i { width: 7px; height: 7px; border-radius: 2px; }
 .finops-trend-legend .input, .finops-trend-stack .input { background: #175cd3; }
+.finops-trend-chart.metric-cost .finops-trend-legend .input,
+.finops-trend-chart.metric-cost .finops-trend-stack .input { background: #f79009; }
+.finops-trend-chart.metric-cost .finops-trend-stack.has-value { box-shadow: inset 0 -1px #dc6803; }
+.finops-trend-chart.metric-p95 .finops-trend-legend .input,
+.finops-trend-chart.metric-p95 .finops-trend-stack .input { background: #7f56d9; }
 .finops-trend-legend .uncached, .finops-trend-stack .uncached { background: #175cd3; }
 .finops-trend-stack .unclassifiedInput { background: #84adf2; }
 .finops-trend-legend .output, .finops-trend-stack .output { background: #53b1fd; }
@@ -5798,6 +5803,10 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-ai-answer-sections > div { display: grid; gap: 2px; }
 .finops-ai-answer-sections dt { color: #175cd3; font-size: 9px; font-weight: 800; letter-spacing: .04em; }
 .finops-ai-answer-sections dd { margin: 0; color: #344054; font-size: 10.5px; line-height: 1.6; }
+.finops-ai-generation { display: flex; width: fit-content; max-width: 100%; flex-wrap: wrap; align-items: center; gap: 5px; border: 1px solid #d7e2f0; border-radius: 999px; background: #fff; padding: 4px 7px; color: #667085; font-size: 8.5px; line-height: 1.2; }
+.finops-ai-generation b { color: #175cd3; font-size: 9px; }
+.finops-ai-generation span + span::before, .finops-ai-generation em::before { content: "·"; margin-right: 5px; color: #b6c0ce; }
+.finops-ai-generation em { color: #087443; font-style: normal; }
 .finops-ai-messages article button { width: fit-content; border: 0; background: transparent; padding: 0; color: #175cd3; cursor: pointer; font: inherit; font-size: 9px; font-weight: 650; }
 .finops-ai-messages article button.finops-ai-retry { border: 1px solid #f0c36a; border-radius: 999px; padding: 4px 9px; background: #fff; color: #875900; }
 .finops-ai-messages article button.finops-ai-retry:disabled { cursor: wait; opacity: .55; }

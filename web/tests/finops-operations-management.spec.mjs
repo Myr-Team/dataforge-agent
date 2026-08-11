@@ -700,6 +700,8 @@ test("refresh state, risk footer, and cost assistant stay presentation ready", a
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("$493.88");
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("gpt-5.1");
   await expect(assistant.locator(".finops-ai-answer-sections").last()).toContainText("不等于云平台实际账单");
+  await expect(assistant.locator(".finops-ai-generation").last()).toContainText("DeepSeek V4 Flash");
+  await expect(assistant.locator(".finops-ai-generation").last()).toContainText("模型输入缓存 66.7%");
   await expect(assistant.locator(".finops-ai-knowledge-citations").last()).toContainText("内部方法参考");
   await expect(assistant.locator(".finops-ai-knowledge-citations").last()).toContainText("DataForge 成本与计价方法");
   await assistant.getByRole("button", { name: "关闭运营 AI" }).click();

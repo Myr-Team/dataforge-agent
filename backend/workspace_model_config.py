@@ -144,6 +144,9 @@ def normalize_workspace_price_card(
                 "route_id": route_id,
                 "input_per_million": _nonnegative_money(item.get("input_per_million")),
                 "output_per_million": _nonnegative_money(item.get("output_per_million")),
+                "cached_input_per_million": _optional_nonnegative_money(
+                    item.get("cached_input_per_million")
+                ),
                 "source_label": source_label,
                 "updated_at": _updated_at(updated_at or item.get("updated_at") or _utc_now()),
             }
@@ -180,13 +183,37 @@ def estimate_model_cost(
         return {"status": "unavailable", "reason": "price_not_configured"}
     input_rate = _nonnegative_money(entry.get("input_per_million"))
     output_rate = _nonnegative_money(entry.get("output_per_million"))
+    cached_rate = _optional_nonnegative_money(entry.get("cached_input_per_million"))
     revision = _revision(card.get("revision"))
     currency = str(card.get("currency") or "").strip().upper()
     if not route_id or not _CURRENCY.fullmatch(currency):
         return {"status": "unavailable", "reason": "price_not_configured"}
+    cached_tokens = _nonnegative_int(
+        (usage or {}).get("cached_input")
+        if (usage or {}).get("cached_input") is not None
+        else (usage or {}).get("provider_cache_hit_tokens")
+    )
+    cached_tokens = min(cached_tokens or 0, input_tokens)
+    if cached_tokens and cached_rate is None:
+        return {
+            "status": "partial",
+            "reason": "cached_price_not_configured",
+            "price_card_revision": revision,
+            "route_id": route_id,
+        }
+    uncached_tokens = input_tokens - cached_tokens
     amount = round(
-        input_tokens / 1_000_000 * input_rate + output_tokens / 1_000_000 * output_rate,
+        uncached_tokens / 1_000_000 * input_rate
+        + cached_tokens / 1_000_000 * float(cached_rate or 0)
+        + output_tokens / 1_000_000 * output_rate,
         6,
+    )
+    formula = (
+        "uncached_input_tokens/1_000_000*input_per_million + "
+        "cached_input_tokens/1_000_000*cached_input_per_million + "
+        "output_tokens/1_000_000*output_per_million"
+        if cached_tokens
+        else "input_tokens/1_000_000*input_per_million + output_tokens/1_000_000*output_per_million"
     )
     return {
         "status": "estimated",
@@ -194,7 +221,7 @@ def estimate_model_cost(
         "amount": amount,
         "price_card_revision": revision,
         "route_id": route_id,
-        "formula": "input_tokens/1_000_000*input_per_million + output_tokens/1_000_000*output_per_million",
+        "formula": formula,
     }
 
 
@@ -257,6 +284,12 @@ def _nonnegative_money(value: Any) -> float:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
         raise ValueError("Price card amount must be a finite non-negative number")
     return round(float(value), 9)
+
+
+def _optional_nonnegative_money(value: Any) -> float | None:
+    if value is None:
+        return None
+    return _nonnegative_money(value)
 
 
 def _revision(value: Any) -> int:
