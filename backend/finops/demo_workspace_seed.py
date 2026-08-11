@@ -23,13 +23,13 @@ _AGENTS = (
 _MODELS = (
     "gpt-5.6-terra",
     "gpt-5.1",
-    "deepseek-chat",
+    "deepseek-v4-flash",
     "gpt-4.1-mini",
 )
 _SUBJECTS = (
     ("林晓 · 财务负责人", "财务", "gpt-5.6-terra"),
     ("陈屿 · 产品负责人", "AI 平台", "gpt-5.1"),
-    ("周宁 · 交付负责人", "交付", "deepseek-chat"),
+    ("周宁 · 交付负责人", "交付", "deepseek-v4-flash"),
     ("苏禾 · 运营负责人", "运营", "gpt-4.1-mini"),
 )
 _DEPARTMENTS = ("Finance", "AI Platform", "Delivery", "Operations")

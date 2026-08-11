@@ -25,6 +25,7 @@ function normalizeHistoryMessage(item = {}) {
     sections: payload.response_sections || null,
     evidenceRefs: Array.isArray(payload.evidence_refs) ? payload.evidence_refs : [],
     evidenceLabels: Array.isArray(payload.evidence_labels) ? payload.evidence_labels : [],
+    knowledgeCitations: Array.isArray(payload.knowledge_citations) ? payload.knowledge_citations : [],
     evidenceState: payload.evidence_state || "unavailable",
     suggestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
   };

@@ -59,7 +59,8 @@ test("cost analysis starts with one compact cost scope instead of the overview K
   assert.match(costPage, /维护计价映射/);
   assert.doesNotMatch(costPage, /<MetricCards/);
   assert.match(costPage, /title="Agent 成本归因"/);
-  assert.match(costPage, /title="模型成本归因"/);
+  assert.match(costPage, /title="模型用量与缓存结构"/);
+  assert.match(costPage, /<ModelUsageComposition rows=\{models\}/);
   assert.doesNotMatch(costPage, /title="Agent 成本结构"/);
   assert.doesNotMatch(costPage, /title="模型成本结构"/);
 });
@@ -173,6 +174,30 @@ test("trend bars scale inside a dedicated plot track without clipping near-maxim
   assert.doesNotMatch(styles, /\.finops-trend-columns\s*\{[^}]*border-bottom:/s);
   assert.match(styles, /\.finops-trend-plot\s*\{[^}]*border-bottom:\s*1px solid/s);
   assert.match(styles, /\.finops-trend-column\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 24px/s);
+  assert.match(component, /className="finops-trend-gridlines"/);
+  assert.match(component, /row\.bucketStatus === "in_progress"/);
+  assert.match(styles, /\.finops-trend-stack\.in-progress\s*\{/);
+  assert.match(styles, /\.finops-trend-column\s*>\s*span\s*\{[^}]*text-overflow:\s*clip/s);
+});
+
+
+test("cost summary and ROI regression form compact evidence-first sections", async () => {
+  const [portal, roiPage, assistant, styles] = await Promise.all([
+    readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./finops/RoiDecisionPage.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./FinOpsAssistant.jsx", import.meta.url), "utf8"),
+    readFile(new URL("./styles.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(portal, /finops-cost-summary-metrics/);
+  assert.match(portal, /已计价请求/);
+  assert.match(portal, /未计价请求/);
+  assert.match(roiPage, /趋势回归校验/);
+  assert.match(roiPage, /MSE/);
+  assert.match(roiPage, /不等于已实现 ROI/);
+  assert.match(assistant, /knowledgeCitations/);
+  assert.match(assistant, /内部方法参考/);
+  assert.match(styles, /\.finops-decision-roi-validation\s*\{/);
 });
 
 

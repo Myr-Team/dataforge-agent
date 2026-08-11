@@ -370,6 +370,73 @@ function HorizontalBars({
 }
 
 
+function ModelUsageRow({ row, onSelect = null }) {
+  const { anchorRef, open, anchorProps } = useViewportTooltipAnchor();
+  const composition = row.tokenComposition || {};
+  const parts = [
+    { key: "cached", label: "缓存输入", value: composition.cachedInput },
+    { key: "uncached", label: "未缓存输入", value: composition.uncachedInput },
+    { key: "output", label: "输出", value: composition.output },
+    { key: "reasoning", label: "推理", value: composition.reasoning },
+  ];
+  const knownParts = parts.filter((part) => typeof part.value === "number" && Number.isFinite(part.value));
+  const total = knownParts.reduce((sum, part) => sum + Math.max(0, part.value), 0);
+  const tooltipId = `finops-model-usage-${String(row.key).replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  return (
+    <button
+      {...anchorProps}
+      ref={anchorRef}
+      type="button"
+      className="finops-model-usage-row"
+      onClick={() => onSelect?.({ dimension: "model", value: row.key })}
+      aria-label={`${row.key}，${formatFinOpsNumber(row.requests, "0")} 次调用，${formatFinOpsNumber(row.tokens)} Token`}
+      aria-describedby={tooltipId}
+    >
+      <span className="finops-model-usage-head">
+        <b title={row.key}>{row.key}</b>
+        <small>{formatFinOpsNumber(row.requests, "0")} 次调用 · {formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated")}</small>
+      </span>
+      {total > 0 ? (
+        <span className="finops-model-token-track" aria-hidden="true">
+          {knownParts.map((part) => part.value > 0 ? (
+            <i key={part.key} className={part.key} style={{ width: `${(part.value / total) * 100}%` }} />
+          ) : null)}
+        </span>
+      ) : (
+        <span className="finops-model-token-unavailable">Token 分类未记录</span>
+      )}
+      <span className="finops-model-usage-total">{formatFinOpsNumber(row.tokens)} Token</span>
+      <ViewportTooltip anchorRef={anchorRef} open={open} id={tooltipId} variant="finops-model-usage-tooltip">
+        <b>{row.key}</b>
+        <span>调用次数 <strong>{formatFinOpsNumber(row.requests, "0")}</strong></span>
+        {parts.map((part) => (
+          <span key={part.key}>{part.label} <strong>{formatFinOpsNumber(part.value)}</strong></span>
+        ))}
+        <span>Token 合计 <strong>{formatFinOpsNumber(row.tokens)}</strong></span>
+        <span>估算成本 <strong>{formatFinOpsCost(row.cost, row.cost == null ? "unavailable" : "estimated")}</strong></span>
+        {composition.status !== "available" ? <small>部分请求尚未返回完整 Token 分类。</small> : null}
+      </ViewportTooltip>
+    </button>
+  );
+}
+
+
+function ModelUsageComposition({ rows, onSelect = null }) {
+  if (!rows.length) return <EmptyState />;
+  return (
+    <div className="finops-model-usage">
+      <div className="finops-model-token-legend" aria-label="Token 构成图例">
+        <span><i className="cached" />缓存输入</span>
+        <span><i className="uncached" />未缓存输入</span>
+        <span><i className="output" />输出</span>
+        <span><i className="reasoning" />推理</span>
+      </div>
+      {rows.slice(0, 8).map((row) => <ModelUsageRow key={row.key} row={row} onSelect={onSelect} />)}
+    </div>
+  );
+}
+
+
 function TrendColumn({
   row,
   metric,
@@ -390,7 +457,7 @@ function TrendColumn({
     <div
       {...anchorProps}
       ref={anchorRef}
-      className="finops-trend-column"
+      className={`finops-trend-column ${row.bucketStatus === "in_progress" ? "in-progress" : ""}`.trim()}
       tabIndex={0}
       aria-label={`${row.label}，${formatValue(rawValue)}`}
       aria-describedby={tooltipId}
@@ -405,7 +472,7 @@ function TrendColumn({
       <div className="finops-trend-plot">
         <div className="finops-trend-bar-slot">
           <div
-            className={`finops-trend-stack ${value > 0 ? "has-value" : ""}`}
+            className={`finops-trend-stack ${value > 0 ? "has-value" : ""} ${row.bucketStatus === "in_progress" ? "in-progress" : ""}`.trim()}
             style={{ height: `${height}%` }}
           >
             {metric !== "total"
@@ -416,9 +483,10 @@ function TrendColumn({
           </div>
         </div>
       </div>
-      <span>{row.label.slice(5)}</span>
+      <span>{row.dateLabel}</span>
       <ViewportTooltip anchorRef={anchorRef} open={open} id={tooltipId} variant="finops-trend-tooltip-content">
         <b>{row.label}</b>
+        {row.bucketStatus === "in_progress" ? <span>时间桶 <strong>进行中</strong></span> : null}
         {metric !== "total" ? (
           <span>{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]} <strong>{formatValue(rawValue)}</strong></span>
         ) : (
@@ -465,7 +533,7 @@ function TrendBars({
     ...rows.map((row) => Number(metricValue(row) || 0)),
     ...comparisonRows.map((row) => Number(metricValue(row) || 0)),
   ];
-  const axis = niceFinOpsAxis(values, 4);
+  const axis = niceFinOpsAxis(values, 5);
   const maximum = axis.max;
   if (!rows.length) return <EmptyState />;
   return (
@@ -473,14 +541,19 @@ function TrendBars({
       <div className="finops-trend-legend">
         {metric === "total" ? (
           <>
-            <span><i className="input" />输入</span>
-            <span><i className="output" />输出</span>
+            <span><i className="uncached" />未缓存输入</span>
             <span><i className="cached" />缓存</span>
+            {rows.some((row) => row.series.unclassifiedInput != null) ? <span><i className="input" />未拆分输入</span> : null}
+            <span><i className="output" />输出</span>
             <span><i className="reasoning" />推理</span>
           </>
         ) : (
           <span><i className="input" />{{ cost: "估算成本", requests: "调用次数", p95: "P95 延迟" }[metric]}</span>
         )}
+        {rows.some((row) => row.bucketStatus === "in_progress") ? <span><i className="progress" />进行中</span> : null}
+      </div>
+      <div className="finops-trend-gridlines" aria-hidden="true">
+        {axis.ticks.map((tick) => <i key={tick} />)}
       </div>
       <div className="finops-trend-scale" aria-hidden="true">
         {axis.ticks.map((tick) => <span key={tick}>{formatValue(tick)}</span>)}
@@ -498,7 +571,7 @@ function TrendBars({
             : 0;
           const rowDate = row.label.slice(0, 10);
           const rowEvents = events.filter((item) => String(item.observed_at || "").startsWith(rowDate));
-          const parts = ["input", "output", "cached", "reasoning"].map((key) => ({
+          const parts = ["uncached", "cached", "unclassifiedInput", "output", "reasoning"].map((key) => ({
             key,
             value: Number(row.series[key] || 0),
           }));
@@ -924,23 +997,27 @@ function CostPage({
   return (
     <>
       <section className="finops-cost-summary" aria-label="成本分析口径">
-        <div>
+        <div className="finops-cost-summary-primary">
           <small>当前估算成本</small>
           <b>{summary.value}</b>
-          <span>{summary.meta}</span>
+          <span><EvidenceBadge status={summary.status} />请求级价目估算</span>
         </div>
-        <p>以下按部门、工作区、Agent 与模型解释成本来源；估算不代表云平台实际账单。</p>
-        {onConfigurePricing ? (
-          <button type="button" onClick={onConfigurePricing}>
-            <Pencil size={14} />维护计价映射
-          </button>
-        ) : null}
+        <dl className="finops-cost-summary-metrics">
+          <div><dt>计价覆盖</dt><dd>{summary.coverageLabel}</dd></div>
+          <div><dt>已计价请求</dt><dd>{summary.pricedLabel}<small> / {summary.totalRequestsLabel}</small></dd></div>
+          <div><dt>未计价请求</dt><dd>{summary.unpricedLabel}</dd></div>
+        </dl>
+        <div className="finops-cost-summary-actions">
+          {onConfigurePricing ? (
+            <button type="button" className="primary" onClick={onConfigurePricing}>
+              <Pencil size={14} />维护计价映射
+            </button>
+          ) : null}
+          {onSaveView ? <button type="button" onClick={onSaveView}><BookmarkPlus size={14} />保存视图</button> : null}
+          {exportUrl ? <a href={exportUrl}><Download size={14} />导出 CSV</a> : null}
+        </div>
+        <p>按部门、工作区、Agent 与模型解释来源；估算不代表云平台实际账单。{detail.views?.count ? ` 已保存 ${detail.views.count} 个财务视图。` : ""}</p>
       </section>
-      <div className="finops-page-actions">
-        <span>{detail.views?.count ? `${detail.views.count} 个已保存视图` : "可保存当前 IT / 财务筛选范围"}</span>
-        {onSaveView ? <button type="button" onClick={onSaveView}><BookmarkPlus size={14} />保存财务视图</button> : null}
-        {exportUrl ? <a href={exportUrl}><Download size={14} />导出 CSV</a> : null}
-      </div>
       <div className="finops-grid">
         <Panel title="成本趋势" subtitle="请求级价目表估算，不代表云平台实际账单" className="span-2">
           <TrendBars payload={overviewData.trends} metric="cost" comparisonPayload={comparison} events={overviewData.anomalies?.items || []} />
@@ -954,8 +1031,8 @@ function CostPage({
         <Panel title="Agent 成本归因" subtitle="Agent 只作为下钻维度">
           <HorizontalBars rows={agents} valueKey="cost" dimension="agent" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
         </Panel>
-        <Panel title="模型成本归因" subtitle="按 deployment 聚合">
-          <HorizontalBars rows={models} valueKey="cost" dimension="model" onSelect={onDimensionSelect} valueFormatter={(value) => formatFinOpsCost(value, value == null ? "unavailable" : "estimated")} />
+        <Panel title="模型用量与缓存结构" subtitle="按模型呈现调用、Token 构成与估算成本">
+          <ModelUsageComposition rows={models} onSelect={onDimensionSelect} />
         </Panel>
       </div>
     </>

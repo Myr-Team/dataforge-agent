@@ -135,3 +135,20 @@ export function modelRoutingViewModel(payload = {}) {
     },
   };
 }
+
+export function modelRoutingSummary(payload = {}) {
+  const view = modelRoutingViewModel(payload);
+  const policyDefault = text(payload?.policy?.default_route_id);
+  const directReply = view.assignments.direct_reply?.primaryRouteId || "";
+  const routeId = policyDefault || directReply || view.defaultRouteId;
+  const route = view.routes.find((item) => item.id === routeId) || null;
+  const policyOwned = Boolean(policyDefault || directReply);
+  return {
+    chatModelLabel: route?.label || "未记录",
+    providerLabel: route?.providerLabel || "来源未记录",
+    routeId: route?.id || routeId || "",
+    deployment: route?.deployment || "",
+    policyRevision: view.policyRevision,
+    sourceLabel: policyOwned ? "工作区策略" : route ? "服务端默认" : "未记录",
+  };
+}

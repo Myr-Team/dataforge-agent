@@ -179,6 +179,18 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                 "mode": plain.get("mode"),
                 "time": now,
             }
+            provider_type = str(plain.get("provider_type") or "").strip().lower()
+            if provider_type in {"azure_foundry", "deepseek"}:
+                model_record["provider_type"] = provider_type
+            provider_id = str(plain.get("provider_id") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", provider_id):
+                model_record["provider_id"] = provider_id
+            model_id = str(plain.get("model_id") or "").strip()
+            if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", model_id):
+                model_record["model_id"] = model_id
+            gateway_coverage = str(plain.get("gateway_coverage") or "").strip().lower()
+            if gateway_coverage in {"apim_governed", "app_observed", "unmanaged", "unknown"}:
+                model_record["gateway_coverage"] = gateway_coverage
             for key in ("policy_revision", "price_card_revision"):
                 if key in plain:
                     model_record[key] = plain.get(key)
@@ -188,6 +200,14 @@ def record_event(run_id: str | None, event: str, data: Any) -> None:
                 cache = normalize_cache_meter(plain.get("cache"))
                 if cache:
                     model_record["cache"] = cache
+            if "result_cache" in plain:
+                result_cache = normalize_cache_meter(plain.get("result_cache"))
+                if result_cache:
+                    model_record["result_cache"] = result_cache
+            if "provider_cache" in plain:
+                provider_cache = normalize_provider_cache_meter(plain.get("provider_cache"))
+                if provider_cache:
+                    model_record["provider_cache"] = provider_cache
             run.setdefault("models", []).append(model_record)
         if event == "audit" and isinstance(plain, dict):
             run["audit"] = plain

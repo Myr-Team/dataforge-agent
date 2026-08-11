@@ -576,6 +576,18 @@ def _apim_gateway_enabled() -> bool:
     return str(os.environ.get("DF_APIM_GATEWAY_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _provider_apim_enabled() -> bool:
+    return str(os.environ.get("DF_PROVIDER_APIM_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _gateway_coverage(selected: Any) -> str:
+    provider_type = str(getattr(selected.route, "provider_type", "") or "")
+    governed = _apim_gateway_enabled() and (
+        provider_type == "azure_foundry" or _provider_apim_enabled()
+    )
+    return "apim_governed" if governed else "app_observed"
+
+
 def _gateway_request_headers() -> dict[str, str]:
     """Attach only privacy-safe lineage markers to APIM-bound model requests."""
     try:
@@ -882,6 +894,7 @@ def _response_meta(response: Any, mode: str) -> dict[str, Any]:
         "latency_ms": getattr(response, "_dataforge_latency_ms", None),
         "model_route": selected.route.route_id,
         "model_deployment": selected.route.deployment,
+        "gateway_coverage": _gateway_coverage(selected),
         "policy_revision": selected.policy_revision,
         "price_card_revision": selected.price_card_revision,
         "cost_estimate": estimate_model_cost(

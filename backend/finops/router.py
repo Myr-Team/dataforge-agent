@@ -1325,6 +1325,7 @@ async def assistant_query(
                         ),
                         "evidence_refs": response.evidence_refs,
                         "evidence_labels": response.evidence_labels,
+                        "knowledge_citations": response.knowledge_citations,
                         "evidence_state": response.evidence_state,
                         "suggested_questions": response.suggested_questions,
                     },

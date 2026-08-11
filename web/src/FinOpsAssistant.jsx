@@ -173,6 +173,9 @@ export function FinOpsAssistant({
           evidenceLabels: Array.isArray(response?.evidence_labels)
             ? response.evidence_labels.filter((value) => value && !/^req_/i.test(String(value)))
             : [],
+          knowledgeCitations: Array.isArray(response?.knowledge_citations)
+            ? response.knowledge_citations.filter((value) => String(value || "").startsWith("内部知识：")).slice(0, 4)
+            : [],
           evidenceState: response?.evidence_state || "unavailable",
           sections: response?.sections || null,
           suggestions: Array.isArray(response?.suggested_questions)
@@ -340,6 +343,14 @@ export function FinOpsAssistant({
                     <b>相关证据</b>
                     {message.evidenceLabels.slice(0, 3).map((label) => (
                       <em key={label}>{label}</em>
+                    ))}
+                  </small>
+                ) : null}
+                {message.role === "assistant" && message.knowledgeCitations?.length ? (
+                  <small className="finops-ai-knowledge-citations">
+                    <b>内部方法参考</b>
+                    {message.knowledgeCitations.map((citation) => (
+                      <em key={citation}>{citation}</em>
                     ))}
                   </small>
                 ) : null}

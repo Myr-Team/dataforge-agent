@@ -77,6 +77,10 @@ test("cost summary preserves price coverage and unpriced requests", () => {
   assert.deepEqual(executiveCostSummary(data.overview), {
     value: "$0.0269",
     meta: "计价覆盖 96.7% · 2 次未计价",
+    coverageLabel: "96.7%",
+    pricedLabel: "58",
+    unpricedLabel: "2",
+    totalRequestsLabel: "60",
     status: "partial",
   });
 });

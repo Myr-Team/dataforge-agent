@@ -1,4 +1,6 @@
 import { expect, test } from "playwright/test";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 
 import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
@@ -73,7 +75,16 @@ test("run records open a same-page trace explorer with readable non-wrapping JSO
       event: "model_response",
       status: "completed",
       duration_ms: 842,
-      detail: { agent_reference: { name: "customer-agent", type: "agent_reference" }, model: "deepseek-chat", result: { summary: "已完成外部 Agent 调用" } },
+      detail: {
+        agent_reference: { name: "customer-agent", type: "agent_reference" },
+        model: "deepseek-v4-flash",
+        deployment: "deepseek-v4-flash",
+        provider_type: "deepseek",
+        gateway_coverage: "app_observed",
+        result_cache: { state: "miss", eligible: true, reason: "eligible", policy_revision: 3 },
+        provider_cache: { state: "partial_hit", hit_tokens: 640, miss_tokens: 160, hit_rate_pct: 80, evidence_state: "observed" },
+        result: { summary: "已完成外部 Agent 调用" },
+      },
       source: "run_store.steps",
     }]),
   }));
@@ -84,9 +95,16 @@ test("run records open a same-page trace explorer with readable non-wrapping JSO
 
   await expect(page.getByTestId("run-trace-explorer")).toBeVisible();
   await expect(page.getByText("External Agent", { exact: true }).first()).toBeVisible();
-  await expect(page.locator(".trace-json-panel pre")).toContainText("deepseek-chat");
+  await expect(page.locator(".trace-json-panel pre")).toContainText("deepseek-v4-flash");
+  await expect(page.locator(".trace-model-evidence")).toContainText("DeepSeek");
+  await expect(page.locator(".trace-model-evidence")).toContainText("结果缓存未命中");
+  await expect(page.locator(".trace-model-evidence")).toContainText("Token 缓存部分命中");
+  await expect(page.locator(".trace-model-evidence")).toContainText("80%");
   await expect(page.locator(".trace-json-panel pre")).toHaveCSS("white-space", "pre");
   await expect(page.locator(".trace-json-panel pre")).toHaveCSS("color", "rgb(23, 32, 51)");
+  const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
+  await mkdir(outputDir, { recursive: true });
+  await page.screenshot({ path: path.join(outputDir, "run-trace-cache-evidence-desktop.png"), fullPage: true });
   await page.getByRole("button", { name: "返回运行记录" }).click();
   await expect(page.getByRole("heading", { name: "运行记录 · 可观测性" })).toBeVisible();
 });

@@ -187,6 +187,81 @@ def _safe_trend(item: Mapping[str, Any]) -> dict[str, Any]:
     return {key: item.get(key) for key in ("label", "value", "unit", "currency", "status", "period")}
 
 
+def _forecast_validation(unit_trend: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    values: list[float] = []
+    for item in unit_trend:
+        raw = item.get("cost_per_successful_request")
+        if raw is None and str(item.get("target") or "") == "cost_per_successful_request":
+            raw = item.get("value")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(value) and value >= 0:
+            values.append(value)
+
+    base = {
+        "status": "insufficient_data",
+        "target": "cost_per_successful_request",
+        "unit": "USD/次成功调用",
+        "sample_count": len(values),
+        "train_count": 0,
+        "validation_count": 0,
+        "mse": None,
+        "rmse": None,
+        "mae": None,
+        "r2": None,
+        "baseline_mse": None,
+        "improvement_pct": None,
+        "method_revision": "linear-holdout-v1",
+    }
+    if len(values) < 6:
+        return base
+
+    train_count = max(3, int(math.floor(len(values) * 0.7)))
+    if len(values) - train_count < 2:
+        train_count = len(values) - 2
+    train = values[:train_count]
+    validation = values[train_count:]
+    x_train = list(range(train_count))
+    mean_x = sum(x_train) / train_count
+    mean_y = sum(train) / train_count
+    denominator = sum((x - mean_x) ** 2 for x in x_train)
+    slope = (
+        sum((x - mean_x) * (y - mean_y) for x, y in zip(x_train, train)) / denominator
+        if denominator > 0
+        else 0.0
+    )
+    intercept = mean_y - (slope * mean_x)
+    predictions = [intercept + (slope * index) for index in range(train_count, len(values))]
+    squared_errors = [(actual - predicted) ** 2 for actual, predicted in zip(validation, predictions)]
+    absolute_errors = [abs(actual - predicted) for actual, predicted in zip(validation, predictions)]
+    mse = sum(squared_errors) / len(squared_errors)
+    baseline_errors = [(actual - train[-1]) ** 2 for actual in validation]
+    baseline_mse = sum(baseline_errors) / len(baseline_errors)
+    validation_mean = sum(validation) / len(validation)
+    total_variation = sum((actual - validation_mean) ** 2 for actual in validation)
+    r2 = 1 - (sum(squared_errors) / total_variation) if total_variation > 0 else None
+    improvement = (
+        (1 - (mse / baseline_mse)) * 100
+        if baseline_mse > 0
+        else None
+    )
+
+    return {
+        **base,
+        "status": "estimated",
+        "train_count": train_count,
+        "validation_count": len(validation),
+        "mse": round(mse, 12),
+        "rmse": round(math.sqrt(mse), 12),
+        "mae": round(sum(absolute_errors) / len(absolute_errors), 12),
+        "r2": round(r2, 6) if r2 is not None and math.isfinite(r2) else None,
+        "baseline_mse": round(baseline_mse, 12),
+        "improvement_pct": round(improvement, 2) if improvement is not None and math.isfinite(improvement) else None,
+    }
+
+
 def _safe_policy(value: Any) -> str:
     policy = str(value or "")
     return policy if policy in _SAFE_POLICIES else "other"
@@ -271,11 +346,48 @@ def _maturity(funnel: list[dict[str, Any]]) -> dict[str, Any]:
     return {"score_pct": score, "formula_revision": "roi-evidence-maturity-v1", "stages": stages}
 
 
-def _roi_statement(scenario: dict[str, Any] | None, verified: dict[str, Any]) -> DecisionStatement:
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _roi_statement(
+    scenario: dict[str, Any] | None,
+    verified: dict[str, Any],
+    forecast: Mapping[str, Any],
+) -> DecisionStatement:
     if verified.get("status") == "verified" and verified.get("value") is not None:
         return DecisionStatement(state="verified", title="已形成可复核 ROI", summary="成本与业务结果证据均已完成验证。", evidence_state="verified")
     if scenario:
-        return DecisionStatement(state="scenario_positive_unverified", title="测算显示具备投入价值，业务结果仍需验证", summary="情景参数与运行事实严格分开；验证完成前不显示已实现 ROI。", evidence_state="estimated")
+        result = scenario.get("result") if isinstance(scenario.get("result"), Mapping) else {}
+        net_benefit = _finite_number(result.get("monthly_net_benefit"))
+        roi_ratio = _finite_number(result.get("roi_ratio"))
+        if (net_benefit is not None and net_benefit <= 0) or (roi_ratio is not None and roi_ratio <= 0):
+            return DecisionStatement(
+                state="scenario_not_positive",
+                title="当前测算尚未达到正向回报",
+                summary="当前情景中的净收益或 ROI 不为正；应先优化投入、提升可验证收益，再重新测算。",
+                evidence_state="estimated",
+            )
+        trend_supported = (
+            forecast.get("status") == "estimated"
+            and (_finite_number(forecast.get("improvement_pct")) or 0) > 0
+        )
+        return DecisionStatement(
+            state="scenario_positive_unverified",
+            title="测算显示具备投入价值，业务结果仍需验证",
+            summary=(
+                "历史单位成本趋势校验优于朴素基线，但这只支持成本预测；业务结果验证前不显示已实现 ROI。"
+                if trend_supported
+                else "情景参数与运行事实严格分开；验证完成前不显示已实现 ROI。"
+            ),
+            evidence_state="estimated",
+        )
     return DecisionStatement(state="evidence_incomplete", title="已建立投入与使用证据，仍需补充价值假设", summary="当前范围不足以形成可复核 ROI。", evidence_state="partial")
 
 
@@ -380,9 +492,11 @@ def build_roi_decision(
         {"id": "monthly_total_cost", "label": "AI 运营总投入", "value": -total_cost if isinstance(total_cost, (int, float)) and not isinstance(total_cost, bool) else None, "unit": "USD", "status": "estimated", "explanation": "价值桥中的成本扣减项。"},
         {"id": "monthly_net_benefit", "label": "月度净收益", "value": result.get("monthly_net_benefit"), "unit": "USD", "status": "estimated", "explanation": "月度收益减去 AI 运营总投入。"},
     ] if scenario else []
-    payload = {"decision": _roi_statement(scenario, dict(economics.get("verified_roi") or {})), "case_story": _case_story(scenario), "metrics": metrics,
+    forecast_validation = _forecast_validation(unit_trend)
+    payload = {"decision": _roi_statement(scenario, dict(economics.get("verified_roi") or {}), forecast_validation), "case_story": _case_story(scenario), "metrics": metrics,
         "value_bridge": {"formula_revision": result.get("formula_revision"), "scenario_id": scenario.get("scenario_id") if scenario else None, "payback_months": result.get("payback_months"), "items": bridge_items},
         "evidence_maturity": _maturity(funnel), "unit_economics_trend": [_safe_trend(item) for item in unit_trend],
+        "forecast_validation": forecast_validation,
         "verified_roi": _safe_verified(economics.get("verified_roi")), "capability_explanation": _CAPABILITY_EXPLANATION,
         "scenarios": scenarios, "evidence_gaps": [stage["evidence_gap"] for stage in funnel if stage.get("evidence_gap")]}
     validated = RoiDecision.model_validate(payload)

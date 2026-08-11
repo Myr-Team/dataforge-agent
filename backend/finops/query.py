@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -383,6 +383,21 @@ class FinOpsQueryService:
                 for state in ("hit", "miss", "bypassed", "unavailable")
             }
             cache_hits = cache_counts["hit"]
+            token_known = {
+                name: [getattr(row.tokens, name) for row in rows if getattr(row.tokens, name) is not None]
+                for name in ("input", "cached_input", "output", "reasoning")
+            }
+            uncached_known = [
+                max(0, int(row.tokens.input) - int(row.tokens.cached_input))
+                for row in rows
+                if row.tokens.input is not None and row.tokens.cached_input is not None
+            ]
+            composition_known_rows = sum(
+                row.tokens.input is not None
+                and row.tokens.cached_input is not None
+                and row.tokens.output is not None
+                for row in rows
+            )
             items.append(
                 {
                     "key": key,
@@ -400,6 +415,29 @@ class FinOpsQueryService:
                         "eligible_requests": len(cache_eligible),
                         **cache_counts,
                         **_cache_economics(rows),
+                    },
+                    "token_composition": {
+                        "input": sum(token_known["input"]) if token_known["input"] else None,
+                        "cached_input": (
+                            sum(token_known["cached_input"])
+                            if token_known["cached_input"]
+                            else None
+                        ),
+                        "uncached_input": sum(uncached_known) if uncached_known else None,
+                        "output": sum(token_known["output"]) if token_known["output"] else None,
+                        "reasoning": (
+                            sum(token_known["reasoning"])
+                            if token_known["reasoning"]
+                            else None
+                        ),
+                        "known_requests": composition_known_rows,
+                        "data_status": (
+                            "available"
+                            if composition_known_rows == len(rows) and rows
+                            else "partial"
+                            if any(token_known.values())
+                            else "unavailable"
+                        ),
                     },
                     "data_status": _data_status(rows),
                 }
@@ -441,6 +479,7 @@ class FinOpsQueryService:
             key = value.strftime("%Y-%m-%dT%H:00:00Z") if bucket == "hour" else value.strftime("%Y-%m-%dT00:00:00Z")
             grouped.setdefault(key, []).append(event)
         items = []
+        observed_now = datetime.now(timezone.utc)
         for key, rows in sorted(grouped.items()):
             totals = Counter()
             known: Counter = Counter()
@@ -478,6 +517,14 @@ class FinOpsQueryService:
             items.append(
                 {
                     "bucket": key,
+                    "bucket_status": (
+                        "complete"
+                        if datetime.strptime(key, "%Y-%m-%dT%H:00:00Z" if bucket == "hour" else "%Y-%m-%dT00:00:00Z")
+                        .replace(tzinfo=timezone.utc)
+                        + (timedelta(hours=1) if bucket == "hour" else timedelta(days=1))
+                        <= observed_now
+                        else "in_progress"
+                    ),
                     "requests": len(rows),
                     "tokens": token_totals,
                     "estimated_cost": round(sum(costs), 8) if costs else None,

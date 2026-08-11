@@ -128,6 +128,34 @@ def test_overview_keeps_unpriced_requests_visible_instead_of_inventing_cost() ->
     assert response["data_status"] == "partial"
 
 
+def test_trends_distinguish_closed_days_from_the_current_incomplete_day() -> None:
+    now = datetime.now(timezone.utc)
+    current = _event("req_current_bucket", cost=1.25).model_copy(
+        update={"occurred_at": now - timedelta(minutes=5)}
+    )
+    closed = _event("req_closed_bucket", cost=2.5).model_copy(
+        update={"occurred_at": now - timedelta(days=1)}
+    )
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([closed, current])
+
+    response = FinOpsQueryService(repository).trends(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value=(now - timedelta(days=2)).isoformat(),
+            to_value=(now + timedelta(minutes=1)).isoformat(),
+        ),
+        "day",
+        metric="estimated_cost",
+    )
+
+    assert [item["bucket_status"] for item in response["items"]] == [
+        "complete",
+        "in_progress",
+    ]
+
+
 def test_overview_exposes_recorded_token_and_cache_composition() -> None:
     raw_events = []
     for request_ref, tokens, cache in (
@@ -233,6 +261,39 @@ def test_overview_separates_result_cache_requests_from_provider_cache_tokens() -
         "hit_tokens": 80,
         "miss_tokens": 120,
         "hit_rate_pct": 40.0,
+        "data_status": "available",
+    }
+
+
+def test_model_breakdown_exposes_cached_uncached_and_output_token_composition() -> None:
+    first = _event("req_model_cache_0001").model_copy(update={
+        "deployment": "deepseek-v4-flash",
+        "tokens": TokenUsage(input=100, cached_input=70, output=20, total=120),
+    })
+    second = _event("req_model_cache_0002").model_copy(update={
+        "deployment": "deepseek-v4-flash",
+        "tokens": TokenUsage(input=60, cached_input=0, output=15, total=75),
+    })
+    repository = InMemoryFinOpsRepository()
+    repository.upsert_events([first, second])
+
+    response = FinOpsQueryService(repository).breakdowns(
+        FinOpsQuery(
+            tenant_ref="tenant-a",
+            authorized_workspace_ids=("ws-a",),
+            from_value="2026-07-01T00:00:00Z",
+            to_value="2026-07-25T00:00:00Z",
+        ),
+        "model",
+    )
+
+    assert response["items"][0]["token_composition"] == {
+        "input": 160,
+        "cached_input": 70,
+        "uncached_input": 90,
+        "output": 35,
+        "reasoning": None,
+        "known_requests": 2,
         "data_status": "available",
     }
 

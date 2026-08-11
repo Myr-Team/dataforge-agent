@@ -123,8 +123,9 @@ test("overview hides infrastructure reconciliation and keeps pricing coverage in
   await expect(overview.locator(".finops-metric")).toHaveCount(4);
 
   await page.getByRole("button", { name: "成本分析", exact: true }).click();
-  await expect(page.locator(".finops-cost-summary")).toContainText("计价覆盖 93.5%");
-  await expect(page.locator(".finops-cost-summary")).toContainText("156 次未计价");
+  const costSummary = page.locator(".finops-cost-summary");
+  await expect(costSummary.locator("dl > div").filter({ hasText: "计价覆盖" }).locator("dd")).toHaveText("93.5%");
+  await expect(costSummary.locator("dl > div").filter({ hasText: "未计价请求" }).locator("dd")).toHaveText("156");
 
   const outputDir = path.resolve(process.cwd(), "..", "output", "playwright");
   await mkdir(outputDir, { recursive: true });

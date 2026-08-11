@@ -300,6 +300,9 @@ class MafRuntimeEvent(BaseModel):
     response_id: str | None = Field(default=None, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
+    reasoning_tokens: int | None = Field(default=None, ge=0)
+    provider_cache_hit_tokens: int | None = Field(default=None, ge=0)
+    provider_cache_miss_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
     retry_count: int | None = Field(default=None, ge=0, le=100)
     tool_names: tuple[str, ...] | None = Field(default=None, max_length=12)
@@ -696,6 +699,9 @@ def _safe_agent_telemetry(response: Any) -> dict[str, Any]:
         "response_id": response_id,
         "input_tokens": token_value("input_tokens", "input_token_count"),
         "output_tokens": token_value("output_tokens", "output_token_count"),
+        "reasoning_tokens": token_value("reasoning_tokens", "reasoning_token_count"),
+        "provider_cache_hit_tokens": token_value("provider_cache_hit_tokens", "prompt_cache_hit_tokens"),
+        "provider_cache_miss_tokens": token_value("provider_cache_miss_tokens", "prompt_cache_miss_tokens"),
         "total_tokens": token_value("total_tokens", "total_token_count"),
         "retry_count": retry_count,
         "tool_names": tuple(tool_names),
@@ -719,7 +725,14 @@ def _aggregate_agent_telemetry(
         response_id = attempts[-1].get("response_id")
         if response_id is not None:
             metadata["response_id"] = response_id
-        for key in ("input_tokens", "output_tokens", "total_tokens"):
+        for key in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "provider_cache_hit_tokens",
+            "provider_cache_miss_tokens",
+            "total_tokens",
+        ):
             if all(key in attempt for attempt in attempts):
                 metadata[key] = sum(int(attempt[key]) for attempt in attempts)
 

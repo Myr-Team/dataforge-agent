@@ -418,6 +418,7 @@ def test_response_metadata_records_effective_route_and_deployment(monkeypatch) -
         "latency_ms": None,
         "model_route": "primary-analysis",
         "model_deployment": "gpt-5.1",
+        "gateway_coverage": "app_observed",
         "policy_revision": None,
         "price_card_revision": None,
         "cost_estimate": {"status": "unavailable", "reason": "price_not_configured"},
@@ -463,6 +464,7 @@ def test_external_response_metadata_records_provider_cache_populations() -> None
         "hit_rate_pct": 80.0,
         "evidence_state": "observed",
     }
+    assert metadata["gateway_coverage"] == "app_observed"
 
 
 def test_response_metadata_preserves_unknown_allowlisted_usage_fields(monkeypatch) -> None:

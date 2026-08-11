@@ -52,6 +52,13 @@ def test_assistant_request_rejects_unknown_or_unsafe_context_fields() -> None:
         _request(filters={"workspace_id": "ws-a", "resource_id": "/subscriptions/secret"})
 
 
+def test_assistant_accepts_estimated_cost_context_without_leaking_validation_json() -> None:
+    request = _request(data_status="estimated", evidence_state="estimated")
+
+    assert request.metric_context.data_status == "estimated"
+    assert request.metric_context.evidence_state == "estimated"
+
+
 def test_assistant_request_defaults_to_quick_and_bounds_model_output() -> None:
     calls: list[int] = []
 
@@ -271,6 +278,9 @@ def test_assistant_cost_question_passes_explanatory_knowledge_without_new_eviden
     assert knowledge["usage_boundary"].startswith("知识仅用于解释")
     assert {item["id"] for item in knowledge["entries"]} >= {"estimated-cost"}
     assert captured["evidence_refs"] == ["req_safe"]
+    assert result.knowledge_citations
+    assert result.knowledge_citations[0].startswith("内部知识：")
+    assert all("C:\\" not in citation for citation in result.knowledge_citations)
 
 
 def test_assistant_normalizes_legacy_answer_into_semantic_sections() -> None:
