@@ -43,14 +43,14 @@ export function safeMemberBudgetFailureState(error) {
   return "unavailable";
 }
 
-async function loadBudgetView(workspaceId, settingsScope) {
+async function loadBudgetView(workspaceId, settingsScope, { force = false } = {}) {
   const snapshot = (resource) => {
     const key = settingsResourceKey(settingsScope, resource);
     return key ? peekSettingsResource(key).value : null;
   };
   const cached = (resource, loader) => {
     const key = settingsResourceKey(settingsScope, resource);
-    return key ? loadSettingsResource(key, ({ signal }) => loader({ signal })) : loader({});
+    return key ? loadSettingsResource(key, ({ signal }) => loader({ signal }), { force }) : loader({});
   };
   const [budgetsResult, membersResult, notificationResult, alertsResult] = await Promise.allSettled([
     cached("budget", (options) => loadMemberBudgets(workspaceId, options)),
@@ -439,7 +439,7 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
   const reload = async ({ preserveNotice = false } = {}) => {
     setState("loading");
     if (!preserveNotice) setNotice(null);
-    const loaded = await loadBudgetView(workspaceId, settingsScope);
+    const loaded = await loadBudgetView(workspaceId, settingsScope, { force: true });
     setView(loaded.view);
     setViewScopeKey(currentScopeKey);
     setState(loaded.state);

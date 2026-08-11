@@ -90,8 +90,11 @@ function mappingByDeployment(items = []) {
 }
 
 function routingDraftStamp(scopeKey, payload) {
-  if (!scopeKey || !payload) return "";
-  return `${scopeKey}:${modelRoutingViewModel(payload).policyRevision}`;
+  if (!payload) return "";
+  // The embedded FinOps dialog predates the scoped Settings shell but still
+  // owns an authorized, revisioned routing view.  Keep it distinct from every
+  // scoped draft while allowing its hydrated revision to unlock writes.
+  return `${scopeKey || "embedded"}:${modelRoutingViewModel(payload).policyRevision}`;
 }
 
 function routingDraft(payload, mappingItems = []) {
