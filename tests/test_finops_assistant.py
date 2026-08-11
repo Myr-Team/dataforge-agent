@@ -83,7 +83,7 @@ def test_assistant_request_defaults_to_quick_and_bounds_model_output() -> None:
     service.answer(request=quick, evidence_payload={"evidence_refs": ["req_safe"]})
     service.answer(request=deep, evidence_payload={"evidence_refs": ["req_safe"]})
 
-    assert calls == [650, 1200]
+    assert calls == [900, 1200]
 
 
 def test_assistant_exposes_safe_generation_evidence_for_the_model_that_answered() -> None:
@@ -146,7 +146,8 @@ def test_quick_assistant_uses_bounded_model_attempt_and_grounded_fallback() -> N
         },
     )
 
-    assert captured["request_timeout_seconds"] == 15.0
+    assert captured["request_timeout_seconds"] == 25.0
+    assert captured["max_output_tokens"] == 900
     assert captured["retry_limit"] == 0
     assert captured["thinking"] == "disabled"
     assert result.status == "ready"
@@ -179,7 +180,25 @@ def test_quick_assistant_timeout_is_configurable_and_bounded(
         evidence_payload={"evidence_refs": ["req_safe"]},
     )
 
-    assert captured == [6.0, 30.0]
+    assert captured == [10.0, 30.0]
+
+
+def test_quick_assistant_output_budget_is_configurable_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[int] = []
+
+    def runner(*_args: object, **kwargs: object) -> dict[str, object]:
+        captured.append(int(kwargs["max_output_tokens"]))
+        raise TimeoutError("provider timeout")
+
+    service = FinOpsAssistantService(model_runner=runner)
+    monkeypatch.setenv("DF_FINOPS_QUICK_MODEL_MAX_OUTPUT_TOKENS", "100")
+    service.answer(request=_request(), evidence_payload={"evidence_refs": ["req_safe"]})
+    monkeypatch.setenv("DF_FINOPS_QUICK_MODEL_MAX_OUTPUT_TOKENS", "9000")
+    service.answer(request=_request(), evidence_payload={"evidence_refs": ["req_safe"]})
+
+    assert captured == [650, 1800]
 
 
 def test_quick_assistant_can_use_immediate_grounded_path(

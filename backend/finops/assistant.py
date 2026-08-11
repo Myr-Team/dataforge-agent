@@ -283,12 +283,22 @@ class FinOpsAssistantService:
                 "entries": knowledge_entries,
             },
         }
+        if request.mode == "quick":
+            payload["response_limits"] = {
+                "section_max_chinese_characters": 120,
+                "suggested_questions_max_items": 2,
+                "instruction": "Return compact JSON only; do not restate the input or schema.",
+            }
         try:
             raw = self._model_runner(
                 "df-finops-analyst",
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 response_schema=AssistantAnswerOutput.model_json_schema(),
-                max_output_tokens=650 if request.mode == "quick" else 1200,
+                max_output_tokens=(
+                    _quick_model_max_output_tokens()
+                    if request.mode == "quick"
+                    else 1200
+                ),
                 request_timeout_seconds=(
                     _quick_model_timeout_seconds()
                     if request.mode == "quick"
@@ -399,12 +409,25 @@ def _quick_model_timeout_seconds() -> float:
         value = float(
             str(
                 os.environ.get("DF_FINOPS_QUICK_MODEL_TIMEOUT_SECONDS")
-                or "15"
+                or "25"
             ).strip()
         )
     except (TypeError, ValueError):
-        value = 15.0
-    return max(6.0, min(value, 30.0))
+        value = 25.0
+    return max(10.0, min(value, 30.0))
+
+
+def _quick_model_max_output_tokens() -> int:
+    try:
+        value = int(
+            str(
+                os.environ.get("DF_FINOPS_QUICK_MODEL_MAX_OUTPUT_TOKENS")
+                or "900"
+            ).strip()
+        )
+    except (TypeError, ValueError):
+        value = 900
+    return max(650, min(value, 1800))
 
 
 def _grounded_quick_response(
