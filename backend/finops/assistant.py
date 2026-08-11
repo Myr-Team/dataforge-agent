@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from typing import Any, Callable, Literal, Mapping
@@ -10,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from .assistant_knowledge import retrieve_finops_knowledge
 
 
+_LOG = logging.getLogger(__name__)
 _SAFE_REF = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{2,255}$")
 _SAFE_REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{4,123}$")
 _REQUEST_REF_TOKEN = re.compile(
@@ -287,10 +289,19 @@ class FinOpsAssistantService:
                 json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
                 response_schema=AssistantAnswerOutput.model_json_schema(),
                 max_output_tokens=650 if request.mode == "quick" else 1200,
-                request_timeout_seconds=6.0 if request.mode == "quick" else None,
+                request_timeout_seconds=(
+                    _quick_model_timeout_seconds()
+                    if request.mode == "quick"
+                    else None
+                ),
                 retry_limit=0 if request.mode == "quick" else None,
             )
-        except Exception:
+        except Exception as exc:
+            _LOG.warning(
+                "Operations AI model attempt fell back error_type=%s category=%s",
+                type(exc).__name__,
+                str(getattr(exc, "category", "unavailable"))[:64],
+            )
             if request.mode == "quick":
                 return _grounded_quick_response(
                     request=request,
@@ -348,7 +359,11 @@ class FinOpsAssistantService:
             )
         except _AssistantSafetyError:
             return _unavailable_response()
-        except Exception:
+        except Exception as exc:
+            _LOG.warning(
+                "Operations AI structured response fell back error_type=%s",
+                type(exc).__name__,
+            )
             if request.mode == "quick":
                 return _grounded_quick_response(
                     request=request,
@@ -376,6 +391,19 @@ def _quick_model_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+def _quick_model_timeout_seconds() -> float:
+    try:
+        value = float(
+            str(
+                os.environ.get("DF_FINOPS_QUICK_MODEL_TIMEOUT_SECONDS")
+                or "15"
+            ).strip()
+        )
+    except (TypeError, ValueError):
+        value = 15.0
+    return max(6.0, min(value, 30.0))
 
 
 def _grounded_quick_response(
