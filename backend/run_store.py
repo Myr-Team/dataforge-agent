@@ -3816,10 +3816,8 @@ def normalize_provider_cache_meter(value: Any) -> dict[str, Any]:
     state = str(data.get("state") or "").strip().lower()
     if state not in {"hit", "partial_hit", "miss", "unavailable"}:
         return {}
-    hit = data.get("hit_tokens")
-    miss = data.get("miss_tokens")
-    hit = hit if isinstance(hit, int) and not isinstance(hit, bool) and hit >= 0 else None
-    miss = miss if isinstance(miss, int) and not isinstance(miss, bool) and miss >= 0 else None
+    hit = finite_nonnegative_integral_token_count(data.get("hit_tokens"))
+    miss = finite_nonnegative_integral_token_count(data.get("miss_tokens"))
     evidence_state = (
         "observed"
         if hit is not None and miss is not None

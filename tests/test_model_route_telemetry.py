@@ -594,6 +594,22 @@ def test_foundry_cached_tokens_project_as_partial_provider_cache_evidence(tmp_pa
     assert observation.provider_cache.model_dump() == meta["provider_cache"]
 
 
+def test_provider_cache_accepts_finite_nonnegative_integral_float_counts() -> None:
+    assert run_store.normalize_provider_cache_meter(
+        {
+            "state": "partial_hit",
+            "hit_tokens": 12.0,
+            "miss_tokens": 8.0,
+        }
+    ) == {
+        "state": "partial_hit",
+        "hit_tokens": 12,
+        "miss_tokens": 8,
+        "hit_rate_pct": 60.0,
+        "evidence_state": "observed",
+    }
+
+
 def test_foundry_and_deepseek_malformed_usage_is_unavailable_without_truncation(
     tmp_path, monkeypatch
 ) -> None:
