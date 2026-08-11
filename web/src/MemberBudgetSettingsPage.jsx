@@ -44,6 +44,10 @@ function safeFailureState(error) {
 }
 
 async function loadBudgetView(workspaceId, settingsScope) {
+  const snapshot = (resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? peekSettingsResource(key).value : null;
+  };
   const cached = (resource, loader) => {
     const key = settingsResourceKey(settingsScope, resource);
     return key ? loadSettingsResource(key, ({ signal }) => loader({ signal })) : loader({});
@@ -54,32 +58,37 @@ async function loadBudgetView(workspaceId, settingsScope) {
     cached("notification", (options) => loadMemberBudgetNotification(workspaceId, options)),
     cached("alerts", (options) => loadMemberBudgetAlerts(workspaceId, options)),
   ]);
-  const budgetsState = budgetsResult.status === "fulfilled"
-    ? ["complete", "partial", "unavailable"].includes(budgetsResult.value?.data_status)
-      ? budgetsResult.value.data_status
+  const budgetSnapshot = snapshot("budget");
+  const membersSnapshot = snapshot("budgetMembers");
+  const notificationSnapshot = snapshot("notification");
+  const alertsSnapshot = snapshot("alerts");
+  const budgets = budgetsResult.status === "fulfilled" ? budgetsResult.value : budgetSnapshot;
+  const members = membersResult.status === "fulfilled" ? membersResult.value : membersSnapshot;
+  const notification = notificationResult.status === "fulfilled" ? notificationResult.value : notificationSnapshot;
+  const alerts = alertsResult.status === "fulfilled" ? alertsResult.value : alertsSnapshot;
+  const budgetsState = budgets
+    ? ["complete", "partial", "unavailable"].includes(budgets.data_status)
+      ? budgets.data_status
       : "partial"
     : "unavailable";
-  const notificationState = notificationResult.status === "rejected"
-    ? safeFailureState(notificationResult.reason)
-    : notificationResult.value?.data_status === "unavailable"
+  const notificationState = notification?.data_status === "unavailable"
       ? "unavailable"
-      : "configured";
-  const alertsState = alertsResult.status === "fulfilled" && alertsResult.value?.data_status !== "unavailable"
-    ? "available"
-    : "unavailable";
+      : notification?.item ? "configured" : notificationResult.status === "rejected" ? safeFailureState(notificationResult.reason) : "not_configured";
+  const alertsState = alerts?.data_status === "unavailable" ? "unavailable" : "available";
+  const refreshFailed = [budgetsResult, membersResult, notificationResult, alertsResult].some((result) => result.status === "rejected");
   const view = memberBudgetViewModel({
-    budgets: budgetsResult.status === "fulfilled" ? budgetsResult.value : {},
+    budgets: budgets || {},
     budgetsState,
-    members: membersResult.status === "fulfilled" ? membersResult.value : {},
-    notification: notificationResult.status === "fulfilled" ? notificationResult.value : null,
+    members: members || {},
+    notification: notification || null,
     notificationState,
-    alerts: alertsResult.status === "fulfilled" ? alertsResult.value : {},
+    alerts: alerts || {},
     alertsState,
   });
   return {
-    state: budgetsState === "unavailable"
+    state: budgetsState === "unavailable" && !budgetSnapshot
       ? safeFailureState(budgetsResult.reason)
-      : membersResult.status === "rejected"
+      : refreshFailed
         || ["unavailable", "permission_required"].includes(notificationState)
         || alertsState === "unavailable"
         ? "partial"
@@ -87,6 +96,7 @@ async function loadBudgetView(workspaceId, settingsScope) {
           ? "available"
           : "empty",
     view,
+    refreshFailed,
   };
 }
 
@@ -99,7 +109,7 @@ function peekBudgetView(settingsScope) {
   const members = read("budgetMembers");
   const notification = read("notification");
   const alerts = read("alerts");
-  if (!budgets || !members || !notification || !alerts) return null;
+  if (!budgets && !members && !notification && !alerts) return null;
   const budgetsState = budgets.data_status || "partial";
   const view = memberBudgetViewModel({
     budgets, budgetsState, members, notification,
@@ -404,6 +414,7 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
   const [busy, setBusy] = useState("");
   const [formError, setFormError] = useState("");
   const [notice, setNotice] = useState(null);
+  const [refreshError, setRefreshError] = useState(false);
 
   const reload = async ({ preserveNotice = false } = {}) => {
     setState("loading");
@@ -412,6 +423,7 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
     setView(loaded.view);
     setViewScopeKey(currentScopeKey);
     setState(loaded.state);
+    setRefreshError(loaded.refreshFailed === true);
   };
 
   useEffect(() => {
@@ -425,13 +437,14 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
       setView(snapshot.view);
       setViewScopeKey(currentScopeKey);
       setState(snapshot.state);
+      setRefreshError(false);
     }
     loadBudgetView(workspaceId, settingsScope).then((loaded) => {
       if (cancelled) return;
-      if (loaded.state === "unavailable" && snapshot) return;
       setView(loaded.view);
       setViewScopeKey(currentScopeKey);
       setState(loaded.state);
+      setRefreshError(loaded.refreshFailed === true);
     });
     return () => {
       cancelled = true;
@@ -589,6 +602,12 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
         <div className={`member-budget-notice ${notice.tone}`} role="status">
           {notice.tone === "success" ? <CheckCircle2 size={15} /> : <AlertCircle size={15} />}
           <span>{notice.text}</span>
+        </div>
+      ) : null}
+      {refreshError ? (
+        <div className="member-budget-notice warning" role="status">
+          <AlertCircle size={15} />
+          <span>更新失败，正在显示上次可用配置。</span>
         </div>
       ) : null}
 

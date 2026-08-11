@@ -89,6 +89,35 @@ function mappingByDeployment(items = []) {
   );
 }
 
+function routingDraftStamp(scopeKey, payload) {
+  if (!scopeKey || !payload) return "";
+  return `${scopeKey}:${modelRoutingViewModel(payload).policyRevision}`;
+}
+
+function routingDraft(payload, mappingItems = []) {
+  if (!payload) return null;
+  const view = modelRoutingViewModel(payload);
+  const mappings = mappingByDeployment(mappingItems);
+  return {
+    assignments: view.assignments,
+    agentAssignments: view.agentAssignments,
+    defaultRouteId: String(payload?.policy?.default_route_id || view.defaultRouteId || ""),
+    mappingDraft: Object.fromEntries(view.routes.map((route) => [
+      route.deployment,
+      mappings[route.deployment]?.official_price_key || route.officialPriceKey || "",
+    ])),
+  };
+}
+
+function currentRoutingSnapshots(settingsScope) {
+  const routingKey = settingsResourceKey(settingsScope, "routing");
+  const mappingKey = settingsResourceKey(settingsScope, "pricingMapping");
+  return {
+    payload: routingKey ? peekSettingsResource(routingKey).value : null,
+    mappings: mappingKey ? peekSettingsResource(mappingKey).value?.items || [] : [],
+  };
+}
+
 function StateMessage({ state, onRetry }) {
   if (state.loading) {
     return (
@@ -151,18 +180,38 @@ function ModelRoutingPageContent({
     canManagePricing: false,
     pricingAuthorizationSource: "read_only",
   });
-  const [assignments, setAssignments] = useState({});
-  const [agentAssignments, setAgentAssignments] = useState({});
-  const [defaultRouteId, setDefaultRouteId] = useState("");
-  const [mappingDraft, setMappingDraft] = useState({});
+  const currentScopeKey = String(settingsScope?.key || "");
+  const [initialDraft] = useState(() => {
+    const snapshot = currentRoutingSnapshots(settingsScope);
+    return {
+      values: routingDraft(snapshot.payload, snapshot.mappings),
+      stamp: routingDraftStamp(currentScopeKey, snapshot.payload),
+    };
+  });
+  const [assignments, setAssignments] = useState(() => initialDraft.values?.assignments || {});
+  const [agentAssignments, setAgentAssignments] = useState(() => initialDraft.values?.agentAssignments || {});
+  const [defaultRouteId, setDefaultRouteId] = useState(() => initialDraft.values?.defaultRouteId || "");
+  const [mappingDraft, setMappingDraft] = useState(() => initialDraft.values?.mappingDraft || {});
+  const [draftInitializedFor, setDraftInitializedFor] = useState(initialDraft.stamp);
   const [saving, setSaving] = useState("");
   const [notice, setNotice] = useState("");
   const [saveError, setSaveError] = useState("");
   const loadGeneration = useRef(0);
-  const currentScopeKey = String(settingsScope?.key || "");
   const visibleState = state.scopeKey === currentScopeKey ? state : {
     scopeKey: currentScopeKey, loading: true, error: "", payload: null, catalog: [], catalogRevision: "", mappings: [], canManagePricing: false, pricingAuthorizationSource: "read_only",
   };
+  const displayedDraftStamp = routingDraftStamp(currentScopeKey, visibleState.payload);
+  const writesEnabled = Boolean(displayedDraftStamp && draftInitializedFor === displayedDraftStamp && !saving);
+
+  const hydrateDraft = useCallback((payload, mappings) => {
+    const values = routingDraft(payload, mappings);
+    if (!values) return;
+    setAssignments(values.assignments);
+    setAgentAssignments(values.agentAssignments);
+    setDefaultRouteId(values.defaultRouteId);
+    setMappingDraft(values.mappingDraft);
+    setDraftInitializedFor(routingDraftStamp(currentScopeKey, payload));
+  }, [currentScopeKey]);
 
   const load = useCallback(async ({ force = false } = {}) => {
     const generation = ++loadGeneration.current;
@@ -176,6 +225,8 @@ function ModelRoutingPageContent({
     const mappingKey = settingsResourceKey(settingsScope, "pricingMapping");
     const catalogSnapshot = catalogKey ? peekSettingsResource(catalogKey) : null;
     const mappingSnapshot = mappingKey ? peekSettingsResource(mappingKey) : null;
+    const snapshotDraft = routingDraft(routingSnapshot?.value, mappingSnapshot?.value?.items || []);
+    if (snapshotDraft) hydrateDraft(routingSnapshot.value, mappingSnapshot?.value?.items || []);
     if (routingSnapshot?.value || catalogSnapshot?.value || mappingSnapshot?.value) setState((current) => ({
       ...current,
       scopeKey: currentScopeKey,
@@ -200,17 +251,8 @@ function ModelRoutingPageContent({
         cached("pricingMapping", (options) => loadFinOpsOfficialPriceMappings(options)),
       ]);
       if (generation !== loadGeneration.current) return;
-      const view = modelRoutingViewModel(payload || {});
       const mappings = Array.isArray(mappingPayload?.items) ? mappingPayload.items : [];
-      setAssignments(view.assignments);
-      setAgentAssignments(view.agentAssignments);
-      setDefaultRouteId(String(payload?.policy?.default_route_id || view.defaultRouteId || ""));
-      setMappingDraft(Object.fromEntries(
-        view.routes.map((route) => [
-          route.deployment,
-          mappingByDeployment(mappings)[route.deployment]?.official_price_key || route.officialPriceKey || "",
-        ]),
-      ));
+      hydrateDraft(payload, mappings);
       setState({
         scopeKey: currentScopeKey,
         loading: false,
@@ -244,7 +286,7 @@ function ModelRoutingPageContent({
         pricingAuthorizationSource: String(mappingSnapshot?.value?.authorization_source || current.pricingAuthorizationSource || "read_only"),
       }));
     }
-  }, [currentScopeKey, settingsScope, workspaceId]);
+  }, [currentScopeKey, hydrateDraft, settingsScope, workspaceId]);
 
   const invalidate = (...resources) => resources.forEach((resource) => {
     const key = settingsResourceKey(settingsScope, resource);
@@ -263,18 +305,21 @@ function ModelRoutingPageContent({
   const chatRoutes = routeOptions(view.routes, "chat");
 
   const updateAssignment = (kindId, field, value) => {
+    if (!writesEnabled) return;
     setAssignments((current) => ({
       ...current,
       [kindId]: { ...(current[kindId] || {}), [field]: value },
     }));
   };
   const updateAgentAssignment = (agentId, field, value) => {
+    if (!writesEnabled) return;
     setAgentAssignments((current) => ({
       ...current,
       [agentId]: { ...(current[agentId] || {}), [field]: value },
     }));
   };
   const applyAllAgents = (routeId) => {
+    if (!writesEnabled) return;
     setAgentAssignments(Object.fromEntries(MODEL_AGENT_ROLES.map((agent) => [
       agent.id,
       {
@@ -286,6 +331,7 @@ function ModelRoutingPageContent({
   };
 
   const saveRouting = async () => {
+    if (!writesEnabled) return;
     setSaving("routing");
     setSaveError("");
     setNotice("");
@@ -318,6 +364,7 @@ function ModelRoutingPageContent({
   };
 
   const governProviderRoute = async (remediation) => {
+    if (!writesEnabled) return;
     const providerId = String(remediation?.providerId || "").trim();
     if (!providerId) return;
     setSaving(`govern:${providerId}`);
@@ -353,6 +400,7 @@ function ModelRoutingPageContent({
   };
 
   const saveMapping = async (deployment) => {
+    if (!writesEnabled) return;
     const officialPriceKey = String(mappingDraft[deployment] || "").trim();
     if (!officialPriceKey) {
       setSaveError("请选择一条官方价格记录；无法可靠匹配时请保留“未计价”。");
@@ -394,6 +442,7 @@ function ModelRoutingPageContent({
   };
 
   const removeMapping = async (deployment) => {
+    if (!writesEnabled) return;
     setSaving(`mapping:${deployment}`);
     setSaveError("");
     setNotice("");
@@ -462,7 +511,7 @@ function ModelRoutingPageContent({
                       className="primary-button"
                       type="button"
                       key={remediation.providerId}
-                      disabled={Boolean(saving)}
+                      disabled={!writesEnabled}
                       onClick={() => governProviderRoute(remediation)}
                     >
                       {saving === `govern:${remediation.providerId}` ? <Loader2 className="spin" size={15} /> : <ShieldCheck size={15} />}
@@ -482,7 +531,7 @@ function ModelRoutingPageContent({
               </header>
               <label className="routing-default-field">
                 <span>默认模型</span>
-                <select value={defaultRouteId} onChange={(event) => setDefaultRouteId(event.target.value)}>
+                <select value={defaultRouteId} disabled={!writesEnabled} onChange={(event) => setDefaultRouteId(event.target.value)}>
                   <option value="">使用服务端默认</option>
                   <RouteOptions routes={chatRoutes} />
                 </select>
@@ -520,11 +569,11 @@ function ModelRoutingPageContent({
                 ].map((item) => (
                   <div className="routing-assignment-row" key={item.id}>
                     <div><b>{item.label}</b><small>{item.description}</small></div>
-                    <select aria-label={`${item.label}主要模型`} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
+                    <select aria-label={`${item.label}主要模型`} disabled={!writesEnabled} value={item.value.primaryRouteId || ""} onChange={(event) => item.update(item.target, "primaryRouteId", event.target.value)}>
                       <option value="">继承工作区默认</option>
                       <RouteOptions routes={item.routes} />
                     </select>
-                    <select aria-label={`${item.label}备用模型`} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
+                    <select aria-label={`${item.label}备用模型`} disabled={!writesEnabled} value={item.value.fallbackRouteId || ""} onChange={(event) => item.update(item.target, "fallbackRouteId", event.target.value)}>
                       <option value="">不设置备用</option>
                       <RouteOptions routes={item.routes} />
                     </select>
@@ -541,7 +590,7 @@ function ModelRoutingPageContent({
                 </div>
                 <label className="routing-apply-all">
                   <span>一键应用到全部</span>
-                  <select value="" onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
+                  <select value="" disabled={!writesEnabled} onChange={(event) => event.target.value && applyAllAgents(event.target.value)}>
                     <option value="">选择模型</option>
                     <RouteOptions routes={analysisRoutes} />
                   </select>
@@ -554,11 +603,11 @@ function ModelRoutingPageContent({
                   return (
                     <div className="routing-assignment-row" key={agent.id}>
                       <div><b>{agent.label}</b><small>{agent.description}</small></div>
-                      <select aria-label={`${agent.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
+                      <select aria-label={`${agent.label}主要模型`} disabled={!writesEnabled} value={current.primaryRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
                         <RouteOptions routes={analysisRoutes} />
                       </select>
-                      <select aria-label={`${agent.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
+                      <select aria-label={`${agent.label}备用模型`} disabled={!writesEnabled} value={current.fallbackRouteId || ""} onChange={(event) => updateAgentAssignment(agent.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
                         <RouteOptions routes={analysisRoutes} />
                       </select>
@@ -579,11 +628,11 @@ function ModelRoutingPageContent({
                   return (
                     <div className="routing-assignment-row" key={kind.id}>
                       <div><b>{kind.label}</b><small>{kind.description}</small></div>
-                      <select aria-label={`${kind.label}主要模型`} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
+                      <select aria-label={`${kind.label}主要模型`} disabled={!writesEnabled} value={current.primaryRouteId || ""} onChange={(event) => updateAssignment(kind.id, "primaryRouteId", event.target.value)}>
                         <option value="">继承工作区默认</option>
                         <RouteOptions routes={eligible} />
                       </select>
-                      <select aria-label={`${kind.label}备用模型`} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
+                      <select aria-label={`${kind.label}备用模型`} disabled={!writesEnabled} value={current.fallbackRouteId || ""} onChange={(event) => updateAssignment(kind.id, "fallbackRouteId", event.target.value)}>
                         <option value="">不设置备用</option>
                         <RouteOptions routes={eligible} />
                       </select>
@@ -615,7 +664,7 @@ function ModelRoutingPageContent({
                       <div><b>{route.label}</b><small>{route.providerLabel || "Azure Foundry"} · {route.deployment || "deployment 未记录"}</small></div>
                       <span className={`routing-price-status ${mapping ? "mapped" : "unpriced"}`}>{mapping ? "已计价" : "未计价"}</span>
                       <div className="routing-price-picker">
-                        <select disabled={!visibleState.canManagePricing || busy} value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
+                        <select disabled={!writesEnabled || !visibleState.canManagePricing || busy} value={mappingDraft[route.deployment] || ""} onChange={(event) => setMappingDraft((current) => ({ ...current, [route.deployment]: event.target.value }))} aria-label={`${route.label}官方价格记录`}>
                           <option value="">保留未计价</option>
                           {visibleState.catalog.map((item) => <option key={item.price_key} value={item.price_key}>{officialPricePresentation(item).label}</option>)}
                         </select>
@@ -634,7 +683,7 @@ function ModelRoutingPageContent({
                         ) : null}
                       </div>
                       <div className="routing-price-actions">
-                        <button className="routing-map-button" type="button" disabled={!visibleState.canManagePricing || busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
+                        <button className="routing-map-button" type="button" disabled={!writesEnabled || !visibleState.canManagePricing || busy || !mappingDraft[route.deployment]} onClick={() => saveMapping(route.deployment)}>
                           {busy ? <Loader2 className="spin" size={14} /> : <Sparkles size={14} />}
                           关联
                         </button>
@@ -642,7 +691,7 @@ function ModelRoutingPageContent({
                           <button
                             className="ghost-button routing-unmap-button"
                             type="button"
-                            disabled={!visibleState.canManagePricing || busy}
+                            disabled={!writesEnabled || !visibleState.canManagePricing || busy}
                             onClick={() => removeMapping(route.deployment)}
                             aria-label={`解除${route.label}官方价格关联`}
                           >
@@ -662,7 +711,7 @@ function ModelRoutingPageContent({
                 {notice ? <p className="routing-notice">{notice}</p> : null}
                 {saveError ? <p className="routing-error" role="alert">{saveError}</p> : null}
               </div>
-              <button className="primary-button" type="button" onClick={saveRouting} disabled={Boolean(saving)}>
+              <button className="primary-button" type="button" onClick={saveRouting} disabled={!writesEnabled}>
                 {saving === "routing" ? <Loader2 className="spin" size={16} /> : <Save size={16} />}
                 保存模型分配
               </button>
