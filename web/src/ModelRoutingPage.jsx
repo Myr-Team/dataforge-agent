@@ -224,11 +224,24 @@ function ModelRoutingPageContent({
       });
     } catch (error) {
       if (generation !== loadGeneration.current || error?.name === "AbortError") return;
+      const hasCurrentKeySnapshot = Boolean(routingSnapshot?.value || catalogSnapshot?.value || mappingSnapshot?.value);
       setState((current) => ({
         ...current,
         scopeKey: currentScopeKey,
         loading: false,
-        error: error instanceof Error ? error.message : "模型配置读取失败",
+        error: hasCurrentKeySnapshot
+          ? "更新失败，正在显示上次可用配置。"
+          : error instanceof Error ? error.message : "模型配置读取失败",
+        // Preserve each current-key resource independently: a routing failure
+        // must not blank an already-authorized catalog or price mapping.
+        payload: routingSnapshot?.value || current.payload,
+        catalog: Array.isArray(catalogSnapshot?.value?.items) ? catalogSnapshot.value.items : current.catalog,
+        catalogRevision: String(catalogSnapshot?.value?.revision || current.catalogRevision || ""),
+        mappings: Array.isArray(mappingSnapshot?.value?.items) ? mappingSnapshot.value.items : current.mappings,
+        canManagePricing: mappingSnapshot?.value
+          ? mappingSnapshot.value.can_manage === true
+          : current.canManagePricing,
+        pricingAuthorizationSource: String(mappingSnapshot?.value?.authorization_source || current.pricingAuthorizationSource || "read_only"),
       }));
     }
   }, [currentScopeKey, settingsScope, workspaceId]);
@@ -428,7 +441,7 @@ function ModelRoutingPageContent({
         ) : null}
 
         <StateMessage state={state} onRetry={load} />
-        {!state.loading && !state.error ? (
+        {!state.loading && (!state.error || Boolean(visibleState.payload)) ? (
           <>
             <section className="routing-summary" aria-label="模型配置状态">
               <div><span>工作区默认</span><b>{view.routes.find((route) => route.id === defaultRouteId)?.label || "服务端默认"}</b></div>

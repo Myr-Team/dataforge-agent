@@ -5,6 +5,7 @@ import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 test("Provider secret draft is removed synchronously on a session scope switch", async ({ page }) => {
   let scope = "a";
+  let releaseB;
   await page.addInitScript(() => { window.__DF_FORCE_AUTH_SESSION__ = true; });
   await installFinOpsMockApi(page);
   await page.route("**/api/auth/session", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
@@ -105,4 +106,40 @@ test("Member budget stale remount retains its child snapshot after a 500 refresh
   await expect(page.getByText("Finance Admin").first()).toBeVisible();
   await expect(page.getByText("Finance Admin").first()).toBeVisible();
   expect(budgetGets).toBe(2);
+});
+
+
+test("Model routing stale remount retains routing catalog and mapping snapshots after 500", async ({ page }) => {
+  const counts = { routing: 0, catalog: 0, mapping: 0 };
+  let releaseSecond;
+  const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+  await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+  await installFinOpsMockApi(page);
+  const failSecond = (name) => async (route) => {
+    counts[name] += 1;
+    if (counts[name] === 1) return route.fallback();
+    await secondGate;
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "refresh unavailable" }) });
+  };
+  await page.route("**/api/workspaces/demo-corpus/governance/model-routing**", failSecond("routing"));
+  await page.route("**/api/finops/pricing/catalog**", failSecond("catalog"));
+  await page.route("**/api/finops/pricing/mappings**", failSecond("mapping"));
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await page.locator(".set-cfg").first().getByRole("button").click();
+  await expect(page.getByText("Agent 模型分配")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.clock.runFor(30_001);
+  await page.locator(".set-cfg").first().getByRole("button").click();
+  await expect(page.getByText("Agent 模型分配")).toBeVisible();
+  await expect.poll(() => counts).toEqual({ routing: 2, catalog: 2, mapping: 2 });
+  await expect(page.getByText("GPT-5.1").first()).toBeVisible();
+  await expect(page.getByText("azure-retail-2026-07-27").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存模型分配" })).toBeEnabled();
+  releaseSecond();
+  await expect(page.getByText("更新失败，正在显示上次可用配置。")).toBeVisible();
+  await expect(page.getByText("Agent 模型分配")).toBeVisible();
+  await expect(page.getByText("GPT-5.1").first()).toBeVisible();
+  await expect(page.getByText("azure-retail-2026-07-27").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存模型分配" })).toBeEnabled();
 });
