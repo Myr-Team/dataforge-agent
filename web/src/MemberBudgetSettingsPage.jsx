@@ -372,7 +372,7 @@ function MailForm({ notification, busy, error, onClose, onSave }) {
   );
 }
 
-export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = null, onBack = () => {}, onChanged = () => {} }) {
+function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = null, onBack = () => {}, onChanged = () => {} }) {
   const [state, setState] = useState("loading");
   const [storedView, setView] = useState(EMPTY_VIEW);
   const [viewScopeKey, setViewScopeKey] = useState("");
@@ -777,4 +777,8 @@ export function MemberBudgetSettingsPage({ workspaceId = "", settingsScope = nul
       ) : null}
     </main>
   );
+}
+
+export function MemberBudgetSettingsPage(props) {
+  return <MemberBudgetSettingsPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

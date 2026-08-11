@@ -22,7 +22,7 @@ import { identityAccessViewModel, identityGroupSearchViewModel, identitySessionV
 import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
 import { settingsResourceKey } from "./settingsNavigation.js";
 
-export function IdentityAccessPage({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null }) {
+function IdentityAccessPageContent({ workspaceId = "", settingsScope = null, user = {}, authState = "unavailable", workspaceAccess = null }) {
   const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [query, setQuery] = useState("");
   const [searchState, setSearchState] = useState({ loading: false, error: "", items: [], connected: null, permissionState: "" });
@@ -346,4 +346,8 @@ export function IdentityAccessPage({ workspaceId = "", settingsScope = null, use
       {actionError ? <p className="governance-error" role="alert">{actionError}</p> : null}
     </section>
   );
+}
+
+export function IdentityAccessPage(props) {
+  return <IdentityAccessPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

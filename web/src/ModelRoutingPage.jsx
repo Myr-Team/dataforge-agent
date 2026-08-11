@@ -134,7 +134,7 @@ export function priceMappingErrorMessage(error) {
 }
 
 
-export function ModelRoutingPage({
+function ModelRoutingPageContent({
   workspaceId = "",
   settingsScope = null,
   embedded = false,
@@ -644,4 +644,8 @@ export function ModelRoutingPage({
       </section>
     </main>
   );
+}
+
+export function ModelRoutingPage(props) {
+  return <ModelRoutingPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }

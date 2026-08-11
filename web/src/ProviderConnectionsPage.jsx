@@ -72,7 +72,7 @@ function bedrockRefreshNotice(payload, verb, providerId = "") {
     : `AWS Bedrock 凭据${verb}，测试结果已刷新。`;
 }
 
-export function ProviderConnectionsPage({ settingsScope = null }) {
+function ProviderConnectionsPageContent({ settingsScope = null }) {
   const [state, setState] = useState({ key: "", loading: true, error: "", payload: null });
   const [draft, setDraft] = useState({
     displayName: "DeepSeek 原厂",
@@ -454,4 +454,8 @@ export function ProviderConnectionsPage({ settingsScope = null }) {
       {actionError ? <p className="governance-error" role="alert">{actionError}</p> : null}
     </section>
   );
+}
+
+export function ProviderConnectionsPage(props) {
+  return <ProviderConnectionsPageContent key={String(props.settingsScope?.key || "")} {...props} />;
 }
