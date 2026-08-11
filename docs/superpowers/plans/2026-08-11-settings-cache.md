@@ -92,4 +92,3 @@
 - [ ] Add workspace and permission-boundary switches proving old snapshots never render.
 - [ ] Run focused Playwright with a unique `DF_PLAYWRIGHT_PORT`, then `node --test`, `npm run build`, and `git diff --check`.
 - [ ] Commit acceptance coverage as `test(settings): verify cached re-entry and scope isolation`.
-

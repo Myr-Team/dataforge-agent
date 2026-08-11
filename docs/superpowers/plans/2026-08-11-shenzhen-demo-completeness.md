@@ -97,4 +97,3 @@
 - [ ] Verify every visible demo metric has a value or an intentional evidence-state explanation; no production JSX may hardcode the final aggregate.
 - [ ] Run focused Python/Node/Playwright tests, full Python and Node suites, Vite build, deterministic generation twice, and `git diff --check`.
 - [ ] Commit as `test(finops): verify Shenzhen demo evidence closure`.
-

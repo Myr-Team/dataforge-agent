@@ -132,4 +132,3 @@
   git add web/tests/finops-operations-management.spec.mjs web/tests/finopsMockApi.mjs
   git commit -m "test(finops): verify zero-baseline trend geometry"
   ```
-

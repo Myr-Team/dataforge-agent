@@ -62,4 +62,3 @@ The presentation target is:
 - Result cache and provider token cache remain separate.
 - All four FinOps pages, request evidence, Trace, and operations AI have populated demo content without hiding real error states.
 - The generator cannot write outside the allowlisted demo workspace and never deploys automatically.
-

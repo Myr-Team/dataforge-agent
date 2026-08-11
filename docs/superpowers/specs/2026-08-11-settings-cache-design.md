@@ -40,4 +40,3 @@ Writes invalidate only their resource family within the current scope. A revisio
 - A failed refresh leaves the previous data visible with an update error.
 - Different actors, tenants, workspaces, or permission fingerprints never share an entry.
 - Cloudflare and public/shared API caching remain disabled.
-

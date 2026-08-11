@@ -45,4 +45,3 @@ Keyboard focus receives the same active-column guide and tooltip as pointer hove
 - Seven points do not overflow a desktop chart; a sufficiently long series does.
 - Existing tooltip fields remain present.
 - Node tests, Vite build, and focused desktop/mobile Playwright acceptance pass.
-
