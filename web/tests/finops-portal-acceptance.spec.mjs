@@ -95,6 +95,76 @@ test("Settings home constructs its cache boundary from a production auth session
 });
 
 
+test("Settings removes an old scope snapshot before a delayed new scope resolves", async ({ page }) => {
+  let scope = "a";
+  let releaseB;
+  await page.addInitScript(() => { window.__DF_FORCE_AUTH_SESSION__ = true; });
+  await installFinOpsMockApi(page);
+  await page.route("**/api/auth/session", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      authenticated: true,
+      name: "Portal User",
+      email: "owner@contoso.test",
+      identity_provider: "microsoft_entra",
+      identity_source: "trusted_proxy",
+      tenant_ref: `tenant_scope_${scope}`,
+      actor_ref: `actor_scope_${scope}`,
+      session_ref: `session_scope_${scope}`,
+    }),
+  }));
+  await page.route("**/api/workspaces/demo-corpus/settings", async (route) => {
+    if (scope === "b") await new Promise((resolve) => { releaseB = resolve; });
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      workspace_id: "demo-corpus",
+      storage: { used_bytes: scope === "a" ? 111 : 222, total_bytes: 1000 },
+      system_status: { release: { version: scope === "a" ? "scope-A-marker" : "scope-B-marker" }, dependencies: {} },
+    }) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByText("scope-A-marker")).toBeVisible();
+  scope = "b";
+  await page.evaluate(() => window.dispatchEvent(new Event("dataforge:refresh-session")));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  await expect(page.getByText("scope-A-marker")).toHaveCount(0);
+  expect(releaseB).toBeTruthy();
+  releaseB();
+  await expect(page.getByText("scope-B-marker")).toBeVisible();
+});
+
+
+test("Settings stale remount keeps the last snapshot during delayed 500 revalidation", async ({ page }) => {
+  let calls = 0;
+  let releaseRefresh;
+  await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+  await installFinOpsMockApi(page);
+  await page.route("**/api/workspaces/demo-corpus/settings", async (route) => {
+    calls += 1;
+    if (calls > 1) {
+      await new Promise((resolve) => { releaseRefresh = resolve; });
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "refresh unavailable" }) });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+      workspace_id: "demo-corpus", storage: { used_bytes: 333, total_bytes: 1000 },
+      system_status: { release: { version: "stale-remount-marker" }, dependencies: {} },
+    }) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByText("stale-remount-marker")).toBeVisible();
+  await page.getByRole("button", { name: "工作区" }).first().click();
+  await page.clock.runFor(30_001);
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await expect(page.getByText("stale-remount-marker")).toBeVisible();
+  expect(releaseRefresh).toBeTruthy();
+  releaseRefresh();
+  await expect(page.getByText("stale-remount-marker")).toBeVisible();
+});
+
+
 test("trend chart switches metric, unit and tooltip in sync", async ({ page }) => {
   await installFinOpsMockApi(page);
   await page.goto("/");

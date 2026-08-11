@@ -183,6 +183,7 @@ export function App() {
   const [notice, setNotice] = useState(null);
   const [user, setUser] = useState({});
   const [authState, setAuthState] = useState("pending");
+  const [authSessionRefresh, setAuthSessionRefresh] = useState(0);
   const [observability, setObservability] = useState(null);
   const activeViewRef = useRef(activeView);
   const [tasks, setTasks] = useState([]);
@@ -285,6 +286,12 @@ export function App() {
       return null;
     });
   }, [settingsScope]);
+
+  useEffect(() => {
+    const refresh = () => setAuthSessionRefresh((current) => current + 1);
+    window.addEventListener("dataforge:refresh-session", refresh);
+    return () => window.removeEventListener("dataforge:refresh-session", refresh);
+  }, []);
 
   useEffect(() => {
     activeViewRef.current = activeView;
@@ -745,7 +752,7 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authSessionRefresh]);
 
   useEffect(() => {
     try {
