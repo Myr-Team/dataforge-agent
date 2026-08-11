@@ -206,3 +206,42 @@ def test_price_card_estimate_requires_complete_usage_and_matching_price() -> Non
         {"route_id": "luna"},
         card,
     ) == {"status": "unavailable", "reason": "price_not_configured"}
+
+
+def test_workspace_price_card_estimate_prices_provider_cache_hits_separately() -> None:
+    card = normalize_workspace_price_card(
+        {
+            "currency": "USD",
+            "entries": [
+                {
+                    "route_id": "sol",
+                    "input_per_million": 0.14,
+                    "cached_input_per_million": 0.0028,
+                    "output_per_million": 0.28,
+                    "source_label": "Official model pricing reference",
+                }
+            ],
+        },
+        _routes(),
+        revision=3,
+        updated_at="2026-08-11T00:00:00Z",
+    )
+
+    estimate = estimate_model_cost(
+        {
+            "input_tokens": 1_000_000,
+            "output_tokens": 100_000,
+            "provider_cache_hit_tokens": 400_000,
+            "provider_cache_miss_tokens": 600_000,
+        },
+        {"route_id": "sol", "price_card_revision": 3},
+        card,
+    )
+
+    assert card["entries"][0]["cached_input_per_million"] == 0.0028
+    assert estimate["amount"] == 0.11312
+    assert estimate["formula"] == (
+        "uncached_input_tokens/1_000_000*input_per_million + "
+        "cached_input_tokens/1_000_000*cached_input_per_million + "
+        "output_tokens/1_000_000*output_per_million"
+    )

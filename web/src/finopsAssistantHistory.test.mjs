@@ -57,6 +57,19 @@ test("cross-device history restores structured assistant sections and evidence l
           evidence_labels: ["销售分析 · 模型调用"],
           evidence_state: "observed",
           suggested_questions: ["下一步怎么验证？"],
+          generation: {
+            model_id: "deepseek-v4-flash",
+            provider_type: "deepseek",
+            gateway_coverage: "app_observed",
+            latency_ms: 345,
+            provider_cache: {
+              state: "partial_hit",
+              hit_tokens: 80,
+              miss_tokens: 40,
+              hit_rate_pct: 66.67,
+              evidence_state: "observed",
+            },
+          },
         },
       }],
     }),
@@ -71,6 +84,8 @@ test("cross-device history restores structured assistant sections and evidence l
   });
   assert.deepEqual(history.messages[0].evidenceRefs, ["req_safe"]);
   assert.deepEqual(history.messages[0].evidenceLabels, ["销售分析 · 模型调用"]);
+  assert.equal(history.messages[0].generation.model_id, "deepseek-v4-flash");
+  assert.equal(history.messages[0].generation.provider_cache.hit_rate_pct, 66.67);
 });
 
 

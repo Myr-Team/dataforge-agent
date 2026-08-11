@@ -178,6 +178,8 @@ test("trend bars scale inside a dedicated plot track without clipping near-maxim
   assert.match(component, /row\.bucketStatus === "in_progress"/);
   assert.match(styles, /\.finops-trend-stack\.in-progress\s*\{/);
   assert.match(styles, /\.finops-trend-column\s*>\s*span\s*\{[^}]*text-overflow:\s*clip/s);
+  assert.match(component, /finops-trend-chart metric-\$\{metric\}/);
+  assert.match(styles, /\.finops-trend-chart\.metric-cost[\s\S]*#f79009/s);
 });
 
 

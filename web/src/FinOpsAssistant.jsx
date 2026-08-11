@@ -83,6 +83,26 @@ function assistantMessageSections(message = {}) {
 }
 
 
+function assistantGenerationLabel(generation = {}) {
+  const modelId = String(generation?.model_id || "").trim();
+  const labels = {
+    "deepseek-v4-flash": "DeepSeek V4 Flash",
+    "deepseek-v4-pro": "DeepSeek V4 Pro",
+  };
+  return labels[modelId] || modelId;
+}
+
+
+function assistantGatewayLabel(value) {
+  return {
+    apim_governed: "统一入口已观测",
+    app_observed: "应用侧已观测",
+    unmanaged: "未纳入统一入口",
+    unknown: "入口状态待确认",
+  }[String(value || "")] || "入口状态待确认";
+}
+
+
 export function FinOpsAssistant({
   context,
   openRequest = 0,
@@ -178,6 +198,9 @@ export function FinOpsAssistant({
             : [],
           evidenceState: response?.evidence_state || "unavailable",
           sections: response?.sections || null,
+          generation: response?.generation && typeof response.generation === "object"
+            ? response.generation
+            : null,
           suggestions: Array.isArray(response?.suggested_questions)
             ? response.suggested_questions
             : [],
@@ -338,6 +361,20 @@ export function FinOpsAssistant({
                       : message.content}
                   </span>
                 )}
+                {message.role === "assistant" && message.generation ? (
+                  <small className="finops-ai-generation">
+                    <b>{assistantGenerationLabel(message.generation)}</b>
+                    <span>{assistantGatewayLabel(message.generation.gateway_coverage)}</span>
+                    {Number.isFinite(Number(message.generation.latency_ms)) ? (
+                      <span>{Math.round(Number(message.generation.latency_ms))} ms</span>
+                    ) : null}
+                    {message.generation.provider_cache?.evidence_state === "observed" ? (
+                      <em>
+                        模型输入缓存 {Number(message.generation.provider_cache.hit_rate_pct || 0).toFixed(1)}%
+                      </em>
+                    ) : null}
+                  </small>
+                ) : null}
                 {message.role === "assistant" && message.evidenceLabels?.length ? (
                   <small className="finops-ai-evidence-labels">
                     <b>相关证据</b>

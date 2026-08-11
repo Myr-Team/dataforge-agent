@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +15,17 @@ from openai import AzureOpenAI
 from openai.types.responses.response_input_param import FunctionCallOutput
 
 try:
+    from .deepseek_provider import DeepSeekProvider
     from .model_policy import current_model_price_card, current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from .model_provider_runtime import current_provider_connection, runtime_provider_secret
+    from .provider_client import ProviderInvocation, ProviderMessage, RequestsProviderTransport
     from .workspace_model_config import estimate_model_cost
     from .schemas import MarketQueryPlan
 except ImportError:
+    from deepseek_provider import DeepSeekProvider
     from model_policy import current_model_price_card, current_text_route, resolve_text_deployment, resolve_text_route, safe_fallback_reason
+    from model_provider_runtime import current_provider_connection, runtime_provider_secret
+    from provider_client import ProviderInvocation, ProviderMessage, RequestsProviderTransport
     from workspace_model_config import estimate_model_cost
     from schemas import MarketQueryPlan
 
@@ -1264,6 +1271,18 @@ def run_agent(
             + json.dumps(response_schema, ensure_ascii=False)
         )
 
+    selected = current_text_route()
+    if selected.route.provider_type != "azure_foundry" and not _provider_apim_enabled():
+        return _run_external_provider_agent(
+            selected=selected,
+            agent_name=agent_name,
+            instructions=instructions,
+            input_text=input_text,
+            response_schema=response_schema,
+            max_output_tokens=max_output_tokens,
+            request_timeout_seconds=request_timeout_seconds,
+        )
+
     if os.environ.get("DF_AGENT_RUNTIME", "responses") == "foundry_agent_service":
         agent_payload = input_text
         if response_schema:
@@ -1312,6 +1331,83 @@ def run_agent(
         "text": text,
         "structured": _extract_json(text),
         **_response_meta(response, "responses_schema"),
+    }
+
+
+def _run_external_provider_agent(
+    *,
+    selected: Any,
+    agent_name: str,
+    instructions: str,
+    input_text: str,
+    response_schema: dict[str, Any] | None,
+    max_output_tokens: int,
+    request_timeout_seconds: float | None,
+) -> dict[str, Any]:
+    enabled = str(os.environ.get("DF_EXTERNAL_PROVIDER_ROUTING_ENABLED") or "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        raise RuntimeError("external provider routing is disabled")
+    route = selected.route
+    connection = current_provider_connection(route.provider_id)
+    if connection is None:
+        raise RuntimeError("external provider connection is unavailable")
+    if route.provider_type != "deepseek" or str(connection.get("provider_type") or "") != "deepseek":
+        raise RuntimeError("external provider type is unsupported")
+    provider = DeepSeekProvider(
+        transport=RequestsProviderTransport(),
+        timeout_seconds=request_timeout_seconds or 30.0,
+    )
+    identifier = uuid.uuid4().hex
+    result = provider.invoke(
+        ProviderInvocation(
+            request_ref=f"req_{identifier}",
+            correlation_ref=f"cor_{identifier}",
+            workspace_id="runtime-scoped",
+            agent_id=agent_name,
+            execution_kind=selected.execution_kind,
+            model_id=str(route.model_id or route.deployment),
+            messages=[
+                ProviderMessage(role="system", content=instructions),
+                ProviderMessage(role="user", content=input_text),
+            ],
+            response_format={"type": "json_object"} if response_schema else None,
+            max_tokens=max_output_tokens,
+        ),
+        api_key=runtime_provider_secret(connection),
+        base_url=str(connection.get("base_url") or ""),
+    )
+    text = str(result.text or "")
+    usage = result.usage.model_dump(mode="json")
+    price_card = current_model_price_card()
+    fallback_reason = selected.fallback_reason
+    if not _usage_observed(usage):
+        fallback_reason = fallback_reason or "provider_usage_missing"
+    return {
+        "text": text,
+        "structured": _extract_json(text) if response_schema else None,
+        "mode": "external_chat_completions",
+        "response_id": None,
+        "usage": usage,
+        "route": route.route_id,
+        "deployment": route.deployment,
+        "provider_type": route.provider_type,
+        "provider_id": route.provider_id,
+        "model_id": route.model_id,
+        "selection": selected.selection,
+        "fallback_reason": safe_fallback_reason(fallback_reason),
+        "execution_kind": selected.execution_kind,
+        "latency_ms": result.latency_ms,
+        "model_route": route.route_id,
+        "model_deployment": route.deployment,
+        "gateway_coverage": "app_observed",
+        "policy_revision": selected.policy_revision,
+        "price_card_revision": selected.price_card_revision,
+        "provider_cache": _provider_cache_dict(usage),
+        "cost_estimate": estimate_model_cost(
+            usage,
+            {"route_id": route.route_id},
+            price_card,
+        ),
     }
 
 

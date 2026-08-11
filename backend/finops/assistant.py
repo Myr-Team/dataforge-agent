@@ -169,6 +169,26 @@ class AssistantAnswerSections(BaseModel):
     caveat: str = Field(min_length=1, max_length=400)
 
 
+class AssistantProviderCache(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["hit", "partial_hit", "miss", "unavailable"]
+    hit_tokens: int | None = Field(default=None, ge=0)
+    miss_tokens: int | None = Field(default=None, ge=0)
+    hit_rate_pct: float | None = Field(default=None, ge=0, le=100)
+    evidence_state: Literal["observed", "partial", "unavailable"]
+
+
+class AssistantGeneration(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str = Field(min_length=1, max_length=160)
+    provider_type: Literal["azure_foundry", "deepseek"]
+    gateway_coverage: Literal["apim_governed", "app_observed", "unmanaged", "unknown"]
+    latency_ms: int | None = Field(default=None, ge=0)
+    provider_cache: AssistantProviderCache | None = None
+
+
 class AssistantResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -180,6 +200,7 @@ class AssistantResponse(BaseModel):
     evidence_state: EvidenceState
     suggested_questions: list[str] = Field(default_factory=list)
     sections: AssistantAnswerSections | None = None
+    generation: AssistantGeneration | None = None
 
     @model_validator(mode="after")
     def ready_requires_evidence(self) -> "AssistantResponse":
@@ -323,6 +344,7 @@ class FinOpsAssistantService:
                 evidence_state=request.metric_context.evidence_state,
                 suggested_questions=suggested_questions,
                 sections=sections,
+                generation=_generation_evidence(raw),
             )
         except _AssistantSafetyError:
             return _unavailable_response()
@@ -439,6 +461,32 @@ def _knowledge_citations(entries: list[dict[str, str]]) -> list[str]:
         if len(citations) >= 4:
             break
     return citations
+
+
+def _generation_evidence(raw: Mapping[str, Any]) -> AssistantGeneration | None:
+    model_id = str(raw.get("model_id") or raw.get("deployment") or "").strip()
+    provider_type = str(raw.get("provider_type") or "").strip().lower()
+    gateway_coverage = str(raw.get("gateway_coverage") or "").strip().lower()
+    if not model_id or provider_type not in {"azure_foundry", "deepseek"}:
+        return None
+    if gateway_coverage not in {"apim_governed", "app_observed", "unmanaged", "unknown"}:
+        gateway_coverage = "unknown"
+    payload = {
+        "model_id": model_id,
+        "provider_type": provider_type,
+        "gateway_coverage": gateway_coverage,
+        "latency_ms": raw.get("latency_ms"),
+        "provider_cache": raw.get("provider_cache"),
+    }
+    try:
+        return AssistantGeneration.model_validate(payload)
+    except Exception:
+        payload["latency_ms"] = None
+        payload["provider_cache"] = None
+        try:
+            return AssistantGeneration.model_validate(payload)
+        except Exception:
+            return None
 
 
 def _evidence_labels(

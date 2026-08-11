@@ -28,6 +28,9 @@ function normalizeHistoryMessage(item = {}) {
     knowledgeCitations: Array.isArray(payload.knowledge_citations) ? payload.knowledge_citations : [],
     evidenceState: payload.evidence_state || "unavailable",
     suggestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
+    generation: payload.generation && typeof payload.generation === "object"
+      ? payload.generation
+      : null,
   };
 }
 

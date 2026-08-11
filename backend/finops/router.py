@@ -27,11 +27,13 @@ try:
     from ..workspace_store import list_workspaces, load_workspace_model_configuration
     from ..control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
     from ..model_policy import (
+        list_allowed_model_routes,
         SelectedTextRoute,
         model_route_scope,
         select_text_route_record,
         workspace_model_policy_scope,
     )
+    from ..model_provider_runtime import load_actor_provider_runtime, provider_runtime_scope
 except ImportError:
     from audit_store import record_audit_event
     import cache_store
@@ -43,11 +45,13 @@ except ImportError:
     from workspace_store import list_workspaces, load_workspace_model_configuration
     from control_plane import workspace_cost_value_snapshot, workspace_roi_snapshot
     from model_policy import (
+        list_allowed_model_routes,
         SelectedTextRoute,
         model_route_scope,
         select_text_route_record,
         workspace_model_policy_scope,
     )
+    from model_provider_runtime import load_actor_provider_runtime, provider_runtime_scope
 
 from .normalization import canonical_actor_ref, canonical_tenant_ref
 from .evidence import build_evidence_alias, operation_code_for_event
@@ -507,6 +511,7 @@ def _finops_model_route_scope(
     workspace_id: str,
     agent_id: str | None,
     execution_kind: str = "full_analysis",
+    actor: Mapping[str, Any] | None = None,
 ) -> Iterator[SelectedTextRoute]:
     configuration = load_workspace_model_configuration(workspace_id)
     policy = (
@@ -539,13 +544,19 @@ def _finops_model_route_scope(
         and isinstance(configuration.get("price_card"), Mapping)
         else None
     )
-    with workspace_model_policy_scope(policy=policy, price_card=price_card):
-        selected = select_text_route_record(
-            execution_kind,
-            agent_id=agent_id,
-        )
-        with model_route_scope(route=selected, price_card=price_card):
-            yield selected
+    provider_runtime = load_actor_provider_runtime(actor)
+    with provider_runtime_scope(provider_runtime.connections):
+        with workspace_model_policy_scope(
+            policy=policy,
+            price_card=price_card,
+            routes=[*list_allowed_model_routes(), *provider_runtime.routes],
+        ):
+            selected = select_text_route_record(
+                execution_kind,
+                agent_id=agent_id,
+            )
+            with model_route_scope(route=selected, price_card=price_card):
+                yield selected
 
 
 def _analyze_insight_with_workspace_route(
@@ -555,9 +566,11 @@ def _analyze_insight_with_workspace_route(
     agent_kind: Literal["finops", "roi"],
     **kwargs: Any,
 ) -> Any:
+    actor = kwargs.pop("actor", None)
     with _finops_model_route_scope(
         workspace_id=workspace_id,
         agent_id=analysis_agent_id(agent_kind),
+        actor=actor if isinstance(actor, Mapping) else None,
     ):
         return service.analyze(agent_kind=agent_kind, **kwargs)
 
@@ -1304,6 +1317,7 @@ async def assistant_query(
         workspace_id=workspace_id,
         agent_id=(analysis_agent_id("finops") if body.mode == "deep" else None),
         execution_kind=("full_analysis" if body.mode == "deep" else "direct_reply"),
+        actor=actor_from_request(request, fallback=False),
     ):
         response = get_finops_assistant_service().answer(
             request=body,
@@ -1328,6 +1342,11 @@ async def assistant_query(
                         "knowledge_citations": response.knowledge_citations,
                         "evidence_state": response.evidence_state,
                         "suggested_questions": response.suggested_questions,
+                        "generation": (
+                            response.generation.model_dump(mode="json")
+                            if response.generation is not None
+                            else None
+                        ),
                     },
                 ),
             )
@@ -1335,7 +1354,7 @@ async def assistant_query(
         except AssistantConversationExpired:
             pass
     return {
-        **response.model_dump(mode="json"),
+        **response.model_dump(mode="json", exclude_none=True),
         "conversation_ref": conversation_ref,
     }
 
@@ -2994,6 +3013,7 @@ async def analyze_insight(
         service,
         workspace_id=body.workspace_id,
         agent_kind=body.agent_kind,
+        actor=actor_from_request(request, fallback=False),
         tenant_ref=query.tenant_ref,
         workspace_ids=selected_workspace_ids,
         window={"from": query.from_value, "to": query.to_value},
