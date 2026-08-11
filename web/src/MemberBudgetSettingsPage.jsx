@@ -31,7 +31,7 @@ import {
   sendMemberBudgetTestEmail,
 } from "./api.js";
 import { memberBudgetViewModel, safeTestEmailResult, testEmailNoticeTone } from "./memberBudgetViewModel.js";
-import { invalidateSettingsResource, loadSettingsResource } from "./settingsDataStore.js";
+import { invalidateSettingsResource, loadSettingsResource, peekSettingsResource } from "./settingsDataStore.js";
 import { settingsResourceKey } from "./settingsNavigation.js";
 
 const EMPTY_VIEW = memberBudgetViewModel();
@@ -88,6 +88,25 @@ async function loadBudgetView(workspaceId, settingsScope) {
           : "empty",
     view,
   };
+}
+
+function peekBudgetView(settingsScope) {
+  const read = (resource) => {
+    const key = settingsResourceKey(settingsScope, resource);
+    return key ? peekSettingsResource(key).value : null;
+  };
+  const budgets = read("budget");
+  const members = read("budgetMembers");
+  const notification = read("notification");
+  const alerts = read("alerts");
+  if (!budgets || !members || !notification || !alerts) return null;
+  const budgetsState = budgets.data_status || "partial";
+  const view = memberBudgetViewModel({
+    budgets, budgetsState, members, notification,
+    notificationState: notification.data_status === "unavailable" ? "unavailable" : "configured",
+    alerts, alertsState: alerts.data_status === "unavailable" ? "unavailable" : "available",
+  });
+  return { state: view.rows.length ? "available" : "empty", view };
 }
 
 function MetricHelp({ label, children }) {
@@ -401,8 +420,15 @@ function MemberBudgetSettingsPageContent({ workspaceId = "", settingsScope = nul
       setState("unavailable");
       return undefined;
     }
+    const snapshot = peekBudgetView(settingsScope);
+    if (snapshot) {
+      setView(snapshot.view);
+      setViewScopeKey(currentScopeKey);
+      setState(snapshot.state);
+    }
     loadBudgetView(workspaceId, settingsScope).then((loaded) => {
       if (cancelled) return;
+      if (loaded.state === "unavailable" && snapshot) return;
       setView(loaded.view);
       setViewScopeKey(currentScopeKey);
       setState(loaded.state);

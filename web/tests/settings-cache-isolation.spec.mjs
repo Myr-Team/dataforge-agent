@@ -84,3 +84,25 @@ test("Member budget mail modal is removed on a delayed scope switch", async ({ p
   await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
   await expect(dialog).toHaveCount(0);
 });
+
+
+test("Member budget stale remount retains its child snapshot after a 500 refresh", async ({ page }) => {
+  let budgetGets = 0;
+  await page.clock.install({ time: new Date("2026-08-11T00:00:00Z") });
+  await installFinOpsMockApi(page);
+  await page.route("**/api/finops/member-budgets**", async (route) => {
+    budgetGets += 1;
+    if (budgetGets === 1) return route.fallback();
+    await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "refresh unavailable" }) });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await expect(page.getByText("Finance Admin").first()).toBeVisible();
+  await page.getByRole("button", { name: "返回设置" }).click();
+  await page.clock.runFor(30_001);
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await expect(page.getByText("Finance Admin").first()).toBeVisible();
+  await expect(page.getByText("Finance Admin").first()).toBeVisible();
+  expect(budgetGets).toBe(2);
+});
