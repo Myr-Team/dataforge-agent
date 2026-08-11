@@ -45,6 +45,7 @@ _SCENARIO_INPUT_UNITS = (
 )
 _SOURCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$")
 _REQUEST_REF = re.compile(r"^req_[A-Za-z0-9_-]{1,124}$")
+_DEMO_WINDOW = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 def _refs(values: Any, limit: int = 20) -> list[str]:
@@ -148,14 +149,86 @@ def _safe_demo_evidence(value: Any) -> dict[str, Any] | None:
     paired = _safe_nonnegative_number(measured.get("paired_evaluations"))
     historical = _safe_nonnegative_number(measured.get("historical_hours"))
     assisted = _safe_nonnegative_number(measured.get("assisted_hours"))
-    if paired != 18 or historical != 17.8 or assisted != 8.1:
+    if not isinstance(paired, float) or not paired.is_integer() or paired < 1 or historical is None or assisted is None or assisted > historical:
         return None
-    return {
+    projection: dict[str, Any] = {
         "provenance": "synthetic_demo",
         "production_quality_claim": False,
         "label": "演示验证结果 · 合成数据",
-        "measured": {"paired_evaluations": 18, "historical_hours": 17.8, "assisted_hours": 8.1},
+        "measured": {"paired_evaluations": int(paired), "historical_hours": historical, "assisted_hours": assisted},
     }
+    if "process" not in data:
+        return projection
+    process = data.get("process") if isinstance(data.get("process"), Mapping) else {}
+    analysis_tasks = _safe_demo_count(process.get("analysis_tasks"))
+    reports = _safe_demo_count(process.get("reports"))
+    evidence_reviews = _safe_demo_count(process.get("evidence_reviews"))
+    reviewed_savings = _safe_nonnegative_number(process.get("reviewed_savings_hours"))
+    if None in (analysis_tasks, reports, evidence_reviews, reviewed_savings):
+        return None
+    if reviewed_savings != round((historical - assisted) * int(paired), 1):
+        return None
+    actors = data.get("actors") if isinstance(data.get("actors"), Mapping) else {}
+    outcome_actor = _safe_identifier(actors.get("outcome_actor_ref"))
+    reviewer_actor = _safe_identifier(actors.get("reviewer_actor_ref"))
+    if not outcome_actor or not reviewer_actor or outcome_actor == reviewer_actor:
+        return None
+    window = data.get("window") if isinstance(data.get("window"), Mapping) else {}
+    from_at = str(window.get("from") or "").strip()
+    to_at = str(window.get("to") or "").strip()
+    currency = str(window.get("currency") or "").strip().upper()
+    if not _DEMO_WINDOW.fullmatch(from_at) or not _DEMO_WINDOW.fullmatch(to_at) or from_at >= to_at or not re.fullmatch(r"[A-Z]{3}", currency):
+        return None
+    source_refs = data.get("source_refs") if isinstance(data.get("source_refs"), Mapping) else {}
+    safe_refs = {
+        key: _safe_identifier(source_refs.get(key), 128)
+        for key in ("run_id", "request_ref", "correlation_ref", "attempt_ref")
+    }
+    if not all(safe_refs.values()):
+        return None
+    groups = data.get("evidence_items") if isinstance(data.get("evidence_items"), Mapping) else {}
+    evidence_items = {
+        "analysis_tasks": _safe_demo_items(groups.get("analysis_tasks"), analysis_tasks),
+        "reports": _safe_demo_items(groups.get("reports"), reports),
+        "evidence_reviews": _safe_demo_items(groups.get("evidence_reviews"), evidence_reviews),
+    }
+    if any(items is None for items in evidence_items.values()):
+        return None
+    projection.update({
+        "process": {
+            "analysis_tasks": analysis_tasks,
+            "reports": reports,
+            "evidence_reviews": evidence_reviews,
+            "reviewed_savings_hours": reviewed_savings,
+        },
+        "actors": {"outcome_actor_ref": outcome_actor, "reviewer_actor_ref": reviewer_actor},
+        "window": {"from": from_at, "to": to_at, "currency": currency},
+        "source_refs": safe_refs,
+        "evidence_items": evidence_items,
+    })
+    return projection
+
+
+def _safe_demo_count(value: Any) -> int | None:
+    number = _safe_nonnegative_number(value)
+    return int(number) if isinstance(number, float) and number.is_integer() and 0 < number <= 100000 else None
+
+
+def _safe_demo_items(value: Any, expected: int) -> list[dict[str, str]] | None:
+    if not isinstance(value, list) or len(value) != expected:
+        return None
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            return None
+        identifier = _safe_identifier(raw.get("id"), 128)
+        title = _bounded_text(raw.get("title"), 160)
+        if not identifier or not title or identifier in seen:
+            return None
+        seen.add(identifier)
+        items.append({"id": identifier, "title": title})
+    return items
 
 
 def _safe_nonnegative_number(value: Any) -> float | None:

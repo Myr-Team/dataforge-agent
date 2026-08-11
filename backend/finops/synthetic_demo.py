@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
-from .models import FinOpsRequestEvent, ProviderCacheEvidence, ResultCacheEvidence, TokenUsage
+from .models import EstimatedCost, FinOpsRequestEvent, ProviderCacheEvidence, ResultCacheEvidence, TokenUsage
 from .official_pricing import estimate_official_cost, load_official_price_catalog
 
 
@@ -64,14 +65,24 @@ class SafeModelAttempt:
     request_ref: str
     run_id: str
     correlation_ref: str
+    result_id: str
+    task_id: str
     provider_type: str
     model_id: str
+    deployment: str
     route: str
     route_evidence: str
+    gateway_coverage: str
+    status: str
+    department_id: str
+    agent_id: str
     tokens: TokenUsage
+    result_cache: ResultCacheEvidence
     provider_cache: ProviderCacheEvidence
+    estimated_cost: EstimatedCost
     official_price_key: str | None
     price_card_revision: str | None
+    mapping_revision: int | None
     cost_usd: float | None
 
 
@@ -84,8 +95,18 @@ class SyntheticRequestFact:
     task_id: str
     result_id: str
     title: str
+    provider_type: str
+    model_id: str
+    deployment: str
+    route: str
+    gateway_coverage: str
+    status: str
+    department_id: str
+    agent_id: str
+    tokens: TokenUsage
     result_cache: ResultCacheEvidence
     provider_cache: ProviderCacheEvidence
+    estimated_cost: EstimatedCost
     provenance: str = "synthetic_demo"
 
 
@@ -260,9 +281,13 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
     _unique(errors, "run ids", [item.run_id for item in facts])
     _unique(errors, "correlation refs", [item.correlation_ref for item in facts])
     _unique(errors, "attempt refs", [item.attempt_ref for item in facts])
+    _unique(errors, "event request refs", [item.request_ref for item in events])
+    _unique(errors, "attempt request refs", [item.request_ref for item in attempts])
+    _unique(errors, "trace run ids", [item.run_id for item in runs])
     event_by_request = {item.request_ref: item for item in events}
     attempt_by_request = {item.request_ref: item for item in attempts}
     run_by_id = {item.run_id: item for item in runs}
+    result_ids = {item.result_id for item in facts}
     for fact in facts:
         event = event_by_request.get(fact.request_ref)
         attempt = attempt_by_request.get(fact.request_ref)
@@ -276,10 +301,37 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"event reference mismatch for {fact.request_ref}")
         if event.provenance != "synthetic_demo" or event.usage_source != "synthetic_demo":
             errors.append(f"event provenance mismatch for {fact.request_ref}")
-        if attempt.attempt_ref != fact.attempt_ref or attempt.run_id != fact.run_id or attempt.correlation_ref != fact.correlation_ref:
+        if (
+            attempt.attempt_ref != fact.attempt_ref
+            or attempt.run_id != fact.run_id
+            or attempt.correlation_ref != fact.correlation_ref
+            or attempt.result_id != fact.result_id
+            or attempt.task_id != fact.task_id
+        ):
             errors.append(f"attempt lineage mismatch for {fact.request_ref}")
-        if not run.steps or not run.model_attempts:
+        if run.request_ref != fact.request_ref or run.correlation_ref != fact.correlation_ref:
+            errors.append(f"run lineage mismatch for {fact.request_ref}")
+        if not run.steps or len(run.model_attempts) != 1:
             errors.append(f"trace is incomplete for {fact.request_ref}")
+            run_attempt = None
+        else:
+            run_attempt = run.model_attempts[0]
+            if run_attempt != attempt:
+                errors.append(f"run attempt mismatch for {fact.request_ref}")
+        if event.model != fact.model_id or event.model != attempt.model_id:
+            errors.append(f"model mismatch for {fact.request_ref}")
+        if event.deployment != fact.deployment or event.deployment != attempt.deployment:
+            errors.append(f"deployment mismatch for {fact.request_ref}")
+        if event.route != fact.route or event.route != attempt.route:
+            errors.append(f"route mismatch for {fact.request_ref}")
+        if event.gateway_coverage != fact.gateway_coverage or event.gateway_coverage != attempt.gateway_coverage:
+            errors.append(f"gateway mismatch for {fact.request_ref}")
+        if event.status != fact.status or event.status != attempt.status:
+            errors.append(f"status mismatch for {fact.request_ref}")
+        if event.department_id != fact.department_id or event.department_id != attempt.department_id:
+            errors.append(f"department mismatch for {fact.request_ref}")
+        if event.agent_id != fact.agent_id or event.agent_id != attempt.agent_id:
+            errors.append(f"agent mismatch for {fact.request_ref}")
         if event.tokens.total is not None and event.tokens.input is not None and event.tokens.output is not None:
             if event.tokens.total != event.tokens.input + event.tokens.output:
                 errors.append(f"token total mismatch for {fact.request_ref}")
@@ -287,12 +339,32 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"cached input exceeds input for {fact.request_ref}")
         if event.tokens.reasoning is not None and event.tokens.output is not None and event.tokens.reasoning > event.tokens.output:
             errors.append(f"reasoning exceeds output for {fact.request_ref}")
-        if event.tokens.model_dump() != attempt.tokens.model_dump():
+        if event.tokens.model_dump() != attempt.tokens.model_dump() or event.tokens.model_dump() != fact.tokens.model_dump():
             errors.append(f"event usage mismatch for {fact.request_ref}")
-        if event.provider_cache.model_dump() != attempt.provider_cache.model_dump():
+        if (
+            event.result_cache.model_dump() != fact.result_cache.model_dump()
+            or event.result_cache.model_dump() != attempt.result_cache.model_dump()
+            or event.cache.state != event.result_cache.state
+            or event.cache.eligible != event.result_cache.eligible
+        ):
+            errors.append(f"result cache mismatch for {fact.request_ref}")
+        if (
+            event.provider_cache.model_dump() != attempt.provider_cache.model_dump()
+            or event.provider_cache.model_dump() != fact.provider_cache.model_dump()
+        ):
             errors.append(f"provider cache mismatch for {fact.request_ref}")
         if attempt.route_evidence != "synthetic":
             errors.append(f"route evidence mismatch for {fact.request_ref}")
+        event_cost = event.estimated_cost.model_dump()
+        if event_cost != attempt.estimated_cost.model_dump() or event_cost != fact.estimated_cost.model_dump():
+            errors.append(f"cost evidence mismatch for {fact.request_ref}")
+        if (
+            attempt.official_price_key != event.estimated_cost.official_price_key
+            or attempt.price_card_revision != event.estimated_cost.price_card_revision
+            or attempt.mapping_revision != event.estimated_cost.mapping_revision
+            or attempt.cost_usd != event.estimated_cost.amount
+        ):
+            errors.append(f"attempt price evidence mismatch for {fact.request_ref}")
         if event.estimated_cost.amount is not None:
             if not attempt.official_price_key or not attempt.price_card_revision:
                 errors.append(f"price mapping missing for {fact.request_ref}")
@@ -304,11 +376,41 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
             errors.append(f"unpriced attempt mismatch for {fact.request_ref}")
         if fact.result_cache.state == "hit" and not fact.result_cache.source_result_version:
             errors.append(f"result-cache hit lacks source for {fact.request_ref}")
+        elif fact.result_cache.state == "hit" and fact.result_cache.source_result_version not in result_ids:
+            errors.append(f"result-cache source is unresolved for {fact.request_ref}")
+        if run_attempt is not None and run_attempt.request_ref != fact.request_ref:
+            errors.append(f"trace request reference mismatch for {fact.request_ref}")
     if len(events) != 2480 or len(facts) != 2480 or len(attempts) != 2480 or len(runs) != 2480:
         errors.append("declared request/run scale does not reconcile")
+    _reconcile_grouped_totals(errors, events=events, facts=facts, attempts=attempts, runs=runs)
+    task_ids = [item.task_id for item in bundle.analysis_tasks]
+    report_ids = [item.report_id for item in bundle.reports]
+    review_ids = [item.review_id for item in bundle.evidence_review_tasks]
+    _unique(errors, "analysis task ids", task_ids)
+    _unique(errors, "report ids", report_ids)
+    _unique(errors, "evidence review ids", review_ids)
+    if len(bundle.analysis_tasks) != 96:
+        errors.append("expected 96 analysis tasks")
+    if len(bundle.reports) != 78:
+        errors.append("expected 78 reports")
+    if len(bundle.evidence_review_tasks) != 18:
+        errors.append("expected 18 evidence reviews")
+    task_id_set = set(task_ids)
+    report_id_set = set(report_ids)
+    if any(item.task_id not in task_id_set for item in facts):
+        errors.append("request task reference is unresolved")
+    if any(item.task_id not in task_id_set for item in bundle.reports):
+        errors.append("report task reference is unresolved")
+    if any(item.report_id not in report_id_set for item in bundle.evidence_review_tasks):
+        errors.append("evidence review report reference is unresolved")
+    referenced_tasks = {item.task_id for item in facts} | {item.task_id for item in bundle.reports}
+    if task_id_set - referenced_tasks:
+        errors.append("analysis task reference coverage is incomplete")
     cost = round(sum(item.estimated_cost.amount or 0.0 for item in events), 2)
     if cost != 206.40:
         errors.append(f"monthly cost is {cost:.2f}, expected 206.40")
+    if bundle.monthly_ai_operating_cost_usd != cost:
+        errors.append("declared monthly cost does not reconcile")
     if bundle.roi.production_quality_claim:
         errors.append("synthetic demo cannot make a production-quality claim")
     if bundle.roi.outcome_actor_ref == bundle.roi.reviewer_actor_ref:
@@ -328,6 +430,133 @@ def reconcile_synthetic_demo(bundle: SyntheticDemoBundle) -> ReconciliationRepor
         monthly_cost_usd=cost,
         errors=tuple(errors),
     )
+
+
+def _reconcile_grouped_totals(
+    errors: list[str],
+    *,
+    events: tuple[FinOpsRequestEvent, ...],
+    facts: tuple[SyntheticRequestFact, ...],
+    attempts: tuple[SafeModelAttempt, ...],
+    runs: tuple[SyntheticRun, ...],
+) -> None:
+    projections = {
+        "facts": _semantic_totals(facts),
+        "attempts": _semantic_totals(attempts),
+        "runs": _semantic_totals(tuple(attempt for run in runs for attempt in run.model_attempts)),
+    }
+    expected = _semantic_totals(events)
+    labels = {
+        "status": "status",
+        "department": "department",
+        "agent": "agent",
+        "model": "model",
+        "route": "route",
+        "gateway": "gateway",
+        "tokens": "token",
+        "result_cache": "result cache",
+        "provider_cache": "provider cache",
+        "cost": "cost",
+    }
+    for projection_name, projection in projections.items():
+        for key, label in labels.items():
+            if projection[key] != expected[key]:
+                errors.append(f"{label} grouped totals mismatch for {projection_name}")
+    for key, label in labels.items():
+        if expected[key] != _DECLARED_GROUP_TOTALS[key]:
+            errors.append(f"{label} declared totals mismatch")
+
+
+def _semantic_totals(items: tuple[object, ...]) -> dict[str, object]:
+    dimensions = {
+        "status": Counter(),
+        "department": Counter(),
+        "agent": Counter(),
+        "model": Counter(),
+        "route": Counter(),
+        "gateway": Counter(),
+    }
+    token_totals = Counter()
+    result_cache = Counter()
+    provider_cache = Counter()
+    cost_shape = Counter()
+    cost_amount = Decimal("0")
+    for item in items:
+        dimensions["status"][str(getattr(item, "status", ""))] += 1
+        dimensions["department"][str(getattr(item, "department_id", "") or "")] += 1
+        dimensions["agent"][str(getattr(item, "agent_id", "") or "")] += 1
+        dimensions["model"][str(getattr(item, "model", None) or getattr(item, "model_id", "") or "")] += 1
+        dimensions["route"][str(getattr(item, "route", "") or "")] += 1
+        dimensions["gateway"][str(getattr(item, "gateway_coverage", "") or "")] += 1
+        tokens = getattr(item, "tokens")
+        for key in ("input", "output", "cached_input", "reasoning", "total"):
+            value = getattr(tokens, key)
+            token_totals[f"{key}:known"] += int(value is not None)
+            token_totals[f"{key}:value"] += int(value or 0)
+        result = getattr(item, "result_cache")
+        result_cache[(result.state, result.eligible, result.reason, result.policy_revision)] += 1
+        result_cache["sources"] += int(bool(result.source_result_version))
+        provider = getattr(item, "provider_cache")
+        provider_cache[f"state:{provider.state}"] += 1
+        provider_cache[f"evidence:{provider.evidence_state}"] += 1
+        provider_cache["hit_tokens"] += int(provider.hit_tokens or 0)
+        provider_cache["miss_tokens"] += int(provider.miss_tokens or 0)
+        estimate = getattr(item, "estimated_cost")
+        cost_shape[(estimate.status, estimate.currency, estimate.official_price_key, estimate.price_card_revision, estimate.mapping_revision)] += 1
+        if estimate.amount is not None:
+            cost_amount += Decimal(str(estimate.amount))
+    return {
+        **dimensions,
+        "tokens": token_totals,
+        "result_cache": result_cache,
+        "provider_cache": provider_cache,
+        "cost": {"shape": cost_shape, "amount": cost_amount},
+    }
+
+
+_DECLARED_GROUP_TOTALS: dict[str, object] = {
+    "status": Counter({"succeeded": 2467, "failed": 13}),
+    "department": Counter({"Site Intelligence": 620, "Market Research": 620, "Feasibility": 620, "Audit": 620}),
+    "agent": Counter({"Corpus Analyst": 414, "Market Researcher": 414, "Feasibility Analyst": 413, "Auditor": 413, "Producer": 413, "Coordinator": 413}),
+    "model": Counter({"gpt-5.6-terra": 2315, "site-selection-unpriced-adapter": 160, "deepseek-v4-flash": 5}),
+    "route": Counter({"shenzhen-site-selection": 2480}),
+    "gateway": Counter({"apim_governed": 2349, "app_observed": 131}),
+    "tokens": Counter({
+        "input:known": 2480,
+        "input:value": 248002,
+        "output:known": 2480,
+        "output:value": 14609945,
+        "cached_input:known": 0,
+        "cached_input:value": 0,
+        "reasoning:known": 0,
+        "reasoning:value": 0,
+        "total:known": 2480,
+        "total:value": 14857947,
+    }),
+    "result_cache": Counter({
+        ("miss", True, "eligible", 1): 1653,
+        ("bypassed", False, "live_data", 1): 551,
+        ("hit", True, "eligible", 1): 276,
+        "sources": 276,
+    }),
+    "provider_cache": Counter({
+        "state:unavailable": 2478,
+        "evidence:unavailable": 2478,
+        "miss_tokens": 120,
+        "hit_tokens": 80,
+        "evidence:synthetic": 2,
+        "state:miss": 1,
+        "state:hit": 1,
+    }),
+    "cost": {
+        "shape": Counter({
+            ("estimated", "USD", "azure-openai:gpt-5.6-terra:global-standard:global", "azure-retail-2026-07-27", 1): 2315,
+            ("unavailable", "USD", None, None, None): 160,
+            ("estimated", "USD", "deepseek:deepseek-v4-flash:official", "deepseek-2026-07-28-v1", 1): 5,
+        }),
+        "amount": Decimal("206.400000"),
+    },
+}
 
 
 def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datetime, tasks: tuple[AnalysisTask, ...]) -> tuple[tuple[FinOpsRequestEvent, ...], tuple[SyntheticRequestFact, ...], tuple[SafeModelAttempt, ...], tuple[SyntheticRun, ...]]:
@@ -410,14 +639,24 @@ def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datet
             request_ref=request_ref,
             run_id=run_id,
             correlation_ref=correlation_ref,
+            result_id=result_id,
+            task_id=task.task_id,
             provider_type=provider_type,
             model_id=model_id,
+            deployment=model_id,
             route="shenzhen-site-selection",
             route_evidence="synthetic",
+            gateway_coverage=event.gateway_coverage,
+            status=event.status,
+            department_id=str(event.department_id or ""),
+            agent_id=str(event.agent_id or ""),
             tokens=tokens,
+            result_cache=result_cache,
             provider_cache=provider_cache,
+            estimated_cost=event.estimated_cost,
             official_price_key=price_key,
             price_card_revision=revision,
+            mapping_revision=event.estimated_cost.mapping_revision,
             cost_usd=cost_usd,
         )
         fact = SyntheticRequestFact(
@@ -428,8 +667,18 @@ def _build_request_projection(*, workspace_id: str, batch_id: str, anchor: datet
             task_id=task.task_id,
             result_id=result_id,
             title=f"深圳选址分析请求 {index + 1:04d}",
+            provider_type=provider_type,
+            model_id=model_id,
+            deployment=model_id,
+            route="shenzhen-site-selection",
+            gateway_coverage=event.gateway_coverage,
+            status=event.status,
+            department_id=str(event.department_id or ""),
+            agent_id=str(event.agent_id or ""),
+            tokens=tokens,
             result_cache=result_cache,
             provider_cache=provider_cache,
+            estimated_cost=event.estimated_cost,
         )
         run = SyntheticRun(
             run_id=run_id,

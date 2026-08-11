@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from backend.finops.anomalies import AnomalyEvaluationInput, evaluate_default_anomalies
+from backend.finops.models import ResultCacheEvidence
 from backend.finops.synthetic_demo import (
     DEMO_ANCHOR,
     DEMO_BATCH_ID,
@@ -30,7 +31,7 @@ def test_shenzhen_bundle_is_deterministic_and_has_the_declared_scale() -> None:
     second = _bundle()
 
     assert first.canonical_digest == second.canonical_digest
-    assert first.canonical_digest == "08fa3fbd248570d7b861da20f45371d8c03c646cf1d48fb9ae08ef8d83513083"
+    assert first.canonical_digest == "ea7dd13c74d0c62671a00a72fb14fa0f57f7da9eb5c478955fe1ce3030c86828"
     assert first.anchor_at == datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
     assert first.scenario_id == DEMO_SCENARIO_ID
     assert first.batch_id == DEMO_BATCH_ID
@@ -74,6 +75,145 @@ def test_bundle_reconciliation_fails_closed_for_exact_token_mutation() -> None:
 
     assert report.ok is False
     assert any("token total mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_semantic_event_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    event = bundle.events[0]
+    changed = replace(
+        bundle,
+        events=(event.model_copy(update={
+            "model": "gpt-5.6-terra",
+            "deployment": "gpt-5.6-terra",
+            "route": "drifted-route",
+            "gateway_coverage": "unmanaged",
+            "status": "cancelled",
+            "department_id": "Drifted Department",
+        }), *bundle.events[1:]),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    assert any("model mismatch" in error for error in report.errors)
+    assert any("deployment mismatch" in error for error in report.errors)
+    assert any("route mismatch" in error for error in report.errors)
+    assert any("gateway mismatch" in error for error in report.errors)
+    assert any("status mismatch" in error for error in report.errors)
+    assert any("department mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_result_cache_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    fact = bundle.request_facts[1]
+    changed = replace(
+        bundle,
+        request_facts=(
+            bundle.request_facts[0],
+            replace(
+                fact,
+                result_cache=ResultCacheEvidence(
+                    eligible=True,
+                    state="miss",
+                    reason="eligible",
+                    policy_revision=1,
+                ),
+            ),
+            *bundle.request_facts[2:],
+        ),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    assert any("result cache mismatch" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_entity_scale_and_reference_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    changed = replace(
+        bundle,
+        analysis_tasks=bundle.analysis_tasks[:-1],
+        request_facts=(replace(bundle.request_facts[0], task_id="missing-task"), *bundle.request_facts[1:]),
+        reports=bundle.reports[:-1],
+        evidence_review_tasks=(
+            replace(bundle.evidence_review_tasks[0], report_id="missing-report"),
+            *bundle.evidence_review_tasks[1:-1],
+        ),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    assert any("96 analysis tasks" in error for error in report.errors)
+    assert any("78 reports" in error for error in report.errors)
+    assert any("18 evidence reviews" in error for error in report.errors)
+    assert any("task reference" in error for error in report.errors)
+    assert any("report reference" in error for error in report.errors)
+
+
+def test_reconciliation_rejects_coherent_group_drift_after_digest_is_recomputed() -> None:
+    bundle = _bundle()
+    event = bundle.events[0]
+    fact = bundle.request_facts[0]
+    attempt = bundle.model_attempts[0]
+    run = bundle.runs[0]
+    tokens = event.tokens.model_copy(update={"input": event.tokens.input + 1, "total": event.tokens.total + 1})
+    result_cache = event.result_cache.model_copy(update={"policy_revision": 99})
+    provider_cache = event.provider_cache.model_copy(update={"evidence_state": "partial"})
+    estimated_cost = event.estimated_cost.model_copy(update={"amount": event.estimated_cost.amount + 0.01})
+    dimensions = {
+        "status": "cancelled",
+        "department_id": "Drifted Department",
+        "agent_id": "Drifted Agent",
+    }
+    changed_event = event.model_copy(update={
+        **dimensions,
+        "model": "gpt-5.6-terra",
+        "deployment": "gpt-5.6-terra",
+        "tokens": tokens,
+        "result_cache": result_cache,
+        "provider_cache": provider_cache,
+        "estimated_cost": estimated_cost,
+    })
+    changed_fact = replace(
+        fact,
+        **dimensions,
+        model_id="gpt-5.6-terra",
+        deployment="gpt-5.6-terra",
+        tokens=tokens,
+        result_cache=result_cache,
+        provider_cache=provider_cache,
+        estimated_cost=estimated_cost,
+    )
+    changed_attempt = replace(
+        attempt,
+        **dimensions,
+        model_id="gpt-5.6-terra",
+        deployment="gpt-5.6-terra",
+        tokens=tokens,
+        result_cache=result_cache,
+        provider_cache=provider_cache,
+        estimated_cost=estimated_cost,
+        cost_usd=estimated_cost.amount,
+    )
+    changed = replace(
+        bundle,
+        events=(changed_event, *bundle.events[1:]),
+        request_facts=(changed_fact, *bundle.request_facts[1:]),
+        model_attempts=(changed_attempt, *bundle.model_attempts[1:]),
+        runs=(replace(run, model_attempts=(changed_attempt,)), *bundle.runs[1:]),
+    )
+    changed = replace(changed, canonical_digest=canonical_digest_for_bundle(changed))
+
+    report = reconcile_synthetic_demo(changed)
+
+    assert report.ok is False
+    for label in ("status", "department", "agent", "model", "token", "result cache", "provider cache", "cost"):
+        assert any(f"{label} declared totals mismatch" in error for error in report.errors)
 
 
 def test_bundle_digest_covers_roi_evidence_content() -> None:

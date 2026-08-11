@@ -534,6 +534,8 @@ function safeDemoEvidence(raw) {
   const source = isRecord(raw) ? raw : {};
   const measured = isRecord(source.measured) ? source.measured : {};
   const process = isRecord(source.process) ? source.process : {};
+  const actors = isRecord(source.actors) ? source.actors : {};
+  const window = isRecord(source.window) ? source.window : {};
   const sourceRefs = isRecord(source.source_refs) ? source.source_refs : {};
   if (source.provenance !== "synthetic_demo"
     || source.production_quality_claim !== false
@@ -555,6 +557,24 @@ function safeDemoEvidence(raw) {
     ["correlationRef", safeIdentifier(sourceRefs.correlation_ref)],
     ["attemptRef", safeIdentifier(sourceRefs.attempt_ref)],
   ].filter(([, value]) => value));
+  const outcomeActorRef = safeIdentifier(actors.outcome_actor_ref);
+  const reviewerActorRef = safeIdentifier(actors.reviewer_actor_ref);
+  const from = boundedText(window.from, 32);
+  const to = boundedText(window.to, 32);
+  const currency = boundedText(window.currency, 3);
+  const safeWindow = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(from)
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(to)
+    && from < to
+    && /^[A-Z]{3}$/.test(currency)
+    ? { from, to, currency }
+    : null;
+  const evidenceItems = Number.isInteger(analysisTasks) && Number.isInteger(reports) && Number.isInteger(evidenceReviews)
+    ? {
+      analysisTasks: safeDemoEvidenceItems(source.evidence_items?.analysis_tasks, analysisTasks),
+      reports: safeDemoEvidenceItems(source.evidence_items?.reports, reports),
+      evidenceReviews: safeDemoEvidenceItems(source.evidence_items?.evidence_reviews, evidenceReviews),
+    }
+    : null;
   return {
     label: boundedText(source.label, 80),
     productionQualityClaim: false,
@@ -568,7 +588,31 @@ function safeDemoEvidence(raw) {
       ? { analysisTasks, reports, evidenceReviews, reviewedSavingsHours }
       : null,
     sourceRefs: Object.keys(safeRefs).length === 4 ? safeRefs : null,
+    actors: outcomeActorRef && reviewerActorRef && outcomeActorRef !== reviewerActorRef
+      ? { outcomeActorRef, reviewerActorRef }
+      : null,
+    window: safeWindow,
+    evidenceItems: evidenceItems
+      && Object.values(evidenceItems).every((items) => items !== null)
+      ? evidenceItems
+      : null,
   };
+}
+
+
+function safeDemoEvidenceItems(value, expectedCount) {
+  if (!Array.isArray(value) || value.length !== expectedCount) return null;
+  const seen = new Set();
+  const items = [];
+  for (const item of value) {
+    if (!isRecord(item)) return null;
+    const id = safeIdentifier(item.id);
+    const title = boundedText(item.title, 160);
+    if (!id || !title || seen.has(id)) return null;
+    seen.add(id);
+    items.push({ id, title });
+  }
+  return items;
 }
 
 
