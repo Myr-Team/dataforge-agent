@@ -18,6 +18,14 @@ _REQUEST_REF_TOKEN = re.compile(
     r"(?<![A-Za-z0-9_.:-])(req_[A-Za-z0-9_.:-]{4,123})(?![A-Za-z0-9_.:-])",
     re.IGNORECASE,
 )
+_ASSISTANT_TEXT_LIMITS = {
+    "answer": 1600,
+    "conclusion": 600,
+    "basis": 800,
+    "impact": 600,
+    "recommendation": 600,
+    "caveat": 400,
+}
 EvidenceState = Literal["observed", "estimated", "partial", "unavailable"]
 AssistantPolicyType = Literal[
     "error_rate",
@@ -324,7 +332,9 @@ class FinOpsAssistantService:
             structured = raw.get("structured")
             if not isinstance(structured, Mapping):
                 raise ValueError("assistant returned no structured output")
-            output = AssistantAnswerOutput.model_validate(structured)
+            output = AssistantAnswerOutput.model_validate(
+                _normalize_assistant_output(structured)
+            )
             cited = set(output.evidence_refs)
             if not cited.issubset(allowed_refs):
                 raise _AssistantSafetyError("assistant cited evidence outside the allowed scope")
@@ -372,8 +382,9 @@ class FinOpsAssistantService:
             return _unavailable_response()
         except Exception as exc:
             _LOG.warning(
-                "Operations AI structured response fell back error_type=%s",
+                "Operations AI structured response fell back error_type=%s fields=%s",
                 type(exc).__name__,
+                _validation_fields(exc),
             )
             if request.mode == "quick":
                 return _grounded_quick_response(
@@ -383,6 +394,57 @@ class FinOpsAssistantService:
                     knowledge_citations=knowledge_citations,
                 )
             return _unavailable_response()
+
+
+def _normalize_assistant_output(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Normalize harmless provider JSON variance without weakening evidence checks."""
+
+    normalized: dict[str, Any] = {}
+    for field, limit in _ASSISTANT_TEXT_LIMITS.items():
+        raw = value.get(field)
+        if not isinstance(raw, str):
+            continue
+        text = " ".join(raw.split())[:limit]
+        if text:
+            normalized[field] = text
+
+    raw_refs = value.get("evidence_refs")
+    if isinstance(raw_refs, str):
+        refs: list[Any] = [raw_refs]
+    elif isinstance(raw_refs, (list, tuple)):
+        refs = list(raw_refs)
+    else:
+        refs = []
+    normalized["evidence_refs"] = refs[:20]
+
+    raw_questions = value.get("suggested_questions")
+    if isinstance(raw_questions, str):
+        questions: list[Any] = [raw_questions]
+    elif isinstance(raw_questions, (list, tuple)):
+        questions = list(raw_questions)
+    else:
+        questions = []
+    normalized["suggested_questions"] = [
+        " ".join(item.split())[:160]
+        for item in questions[:4]
+        if isinstance(item, str) and " ".join(item.split())
+    ]
+    return normalized
+
+
+def _validation_fields(exc: Exception) -> str:
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return "none"
+    try:
+        fields = [
+            ".".join(str(part) for part in item.get("loc", ()))[:96]
+            for item in errors(include_url=False, include_context=False, include_input=False)
+            if isinstance(item, Mapping)
+        ]
+    except Exception:
+        return "unavailable"
+    return ",".join(fields[:8]) or "none"
 
 
 def _unavailable_response() -> AssistantResponse:

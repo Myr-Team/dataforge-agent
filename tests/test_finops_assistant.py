@@ -534,3 +534,68 @@ def test_assistant_does_not_invent_an_answer_without_evidence() -> None:
     assert calls == 0
     assert result.status == "insufficient_data"
     assert result.answer == "当前指标缺少可复核证据，暂不能生成分析结论。"
+
+
+def test_assistant_normalizes_safe_provider_schema_noise() -> None:
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: {
+            "structured": {
+                "conclusion": "当前成本需要先补齐计价覆盖。",
+                "basis": "当前授权证据显示存在未计价调用。",
+                "impact": "成本归因与预算判断会保持部分状态。",
+                "recommendation": "先补齐价目映射，再复核缓存收益。",
+                "caveat": "估算成本不等同于云账单。",
+                "evidence_refs": "req_safe",
+                "suggested_questions": "哪些模型仍未计价？",
+                "data_status": "partial",
+                "evidence_state": "observed",
+            }
+        }
+    ).answer(
+        request=_request(),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "成本归因证据"}
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    assert result.evidence_refs == ["req_safe"]
+    assert result.suggested_questions == ["哪些模型仍未计价？"]
+    assert result.sections is not None
+
+
+def test_assistant_bounds_provider_text_before_contract_validation() -> None:
+    result = FinOpsAssistantService(
+        model_runner=lambda *_args, **_kwargs: {
+            "structured": {
+                "conclusion": "结" * 900,
+                "basis": "据" * 1100,
+                "impact": "影" * 900,
+                "recommendation": "议" * 900,
+                "caveat": "界" * 700,
+                "evidence_refs": ["req_safe"],
+                "suggested_questions": ["问" * 300] * 6,
+            }
+        }
+    ).answer(
+        request=_request(),
+        evidence_payload={
+            "evidence_refs": ["req_safe"],
+            "evidence_catalog": [
+                {"ref": "req_safe", "display_name": "成本归因证据"}
+            ],
+        },
+    )
+
+    assert result.status == "ready"
+    assert result.sections is not None
+    assert len(result.sections.conclusion) == 600
+    assert len(result.sections.basis) == 800
+    assert len(result.sections.impact) == 600
+    assert len(result.sections.recommendation) == 600
+    assert len(result.sections.caveat) == 400
+    assert len(result.suggested_questions) == 1
+    assert len(result.suggested_questions[0]) == 160
