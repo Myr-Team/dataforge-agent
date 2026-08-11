@@ -5,7 +5,6 @@ import { installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 test("Provider secret draft is removed synchronously on a session scope switch", async ({ page }) => {
   let scope = "a";
-  let releaseB;
   await page.addInitScript(() => { window.__DF_FORCE_AUTH_SESSION__ = true; });
   await installFinOpsMockApi(page);
   await page.route("**/api/auth/session", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
@@ -63,4 +62,25 @@ test("Model routing draft cannot survive a delayed scope switch", async ({ page 
   await expect(assignment).toHaveCount(0);
   expect(releaseB).toBeTruthy();
   releaseB();
+});
+
+
+test("Member budget mail modal is removed on a delayed scope switch", async ({ page }) => {
+  let scope = "a";
+  await page.addInitScript(() => { window.__DF_FORCE_AUTH_SESSION__ = true; });
+  await installFinOpsMockApi(page);
+  await page.route("**/api/auth/session", async (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({
+    authenticated: true, name: "Portal User", email: "owner@contoso.test", identity_provider: "microsoft_entra", identity_source: "trusted_proxy",
+    tenant_ref: `tenant_budget_${scope}`, actor_ref: `actor_budget_${scope}`, session_ref: `session_budget_${scope}`,
+  }) }));
+  await page.goto("/");
+  await page.getByRole("button", { name: "设置" }).first().click();
+  await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
+  await page.getByRole("button", { name: "配置邮件" }).click();
+  const dialog = page.getByRole("dialog", { name: "邮件提醒设置" });
+  await dialog.getByLabel("管理员收件邮箱").fill("budget-secret-marker@example.test");
+  scope = "b";
+  await page.evaluate(() => window.dispatchEvent(new Event("dataforge:refresh-session")));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(resolve)));
+  await expect(dialog).toHaveCount(0);
 });
