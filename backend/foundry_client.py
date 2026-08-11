@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import random
 import re
@@ -32,6 +33,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = ROOT / "agents" / "prompts"
+_LOG = logging.getLogger(__name__)
 
 PROMPT_FILES = {
     "df-feasibility-analyst": "feasibility_analyst.md",
@@ -1113,12 +1115,29 @@ def _extract_json(text: str) -> dict[str, Any]:
         stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
         stripped = re.sub(r"\s*```$", "", stripped)
     try:
-        return json.loads(stripped)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", stripped, flags=re.S)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+        value = json.loads(stripped)
+    except json.JSONDecodeError as initial_error:
+        decoder = json.JSONDecoder()
+        objects: list[dict[str, Any]] = []
+        cursor = 0
+        while cursor < len(stripped):
+            start = stripped.find("{", cursor)
+            if start < 0:
+                break
+            try:
+                candidate, consumed = decoder.raw_decode(stripped[start:])
+            except json.JSONDecodeError:
+                cursor = start + 1
+                continue
+            if isinstance(candidate, dict):
+                objects.append(candidate)
+            cursor = start + max(consumed, 1)
+        if objects:
+            return objects[-1]
+        raise initial_error
+    if not isinstance(value, dict):
+        raise TypeError("structured response must be a JSON object")
+    return value
 
 
 def _schema_format(agent_name: str, response_schema: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1386,9 +1405,26 @@ def _run_external_provider_agent(
     fallback_reason = selected.fallback_reason
     if not _usage_observed(usage):
         fallback_reason = fallback_reason or "provider_usage_missing"
+    try:
+        structured = _extract_json(text) if response_schema else None
+    except json.JSONDecodeError:
+        stripped = text.strip()
+        _LOG.warning(
+            "External provider structured response is invalid "
+            "provider_type=%s model_id=%s text_length=%s starts_object=%s "
+            "ends_object=%s brace_delta=%s fenced=%s",
+            route.provider_type,
+            route.model_id,
+            len(text),
+            stripped.startswith("{"),
+            stripped.endswith("}"),
+            text.count("{") - text.count("}"),
+            stripped.startswith("```"),
+        )
+        raise
     return {
         "text": text,
-        "structured": _extract_json(text) if response_schema else None,
+        "structured": structured,
         "mode": "external_chat_completions",
         "response_id": None,
         "usage": usage,

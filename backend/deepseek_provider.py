@@ -101,8 +101,7 @@ class DeepSeekProvider:
         message = first.get("message") if isinstance(first, Mapping) else {}
         if not isinstance(message, Mapping):
             message = {}
-        text = message.get("content")
-        normalized_text = str(text) if text is not None else None
+        normalized_text = _message_text(message.get("content"))
         tool_calls = _tool_calls(message.get("tool_calls"))
         usage = normalize_deepseek_usage(body.get("usage"))
         elapsed = max(0, int((self._clock() - started) * 1000))
@@ -174,6 +173,42 @@ def _request_payload(invocation: ProviderInvocation) -> dict[str, Any]:
     if invocation.thinking is not None:
         payload["thinking"] = {"type": invocation.thinking}
     return payload
+
+
+def _message_text(content: object) -> str | None:
+    """Normalize OpenAI-compatible message content without Python repr output.
+
+    DeepSeek-compatible endpoints normally return a string, but gateways may
+    return an already parsed JSON object or an array of text blocks.  Calling
+    ``str`` on those values produces single-quoted Python syntax that cannot be
+    consumed by the structured-output parser.
+    """
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, Mapping):
+        return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(content, list):
+        text_parts: list[str] = []
+        for item in content:
+            if not isinstance(item, Mapping):
+                text_parts = []
+                break
+            value = item.get("text")
+            if isinstance(value, str):
+                text_parts.append(value)
+                continue
+            nested = item.get("content")
+            if isinstance(nested, str):
+                text_parts.append(nested)
+                continue
+            text_parts = []
+            break
+        if text_parts:
+            return "".join(text_parts)
+        return json.dumps(content, ensure_ascii=False, separators=(",", ":"))
+    return str(content)
 
 
 def _tool_calls(value: object) -> list[NormalizedToolCall]:

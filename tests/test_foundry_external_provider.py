@@ -118,3 +118,15 @@ def test_run_agent_uses_scoped_deepseek_connection_without_azure_client(monkeypa
         "hit_rate_pct": 66.67,
         "evidence_state": "observed",
     }
+
+
+def test_extract_json_uses_last_complete_top_level_object() -> None:
+    text = (
+        'Example shape: {"conclusion":"example"}\n'
+        'Final answer: {"conclusion":"actual","evidence_refs":["req_safe"]}'
+    )
+
+    assert foundry_client._extract_json(text) == {
+        "conclusion": "actual",
+        "evidence_refs": ["req_safe"],
+    }
