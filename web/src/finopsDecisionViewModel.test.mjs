@@ -172,6 +172,8 @@ test("synthetic demo review is labeled separately from production verified ROI",
         production_quality_claim: false,
         label: "演示验证结果 · 合成数据",
         measured: { paired_evaluations: 20, historical_hours: 20, assisted_hours: 10 },
+        process: { analysis_tasks: 96, reports: 78, evidence_reviews: 18, reviewed_savings_hours: 174.6 },
+        source_refs: { run_id: "synthetic-shenzhen-site-selection-0001", request_ref: "req_shenzhen_00000001", correlation_ref: "corr_shenzhen_00000001", attempt_ref: "attempt_shenzhen_00000001" },
       },
     }],
   });
@@ -181,6 +183,8 @@ test("synthetic demo review is labeled separately from production verified ROI",
   assert.equal(view.demoEvidence.productionQualityClaim, false);
   assert.equal(view.demoEvidence.pairedEvaluations, 20);
   assert.equal(view.demoEvidence.historicalHours, 20);
+  assert.deepEqual(view.demoEvidence.process, { analysisTasks: 96, reports: 78, evidenceReviews: 18, reviewedSavingsHours: 174.6 });
+  assert.equal(view.demoEvidence.sourceRefs.requestRef, "req_shenzhen_00000001");
 });
 
 

@@ -342,7 +342,7 @@ test("budget and allocation view models preserve estimated and unavailable state
   ], "cost");
 
   assert.equal(budget.name, "月度预算");
-  assert.equal(budget.forecastLabel, "$80");
+  assert.equal(budget.forecastLabel, "$80.00");
   assert.equal(budget.status, "estimated");
   assert.deepEqual(doughnut.map((item) => item.sharePct), [80, 20]);
   assert.deepEqual(finopsDoughnutSegments([{ key: "unknown", cost: null }], "cost"), []);
@@ -378,7 +378,7 @@ test("ROI economics view keeps verified ROI separate from estimated scenarios", 
 
   assert.equal(view.verifiedRoiLabel, "150%");
   assert.equal(view.scenarios[0].status, "estimated");
-  assert.equal(view.scenarios[0].monthlyBenefitLabel, "$3,000");
+  assert.equal(view.scenarios[0].monthlyBenefitLabel, "$3,000.00");
   assert.equal(view.scenarios[0].roiLabel, "275%");
   assert.equal(view.scenarios[0].paybackLabel, "2.2 个月");
   assert.equal(view.scenarios[0].formulaRevision, "dataforge-roi-v1");

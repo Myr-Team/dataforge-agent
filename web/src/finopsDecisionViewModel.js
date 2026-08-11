@@ -533,6 +533,8 @@ function safeScenario(raw) {
 function safeDemoEvidence(raw) {
   const source = isRecord(raw) ? raw : {};
   const measured = isRecord(source.measured) ? source.measured : {};
+  const process = isRecord(source.process) ? source.process : {};
+  const sourceRefs = isRecord(source.source_refs) ? source.source_refs : {};
   if (source.provenance !== "synthetic_demo"
     || source.production_quality_claim !== false
     || boundedText(source.label, 80) !== "演示验证结果 · 合成数据"
@@ -543,12 +545,29 @@ function safeDemoEvidence(raw) {
     || finiteNumber(measured.assisted_hours) === null
     || finiteNumber(measured.assisted_hours) < 0
     || finiteNumber(measured.assisted_hours) > finiteNumber(measured.historical_hours)) return null;
+  const analysisTasks = finiteNumber(process.analysis_tasks);
+  const reports = finiteNumber(process.reports);
+  const evidenceReviews = finiteNumber(process.evidence_reviews);
+  const reviewedSavingsHours = finiteNumber(process.reviewed_savings_hours);
+  const safeRefs = Object.fromEntries([
+    ["runRef", safeIdentifier(sourceRefs.run_id)],
+    ["requestRef", safeIdentifier(sourceRefs.request_ref)],
+    ["correlationRef", safeIdentifier(sourceRefs.correlation_ref)],
+    ["attemptRef", safeIdentifier(sourceRefs.attempt_ref)],
+  ].filter(([, value]) => value));
   return {
     label: boundedText(source.label, 80),
     productionQualityClaim: false,
     pairedEvaluations: finiteNumber(measured.paired_evaluations),
     historicalHours: finiteNumber(measured.historical_hours),
     assistedHours: finiteNumber(measured.assisted_hours),
+    process: Number.isInteger(analysisTasks) && analysisTasks > 0
+      && Number.isInteger(reports) && reports > 0
+      && Number.isInteger(evidenceReviews) && evidenceReviews > 0
+      && reviewedSavingsHours !== null && reviewedSavingsHours >= 0
+      ? { analysisTasks, reports, evidenceReviews, reviewedSavingsHours }
+      : null,
+    sourceRefs: Object.keys(safeRefs).length === 4 ? safeRefs : null,
   };
 }
 

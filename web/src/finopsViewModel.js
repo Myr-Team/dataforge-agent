@@ -92,7 +92,7 @@ export function formatFinOpsCost(value, status = "") {
   if (!hasNumber(value)) return ["unavailable", "unpriced"].includes(status) ? "未计价" : "未记录";
   const digits = value >= 1 ? 2 : value >= 0.01 ? 4 : 6;
   return `$${value.toLocaleString("en-US", {
-    minimumFractionDigits: 0,
+    minimumFractionDigits: value >= 1 ? 2 : 0,
     maximumFractionDigits: digits,
   })}`;
 }

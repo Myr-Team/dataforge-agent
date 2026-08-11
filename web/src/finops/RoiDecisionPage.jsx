@@ -210,6 +210,8 @@ export function RoiDecisionPage({
               <span>{view.demoEvidence.label}</span>
               <div><strong>{view.demoEvidence.pairedEvaluations} 组配对评估</strong><DecisionBadge status="estimated">合成流程</DecisionBadge></div>
               <small>{view.demoEvidence.historicalHours}h 历史流程对比 {view.demoEvidence.assistedHours}h 辅助流程；不构成生产已验证 ROI。</small>
+              {view.demoEvidence.process ? <small>{view.demoEvidence.process.analysisTasks} 个分析任务 · {view.demoEvidence.process.reports} 份报告 · {view.demoEvidence.process.evidenceReviews} 项证据审阅 · 已审阅节省 {view.demoEvidence.process.reviewedSavingsHours}h</small> : null}
+              {view.demoEvidence.sourceRefs ? <small>请求 {view.demoEvidence.sourceRefs.requestRef} · 运行 {view.demoEvidence.sourceRefs.runRef} · 关联 {view.demoEvidence.sourceRefs.correlationRef} · 尝试 {view.demoEvidence.sourceRefs.attemptRef}</small> : null}
             </aside>
           ) : null}
           <div className="finops-decision-roi-banner-actions">
