@@ -111,6 +111,40 @@ def test_deepseek_adapter_serializes_explicit_non_thinking_mode() -> None:
     assert transport.calls[0]["payload"]["thinking"] == {"type": "disabled"}
 
 
+def test_deepseek_adapter_serializes_structured_message_content_as_json() -> None:
+    transport = _Transport(
+        ProviderHttpResponse(
+            status_code=200,
+            headers={},
+            json_body={
+                "choices": [
+                    {
+                        "message": {
+                            "content": {
+                                "conclusion": "成本需要复核",
+                                "evidence_refs": ["req_safe"],
+                            }
+                        }
+                    }
+                ],
+                "usage": {},
+            },
+        )
+    )
+    provider = DeepSeekProvider(transport=transport, clock=lambda: 10.0)
+
+    result = provider.invoke(
+        _invocation(),
+        api_key="secret",
+        base_url="https://api.deepseek.com",
+    )
+
+    assert json.loads(result.text or "") == {
+        "conclusion": "成本需要复核",
+        "evidence_refs": ["req_safe"],
+    }
+
+
 @pytest.mark.parametrize(
     ("status", "category", "retryable"),
     [
