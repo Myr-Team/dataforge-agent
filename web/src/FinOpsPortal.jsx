@@ -537,6 +537,7 @@ function TrendBars({
   const maximum = axis.max;
   if (!rows.length) return <EmptyState />;
   const visibleRows = rows.slice(-14);
+  const trendContentMinWidth = visibleRows.length * 48 + Math.max(0, visibleRows.length - 1) * 10;
   return (
     <div className={`finops-trend-chart metric-${metric}`}>
       <div className="finops-trend-legend">
@@ -561,7 +562,13 @@ function TrendBars({
           <span className="finops-trend-axis-label-spacer" />
         </div>
         <div className="finops-trend-viewport">
-          <div className="finops-trend-columns" style={{ "--trend-point-count": visibleRows.length }}>
+          <div
+            className="finops-trend-columns"
+            style={{
+              "--trend-point-count": visibleRows.length,
+              "--trend-content-min-width": `${trendContentMinWidth}px`,
+            }}
+          >
             <div className="finops-trend-gridlines" aria-hidden="true">
               {axis.ticks.map((tick) => <i key={tick} />)}
             </div>

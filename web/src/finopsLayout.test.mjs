@@ -166,13 +166,15 @@ test("trend bars use one shared zero-baseline track without lifting on hover", a
   assert.match(component, /className="finops-trend-axis-track"/);
   assert.match(component, /className="finops-trend-viewport"/);
   assert.match(component, /"--trend-point-count": visibleRows\.length/);
+  assert.match(component, /const trendContentMinWidth = visibleRows\.length \* 48 \+ Math\.max\(0, visibleRows\.length - 1\) \* 10;/);
+  assert.match(component, /"--trend-content-min-width": `\$\{trendContentMinWidth\}px`/);
   assert.match(component, /className="finops-trend-bar-slot"/);
   assert.match(styles, /\.finops-trend-body\s*\{[^}]*grid-template-columns:\s*47px minmax\(0, 1fr\)/s);
   assert.match(styles, /\.finops-trend-scale\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 24px/s);
   assert.match(styles, /\.finops-trend-axis-track\s*\{[^}]*height:\s*100%/s);
   assert.match(styles, /\.finops-trend-viewport\s*\{[^}]*overflow-x:\s*auto/s);
   assert.match(styles, /\.finops-trend-gridlines\s*\{[^}]*bottom:\s*24px/s);
-  assert.match(styles, /\.finops-trend-columns\s*\{[^}]*min-width:\s*max\(100%, calc\(var\(--trend-point-count\) \* 48px\)\)/s);
+  assert.match(styles, /\.finops-trend-columns\s*\{[^}]*min-width:\s*max\(100%, var\(--trend-content-min-width\)\)[^}]*gap:\s*10px/s);
   assert.match(styles, /\.finops-trend-bar-slot\s*\{[^}]*height:\s*100%[^}]*align-items:\s*flex-end/s);
   assert.doesNotMatch(component, /className="finops-trend-value"/);
   assert.match(styles, /\.finops-trend-legend \.cached, \.finops-trend-stack \.cached\s*\{[^}]*#0e9f6e/s);

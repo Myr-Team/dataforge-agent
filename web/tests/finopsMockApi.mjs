@@ -901,9 +901,12 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/observability") {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
-      body = options.trendPayload
-        ? { ...bootstrapPayload, trend: options.trendPayload }
-        : control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
+      const basePayload = control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
+      body = {
+        ...basePayload,
+        trend: options.trendPayload || basePayload.trend,
+        anomalies: options.anomaliesPayload || basePayload.anomalies,
+      };
     } else if (
       control.memberBudgetAccessState === "permission_required"
       && request.method() === "GET"

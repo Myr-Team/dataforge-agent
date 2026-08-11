@@ -83,7 +83,62 @@ test("trend bars share the zero baseline and retain it through hover and focus",
 });
 
 
-test("trend viewport scrolls only when a narrow viewport receives a long range", async ({ page }) => {
+test("cost trend tooltip preserves exact metric cache and event values", async ({ page }) => {
+  const source = bootstrapPayload.trend.items[0];
+  const distinctiveTrend = {
+    ...bootstrapPayload.trend,
+    items: [{
+      ...source,
+      bucket: "2026-09-01T00:00:00Z",
+      estimated_cost: 12.34,
+      tokens: {
+        ...source.tokens,
+        input: 345678,
+        output: 45678,
+        cached_input: 56789,
+        reasoning: 6789,
+        total: 454935,
+      },
+      cache: {
+        ...source.cache,
+        hit: 17,
+        miss: 23,
+        bypassed: 29,
+        avoided_tokens: 345678,
+        estimated_savings: 6.78,
+        data_status: "available",
+      },
+    }],
+  };
+  const distinctiveAnomalies = {
+    ...bootstrapPayload.anomalies,
+    items: [{
+      observed_at: "2026-09-01T08:30:00Z",
+      title: "distinctive trend event",
+    }],
+  };
+  await installFinOpsMockApi(page, [], {
+    trendPayload: distinctiveTrend,
+    anomaliesPayload: distinctiveAnomalies,
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.locator(".finops-trend-switch").getByRole("button", { name: "成本" }).click();
+  const column = page.locator(".finops-trend-chart .finops-trend-column").first();
+  await column.focus();
+  const tooltip = page.locator(".finops-trend-tooltip-content");
+  await expect(tooltip).toContainText("2026-09-01");
+  await expect(tooltip).toContainText("估算成本 $12.34");
+  await expect(tooltip).toContainText("缓存命中 17");
+  await expect(tooltip).toContainText("缓存未命中 23");
+  await expect(tooltip).toContainText("绕过缓存 29");
+  await expect(tooltip).toContainText("避免 Token 345,678");
+  await expect(tooltip).toContainText("估算节省 $6.78");
+  await expect(tooltip).toContainText("运营事件 1 条");
+});
+
+
+test("trend renders fourteen retained points and keeps the final bar inside the shared zero baseline", async ({ page }) => {
   const longTrend = {
     ...bootstrapPayload.trend,
     items: Array.from({ length: 20 }, (_, index) => {
@@ -98,10 +153,26 @@ test("trend viewport scrolls only when a narrow viewport receives a long range",
   await installFinOpsMockApi(page, [], { trendPayload: longTrend });
   await page.goto("/");
   await page.getByRole("button", { name: "成本管理" }).first().click();
-  const viewport = page.locator(".finops-trend-chart .finops-trend-viewport");
+  const chart = page.locator(".finops-trend-chart");
+  const viewport = chart.locator(".finops-trend-viewport");
   await expect(viewport).toBeVisible();
+  await expect(chart.locator(".finops-trend-column")).toHaveCount(14);
   const longOverflow = await viewport.evaluate((node) => node.scrollWidth - node.clientWidth);
   expect(longOverflow).toBeGreaterThan(1);
+  await viewport.evaluate((node) => { node.scrollLeft = node.scrollWidth; });
+  const finalStack = chart.locator(".finops-trend-column").last().locator(".finops-trend-stack.has-value");
+  const finalBaseline = chart.locator(".finops-trend-gridlines i").last();
+  await expect(finalStack).toBeVisible();
+  const [finalStackBox, finalBaselineBox] = await Promise.all([
+    finalStack.boundingBox(),
+    finalBaseline.boundingBox(),
+  ]);
+  expect(finalStackBox).not.toBeNull();
+  expect(finalBaselineBox).not.toBeNull();
+  expect(Math.abs(bottomEdge(finalStackBox) - finalBaselineBox.y)).toBeLessThanOrEqual(1);
+  const finalBarCenter = finalStackBox.x + finalStackBox.width / 2;
+  expect(finalBarCenter).toBeGreaterThanOrEqual(finalBaselineBox.x);
+  expect(finalBarCenter).toBeLessThanOrEqual(finalBaselineBox.x + finalBaselineBox.width);
 });
 
 
