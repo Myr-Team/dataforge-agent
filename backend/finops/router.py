@@ -529,11 +529,12 @@ def _finops_model_route_scope(
     demo_workspace_id = str(
         os.environ.get("DF_FINOPS_DEMO_WORKSPACE_ID") or "demo-corpus"
     ).strip()
-    if (
+    demo_policy_active = bool(
         not policy_persisted
         and demo_workspace_id
         and workspace_id == demo_workspace_id
-    ):
+    )
+    if demo_policy_active:
         # Read-only default for the allowlisted demo workspace. It is never
         # persisted here, so Owner saves/removals still go through the audited
         # model-routing API; an explicitly persisted empty policy wins.
@@ -545,6 +546,28 @@ def _finops_model_route_scope(
         else None
     )
     provider_runtime = load_actor_provider_runtime(actor)
+    if demo_policy_active:
+        deepseek_quick_route = next(
+            (
+                route
+                for route in provider_runtime.routes
+                if route.provider_type == "deepseek"
+                and route.model_id == "deepseek-v4-flash"
+                and "chat" in route.capabilities
+            ),
+            None,
+        )
+        if deepseek_quick_route is not None:
+            policy = {
+                **dict(policy or {}),
+                "assignments": {
+                    **dict((policy or {}).get("assignments") or {}),
+                    "direct_reply": {
+                        "primary_route_id": deepseek_quick_route.route_id,
+                        "fallback_route_id": "analysis",
+                    },
+                },
+            }
     with provider_runtime_scope(provider_runtime.connections):
         with workspace_model_policy_scope(
             policy=policy,

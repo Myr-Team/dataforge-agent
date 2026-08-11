@@ -58,8 +58,8 @@ def demo_operations_model_policy() -> dict[str, Any]:
     return {
         "assignments": {
             "direct_reply": {
-                "primary_route_id": "deepseek-provider-flash",
-                "fallback_route_id": "analysis",
+                "primary_route_id": "analysis",
+                "fallback_route_id": None,
             },
         },
         "agent_assignments": {
