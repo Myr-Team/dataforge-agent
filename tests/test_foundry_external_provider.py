@@ -90,11 +90,13 @@ def test_run_agent_uses_scoped_deepseek_connection_without_azure_client(monkeypa
                 max_output_tokens=650,
                 request_timeout_seconds=8,
                 retry_limit=0,
+                thinking="disabled",
             )
 
     invocation = observed["invocation"]
     assert invocation.model_id == "deepseek-v4-flash"
     assert invocation.response_format == {"type": "json_object"}
+    assert invocation.thinking == "disabled"
     assert observed["api_key"] == "secret-marker"
     assert observed["base_url"] == "https://api.deepseek.com"
     assert result["structured"] == {"conclusion": "已通过 DeepSeek 分析"}
