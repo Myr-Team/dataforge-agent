@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { expect, test } from "playwright/test";
 
-import { installFinOpsDemoCompletenessApi, installFinOpsMockApi } from "./finopsMockApi.mjs";
+import { bootstrapPayload, installFinOpsDemoCompletenessApi, installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 
 const DEMO_FORBIDDEN_EMPTY = /未接入|暂不可用|Failed to fetch|待接入|未记录|当前范围没有可展示的记录/;
@@ -31,6 +31,78 @@ async function expectNoOverlap(locator) {
     }
   }
 }
+
+
+function bottomEdge(box) {
+  return box.y + box.height;
+}
+
+
+test("trend bars share the zero baseline and retain it through hover and focus", async ({ page }) => {
+  const shortTrend = {
+    ...bootstrapPayload.trend,
+    items: bootstrapPayload.trend.items.slice(0, 7),
+  };
+  await installFinOpsMockApi(page, [], { trendPayload: shortTrend });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  await page.locator(".finops-trend-switch").getByRole("button", { name: "Token" }).click();
+
+  const chart = page.locator(".finops-trend-chart");
+  const viewport = chart.locator(".finops-trend-viewport");
+  const baseline = chart.locator(".finops-trend-gridlines i").last();
+  const column = chart.locator(".finops-trend-column").first();
+  const stack = column.locator(".finops-trend-stack.has-value");
+  await expect(stack).toBeVisible();
+
+  const [initialBox, baselineBox] = await Promise.all([stack.boundingBox(), baseline.boundingBox()]);
+  expect(initialBox).not.toBeNull();
+  expect(baselineBox).not.toBeNull();
+  expect(Math.abs(bottomEdge(initialBox) - baselineBox.y)).toBeLessThanOrEqual(1);
+  const shortOverflow = await viewport.evaluate((node) => node.scrollWidth - node.clientWidth);
+  expect(shortOverflow).toBeLessThanOrEqual(1);
+
+  await column.hover();
+  const [hoverBox, hoverBaselineBox] = await Promise.all([stack.boundingBox(), baseline.boundingBox()]);
+  expect(hoverBox).not.toBeNull();
+  expect(hoverBaselineBox).not.toBeNull();
+  expect(Math.abs(bottomEdge(hoverBox) - hoverBaselineBox.y)).toBeLessThanOrEqual(1);
+
+  await column.focus();
+  const [focusBox, focusBaselineBox] = await Promise.all([stack.boundingBox(), baseline.boundingBox()]);
+  expect(focusBox).not.toBeNull();
+  expect(focusBaselineBox).not.toBeNull();
+  expect(Math.abs(bottomEdge(focusBox) - focusBaselineBox.y)).toBeLessThanOrEqual(1);
+  const tooltip = page.locator(".finops-trend-tooltip-content");
+  await expect(tooltip).toContainText("2026-08-01");
+  await expect(tooltip).toContainText("缓存命中");
+  await expect(tooltip).toContainText("缓存未命中");
+  await expect(tooltip).toContainText("绕过缓存");
+  await expect(tooltip).toContainText("避免 Token");
+  await expect(tooltip).toContainText("估算节省");
+});
+
+
+test("trend viewport scrolls only when a narrow viewport receives a long range", async ({ page }) => {
+  const longTrend = {
+    ...bootstrapPayload.trend,
+    items: Array.from({ length: 20 }, (_, index) => {
+      const source = bootstrapPayload.trend.items[index % bootstrapPayload.trend.items.length];
+      return {
+        ...source,
+        bucket: `2026-07-${String(index + 1).padStart(2, "0")}T00:00:00Z`,
+      };
+    }),
+  };
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installFinOpsMockApi(page, [], { trendPayload: longTrend });
+  await page.goto("/");
+  await page.getByRole("button", { name: "成本管理" }).first().click();
+  const viewport = page.locator(".finops-trend-chart .finops-trend-viewport");
+  await expect(viewport).toBeVisible();
+  const longOverflow = await viewport.evaluate((node) => node.scrollWidth - node.clientWidth);
+  expect(longOverflow).toBeGreaterThan(1);
+});
 
 
 async function expectDemoSurfaceComplete(page) {

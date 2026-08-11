@@ -901,7 +901,9 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
     } else if (path === "/api/observability") {
       body = {};
     } else if (path === "/api/finops/bootstrap") {
-      body = control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
+      body = options.trendPayload
+        ? { ...bootstrapPayload, trend: options.trendPayload }
+        : control.demoCompleteness ? demoCompletenessBootstrapPayload() : bootstrapPayload;
     } else if (
       control.memberBudgetAccessState === "permission_required"
       && request.method() === "GET"
@@ -1610,7 +1612,7 @@ export async function installFinOpsMockApi(page, calls = [], options = {}) {
         ? { view: { view_id: "view-a", name: "财务视图" } }
         : { items: [], count: 0 };
     } else if (path === "/api/finops/trends") {
-      body = bootstrapPayload.trend;
+      body = options.trendPayload || bootstrapPayload.trend;
     } else if (path === "/api/finops/anomalies") {
       body = {
         ...bootstrapPayload,
