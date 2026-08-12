@@ -156,7 +156,7 @@ test("operations pages use one display-scaled shell and semantic 8-to-4 grids", 
 });
 
 
-test("trend bars use one shared zero-baseline track without lifting on hover", async () => {
+test("trend bars use one measured zero-baseline coordinate system", async () => {
   const [component, styles] = await Promise.all([
     readFile(new URL("./FinOpsPortal.jsx", import.meta.url), "utf8"),
     readFile(new URL("./styles.css", import.meta.url), "utf8"),
@@ -164,30 +164,32 @@ test("trend bars use one shared zero-baseline track without lifting on hover", a
 
   assert.match(component, /className="finops-trend-body"/);
   assert.match(component, /className="finops-trend-axis-track"/);
-  assert.match(component, /className="finops-trend-viewport"/);
-  assert.match(component, /"--trend-point-count": visibleRows\.length/);
-  assert.match(component, /const trendContentMinWidth = visibleRows\.length \* 48 \+ Math\.max\(0, visibleRows\.length - 1\) \* 10;/);
-  assert.match(component, /"--trend-content-min-width": `\$\{trendContentMinWidth\}px`/);
+  assert.match(component, /ref=\{viewportRef\}/);
+  assert.match(component, /viewport\.scrollWidth > viewport\.clientWidth \+ 1/);
+  assert.match(component, /viewport\.offsetHeight - viewport\.clientHeight/);
+  assert.match(component, /data-horizontal-overflow=\{viewportMetrics\.hasHorizontalOverflow/);
+  assert.match(component, /data-zero-tick=\{tick === 0/);
+  assert.match(component, /index \/ \(axis\.ticks\.length - 1\)/);
+  assert.match(component, /const compactRange = visibleRows\.length <= 11/);
+  assert.match(component, /"--trend-content-min-width": trendContentMinWidth/);
+  assert.match(component, /const formatAxisValue = metric === "cost" \? formatFinOpsAxisCost : formatValue/);
   assert.match(component, /className="finops-trend-bar-slot"/);
-  assert.match(styles, /\.finops-trend-body\s*\{[^}]*grid-template-columns:\s*47px minmax\(0, 1fr\)/s);
-  assert.match(styles, /\.finops-trend-scale\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 24px/s);
-  assert.match(styles, /\.finops-trend-axis-track\s*\{[^}]*height:\s*100%/s);
-  assert.match(styles, /\.finops-trend-viewport\s*\{[^}]*overflow-x:\s*auto/s);
-  assert.match(styles, /\.finops-trend-gridlines\s*\{[^}]*bottom:\s*24px/s);
-  assert.match(styles, /\.finops-trend-columns\s*\{[^}]*min-width:\s*max\(100%, var\(--trend-content-min-width\)\)[^}]*gap:\s*10px/s);
+  assert.match(styles, /\.finops-trend-chart\s*\{[^}]*--trend-axis-label-band:\s*24px/s);
+  assert.match(styles, /\.finops-trend-scale\s*\{[^}]*calc\(var\(--trend-axis-label-band\) \+ var\(--trend-scrollbar-gutter\)\)/s);
+  assert.match(styles, /\.finops-trend-axis-track\s*\{[^}]*position:\s*relative/s);
+  assert.match(styles, /\.finops-trend-axis-track span\s*\{[^}]*position:\s*absolute[^}]*translateY\(-50%\)/s);
+  assert.match(styles, /\.finops-trend-viewport\s*\{[^}]*overflow-x:\s*hidden/s);
+  assert.match(styles, /\.finops-trend-viewport\.has-horizontal-overflow\s*\{[^}]*overflow-x:\s*auto/s);
+  assert.match(styles, /\.finops-trend-gridlines\s*\{[^}]*bottom:\s*var\(--trend-axis-label-band\)/s);
+  assert.match(styles, /\.finops-trend-columns::after\s*\{[^}]*bottom:\s*var\(--trend-axis-label-band\)/s);
+  assert.match(styles, /\.finops-trend-chart\.compact-range \.finops-trend-column\s*\{[^}]*min-width:\s*0[^}]*flex:\s*1 1 0/s);
+  assert.match(styles, /\.finops-trend-column\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) var\(--trend-axis-label-band\)/s);
   assert.match(styles, /\.finops-trend-bar-slot\s*\{[^}]*height:\s*100%[^}]*align-items:\s*flex-end/s);
   assert.doesNotMatch(component, /className="finops-trend-value"/);
-  assert.match(styles, /\.finops-trend-legend \.cached, \.finops-trend-stack \.cached\s*\{[^}]*#0e9f6e/s);
   assert.doesNotMatch(styles, /\.finops-trend-column:hover \.finops-trend-stack,\s*\n\.finops-trend-column:focus \.finops-trend-stack\s*\{[^}]*translateY\(/s);
   assert.doesNotMatch(styles, /\.finops-trend-stack\s*\{[^}]*max-height:/s);
-  assert.doesNotMatch(styles, /\.finops-trend-columns\s*\{[^}]*border-bottom:/s);
-  assert.doesNotMatch(styles, /\.finops-trend-plot\s*\{[^}]*border-bottom:/s);
-  assert.match(styles, /\.finops-trend-columns::after\s*\{[^}]*bottom:\s*24px/s);
-  assert.match(styles, /\.finops-trend-column\s*\{[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 24px/s);
-  assert.match(component, /className="finops-trend-gridlines"/);
   assert.match(component, /row\.bucketStatus === "in_progress"/);
   assert.match(styles, /\.finops-trend-stack\.in-progress\s*\{/);
-  assert.match(styles, /\.finops-trend-column\s*>\s*span\s*\{[^}]*text-overflow:\s*clip/s);
   assert.match(component, /finops-trend-chart metric-\$\{metric\}/);
   assert.match(styles, /\.finops-trend-chart\.metric-cost[\s\S]*#f79009/s);
 });

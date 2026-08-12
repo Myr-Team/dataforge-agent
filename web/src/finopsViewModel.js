@@ -104,6 +104,15 @@ export function formatFinOpsCost(value, status = "") {
   })}`;
 }
 
+export function formatFinOpsAxisCost(value) {
+  if (!hasNumber(value)) return "未记录";
+  if (value === 0) return "$0";
+  return `$${value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: Math.abs(value) < 0.01 ? 8 : 2,
+  })}`;
+}
+
 export function formatFinOpsDuration(value) {
   if (!hasNumber(value)) return "未记录";
   if (value >= 1000) return `${(value / 1000).toFixed(value >= 10000 ? 1 : 2).replace(/0+$/, "").replace(/\.$/, "")} s`;

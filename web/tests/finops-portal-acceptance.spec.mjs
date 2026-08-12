@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { expect, test } from "playwright/test";
 
-import { installFinOpsMockApi } from "./finopsMockApi.mjs";
+import { bootstrapPayload, installFinOpsMockApi } from "./finopsMockApi.mjs";
 
 
 async function openOperations(page) {
@@ -16,6 +16,34 @@ async function openMemberBudgets(page) {
   await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
   await page.getByRole("button", { name: "配置成本预算与提醒" }).click();
   await expect(page.getByRole("heading", { name: "成员成本预算" })).toBeVisible();
+}
+
+async function readTrendGeometry(page) {
+  return page.locator(".finops-trend-chart").evaluate((chart) => {
+    const rect = (node) => node.getBoundingClientRect();
+    const baseline = rect(chart.querySelector(".finops-trend-gridlines i:last-child")).top;
+    const zeroTick = rect(chart.querySelector('[data-zero-tick="true"]'));
+    const viewport = chart.querySelector(".finops-trend-viewport");
+    return {
+      baseline,
+      zeroCenter: zeroTick.top + zeroTick.height / 2,
+      plotBottoms: [...chart.querySelectorAll(".finops-trend-plot")].map((node) => rect(node).bottom),
+      barBottoms: [...chart.querySelectorAll(".finops-trend-stack.has-value")].map((node) => rect(node).bottom),
+      dateTops: [...chart.querySelectorAll(".finops-trend-column > span")].map((node) => rect(node).top),
+      viewportClientWidth: viewport.clientWidth,
+      viewportScrollWidth: viewport.scrollWidth,
+      scrollbarGutter: viewport.offsetHeight - viewport.clientHeight,
+      overflowState: viewport.dataset.horizontalOverflow,
+    };
+  });
+}
+
+function expectTrendZeroBaseline(geometry) {
+  expect(Math.abs(geometry.zeroCenter - geometry.baseline)).toBeLessThanOrEqual(1);
+  for (const bottom of [...geometry.plotBottoms, ...geometry.barBottoms]) {
+    expect(Math.abs(bottom - geometry.baseline)).toBeLessThanOrEqual(1);
+  }
+  expect(geometry.dateTops.every((top) => top > geometry.baseline)).toBe(true);
 }
 
 
@@ -184,6 +212,13 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   expect(secondCostBar.height).toBeGreaterThan(firstCostBar.height);
   expect(secondCostBar.height - firstCostBar.height).toBeGreaterThan(5);
 
+  const viewport = page.locator(".finops-trend-viewport");
+  await expect(viewport).toHaveAttribute("data-horizontal-overflow", "false");
+  const costGeometry = await readTrendGeometry(page);
+  expectTrendZeroBaseline(costGeometry);
+  expect(costGeometry.viewportScrollWidth).toBeLessThanOrEqual(costGeometry.viewportClientWidth + 1);
+  expect(costGeometry.scrollbarGutter).toBe(0);
+
   await trendSwitch.getByRole("button", { name: "Token" }).click();
   await expect(legend).toContainText("输入");
 
@@ -199,6 +234,37 @@ test("trend chart switches metric, unit and tooltip in sync", async ({ page }) =
   await expect(page.locator(".finops-trend-tooltip-content")).toContainText("调用次数");
   await expect(page.locator(".finops-trend-tooltip-content")).toContainText("缓存命中");
   await expect(page.locator(".finops-metric").filter({ hasText: "缓存收益" })).toContainText("命中率");
+});
+
+
+test("long trend range scrolls only on real overflow without moving zero", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installFinOpsMockApi(page);
+  const extraRows = ["2026-07-29", "2026-07-30", "2026-07-31"].map((date, index) => ({
+    ...bootstrapPayload.trend.items[index],
+    bucket: `${date}T00:00:00Z`,
+    bucket_status: "complete",
+  }));
+  await page.route("**/api/finops/bootstrap**", async (route) => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      ...bootstrapPayload,
+      trend: {
+        ...bootstrapPayload.trend,
+        items: [...extraRows, ...bootstrapPayload.trend.items],
+      },
+    }),
+  }));
+  await page.goto("/");
+  await openOperations(page);
+
+  const viewport = page.locator(".finops-trend-viewport");
+  await expect(viewport).toHaveAttribute("data-horizontal-overflow", "true");
+  const geometry = await readTrendGeometry(page);
+  expectTrendZeroBaseline(geometry);
+  expect(geometry.viewportScrollWidth).toBeGreaterThan(geometry.viewportClientWidth + 1);
+  expect(geometry.overflowState).toBe("true");
 });
 
 
@@ -486,6 +552,12 @@ test("mobile operations layout has no horizontal overflow", async ({ page }) => 
     return doc.scrollWidth - doc.clientWidth;
   });
   expect(overflow).toBeLessThanOrEqual(1);
+
+  const trendViewport = page.locator(".finops-trend-viewport");
+  const trendGeometry = await readTrendGeometry(page);
+  await expect(trendViewport).toHaveAttribute("data-horizontal-overflow", "false");
+  expectTrendZeroBaseline(trendGeometry);
+  expect(trendGeometry.viewportScrollWidth).toBeLessThanOrEqual(trendGeometry.viewportClientWidth + 1);
 
   await expect(page.getByRole("button", { name: "成本分析", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "成本分析", exact: true }).click();

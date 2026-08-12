@@ -104,6 +104,7 @@ import {
   finopsTrendViewModel,
   finopsBarPercent,
   niceFinOpsAxis,
+  formatFinOpsAxisCost,
   formatFinOpsCost,
   formatFinOpsDuration,
   formatFinOpsNumber,
@@ -529,17 +530,60 @@ function TrendBars({
     if (metric === "p95") return formatFinOpsDuration(value);
     return `${formatFinOpsNumber(value, "0")} ${metric === "total" ? "Token" : "次"}`;
   };
+  const formatAxisValue = metric === "cost" ? formatFinOpsAxisCost : formatValue;
   const values = [
     ...rows.map((row) => Number(metricValue(row) || 0)),
     ...comparisonRows.map((row) => Number(metricValue(row) || 0)),
   ];
   const axis = niceFinOpsAxis(values, 5);
   const maximum = axis.max;
-  if (!rows.length) return <EmptyState />;
   const visibleRows = rows.slice(-14);
-  const trendContentMinWidth = visibleRows.length * 48 + Math.max(0, visibleRows.length - 1) * 10;
+  const compactRange = visibleRows.length <= 11;
+  const trendContentMinWidth = compactRange
+    ? "100%"
+    : `${visibleRows.length * 48 + Math.max(0, visibleRows.length - 1) * 10}px`;
+  const viewportRef = useRef(null);
+  const [viewportMetrics, setViewportMetrics] = useState({
+    hasHorizontalOverflow: false,
+    scrollbarGutter: 0,
+  });
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+    let animationFrame = 0;
+    const measureViewport = () => {
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = window.requestAnimationFrame(() => {
+        const hasHorizontalOverflow = viewport.scrollWidth > viewport.clientWidth + 1;
+        const scrollbarGutter = hasHorizontalOverflow
+          ? Math.max(0, viewport.offsetHeight - viewport.clientHeight)
+          : 0;
+        setViewportMetrics((current) => (
+          current.hasHorizontalOverflow === hasHorizontalOverflow
+          && current.scrollbarGutter === scrollbarGutter
+            ? current
+            : { hasHorizontalOverflow, scrollbarGutter }
+        ));
+      });
+    };
+    const resizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver(measureViewport)
+      : null;
+    resizeObserver?.observe(viewport);
+    if (viewport.firstElementChild) resizeObserver?.observe(viewport.firstElementChild);
+    window.addEventListener("resize", measureViewport);
+    measureViewport();
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("resize", measureViewport);
+      resizeObserver?.disconnect();
+    };
+  }, [visibleRows.length, viewportMetrics.hasHorizontalOverflow]);
+
+  if (!rows.length) return <EmptyState />;
   return (
-    <div className={`finops-trend-chart metric-${metric}`}>
+    <div className={`finops-trend-chart metric-${metric} ${compactRange ? "compact-range" : ""}`.trim()}>
       <div className="finops-trend-legend">
         {metric === "total" ? (
           <>
@@ -554,19 +598,34 @@ function TrendBars({
         )}
         {rows.some((row) => row.bucketStatus === "in_progress") ? <span><i className="progress" />进行中</span> : null}
       </div>
-      <div className="finops-trend-body">
+      <div
+        className="finops-trend-body"
+        style={{ "--trend-scrollbar-gutter": `${viewportMetrics.scrollbarGutter}px` }}
+      >
         <div className="finops-trend-scale" aria-hidden="true">
           <div className="finops-trend-axis-track">
-            {axis.ticks.map((tick) => <span key={tick}>{formatValue(tick)}</span>)}
+            {axis.ticks.map((tick, index) => (
+              <span
+                key={tick}
+                data-zero-tick={tick === 0 ? "true" : undefined}
+                style={{ top: `${axis.ticks.length > 1 ? (index / (axis.ticks.length - 1)) * 100 : 0}%` }}
+              >
+                {formatAxisValue(tick)}
+              </span>
+            ))}
           </div>
           <span className="finops-trend-axis-label-spacer" />
         </div>
-        <div className="finops-trend-viewport">
+        <div
+          ref={viewportRef}
+          className={`finops-trend-viewport ${viewportMetrics.hasHorizontalOverflow ? "has-horizontal-overflow" : ""}`.trim()}
+          data-horizontal-overflow={viewportMetrics.hasHorizontalOverflow ? "true" : "false"}
+        >
           <div
             className="finops-trend-columns"
             style={{
               "--trend-point-count": visibleRows.length,
-              "--trend-content-min-width": `${trendContentMinWidth}px`,
+              "--trend-content-min-width": trendContentMinWidth,
             }}
           >
             <div className="finops-trend-gridlines" aria-hidden="true">

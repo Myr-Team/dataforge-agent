@@ -5443,7 +5443,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-model-usage-tooltip span { display: flex; justify-content: space-between; gap: 14px; color: #667085; font-size: 9.5px; }
 .finops-model-usage-tooltip strong { color: #344054; font-variant-numeric: tabular-nums; }
 .finops-model-usage-tooltip small { border-top: 1px solid #edf0f5; padding-top: 7px; color: #98a2b3; font-size: 8.8px; line-height: 1.45; }
-.finops-trend-chart { position: relative; display: grid; min-height: 268px; grid-template-rows: auto minmax(0, 1fr); padding: 14px 16px 8px; }
+.finops-trend-chart { --trend-axis-label-band: 24px; --trend-scrollbar-gutter: 0px; position: relative; display: grid; min-height: 268px; grid-template-rows: auto minmax(0, 1fr); padding: 14px 16px 8px; }
 .finops-trend-switch { display: flex; gap: 3px; border-bottom: 1px solid #edf0f5; padding: 10px 14px 0; }
 .finops-trend-switch button { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 7px 11px 8px; color: #667085; font-size: 11px; cursor: pointer; }
 .finops-trend-switch button:hover, .finops-trend-switch button:focus-visible { color: #175cd3; }
@@ -5464,21 +5464,25 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-legend .reasoning, .finops-trend-stack .reasoning { background: #b2ddff; }
 .finops-trend-legend .progress { border: 1px dashed #84adf2; background: repeating-linear-gradient(135deg, #eef4ff 0 2px, #b2ccff 2px 4px); }
 .finops-trend-body { display: grid; min-height: 0; grid-template-columns: 47px minmax(0, 1fr); column-gap: 8px; }
-.finops-trend-scale { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) 24px; color: #98a2b3; font-size: 8.5px; font-variant-numeric: tabular-nums; text-align: right; }
-.finops-trend-axis-track { display: flex; height: 100%; min-height: 0; justify-content: space-between; flex-direction: column; }
+.finops-trend-scale { display: grid; min-height: 0; grid-template-rows: minmax(0, 1fr) calc(var(--trend-axis-label-band) + var(--trend-scrollbar-gutter)); color: #98a2b3; font-size: 8.5px; font-variant-numeric: tabular-nums; text-align: right; }
+.finops-trend-axis-track { position: relative; height: 100%; min-height: 0; }
+.finops-trend-axis-track span { position: absolute; right: 0; line-height: 1; transform: translateY(-50%); white-space: nowrap; }
 .finops-trend-axis-track span:last-child { color: #667085; }
 .finops-trend-axis-label-spacer { display: block; }
-.finops-trend-viewport { position: relative; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
-.finops-trend-gridlines { position: absolute; z-index: 0; top: 0; right: 0; bottom: 24px; left: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
+.finops-trend-viewport { position: relative; min-width: 0; overflow-x: hidden; overflow-y: hidden; scrollbar-width: thin; }
+.finops-trend-viewport.has-horizontal-overflow { overflow-x: auto; }
+.finops-trend-gridlines { position: absolute; z-index: 0; top: 0; right: 0; bottom: var(--trend-axis-label-band); left: 0; display: flex; flex-direction: column; justify-content: space-between; pointer-events: none; }
 .finops-trend-gridlines i { width: 100%; border-top: 1px solid #edf1f6; }
 .finops-trend-gridlines i:last-child { border-top-color: #d7dee8; }
 .finops-trend-columns { position: relative; z-index: 1; display: flex; width: 100%; min-width: max(100%, var(--trend-content-min-width)); height: 100%; min-height: 0; align-items: flex-end; gap: 10px; }
-.finops-trend-columns::after { position: absolute; z-index: 2; right: 0; bottom: 24px; left: 0; border-top: 1px solid #d7dee8; content: ""; pointer-events: none; }
-.finops-trend-column { position: relative; display: grid; height: 100%; min-width: 48px; flex: 1 0 48px; outline: 0; align-items: end; grid-template-rows: minmax(0, 1fr) 24px; justify-items: stretch; }
+.finops-trend-columns::after { position: absolute; z-index: 2; right: 0; bottom: var(--trend-axis-label-band); left: 0; border-top: 1px solid #d7dee8; content: ""; pointer-events: none; }
+.finops-trend-column { position: relative; display: grid; height: 100%; min-width: 48px; flex: 1 0 48px; outline: 0; align-items: end; grid-template-rows: minmax(0, 1fr) var(--trend-axis-label-band); justify-items: stretch; }
+.finops-trend-chart.compact-range .finops-trend-columns { gap: 0; }
+.finops-trend-chart.compact-range .finops-trend-column { min-width: 0; flex: 1 1 0; }
 .finops-trend-columns:has(.finops-trend-column:hover) .finops-trend-column:not(:hover),
 .finops-trend-columns:has(.finops-trend-column:focus) .finops-trend-column:not(:focus) { opacity: .48; }
 .finops-trend-column > span { align-self: center; overflow: visible; color: #98a2b3; font-size: 8.5px; font-variant-numeric: tabular-nums; text-align: center; text-overflow: clip; white-space: nowrap; }
-.finops-trend-column::before { position: absolute; z-index: 0; top: 0; bottom: 24px; left: 50%; width: 1px; background: transparent; content: ""; pointer-events: none; }
+.finops-trend-column::before { position: absolute; z-index: 0; top: 0; bottom: var(--trend-axis-label-band); left: 50%; width: 1px; background: transparent; content: ""; pointer-events: none; }
 .finops-trend-plot { position: relative; z-index: 1; display: grid; width: 100%; height: 100%; min-height: 0; grid-template-rows: minmax(0, 1fr); justify-items: stretch; }
 .finops-trend-bar-slot { display: flex; width: 100%; height: 100%; min-height: 0; align-items: flex-end; justify-content: center; }
 .finops-trend-stack { display: flex; width: min(24px, 66%); min-height: 0; flex: none; overflow: hidden; flex-direction: column-reverse; border-radius: 4px 4px 0 0; background: #eef2f7; transition: filter 160ms ease, transform 160ms ease; transform-origin: bottom; }
@@ -5493,8 +5497,8 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-trend-column:hover > span,
 .finops-trend-column:focus > span { color: #344054; font-weight: 700; }
 .finops-trend-stack i { display: block; width: 100%; flex: none; }
-.finops-trend-comparison { position: absolute; right: 8%; bottom: 24px; width: 84%; max-width: 42px; border-top: 2px dashed #98a2b3; opacity: .72; pointer-events: none; }
-.finops-trend-tooltip { position: absolute; z-index: 7; bottom: calc(100% - 24px); left: 50%; display: grid; width: 180px; gap: 5px; border: 1px solid #d7e2f0; border-radius: 9px; background: #fff; box-shadow: 0 14px 34px rgba(16, 24, 40, .16); padding: 10px; opacity: 0; pointer-events: none; transform: translate(-50%, 5px); transition: opacity 150ms ease, transform 150ms ease; }
+.finops-trend-comparison { position: absolute; right: 8%; bottom: var(--trend-axis-label-band); width: 84%; max-width: 42px; border-top: 2px dashed #98a2b3; opacity: .72; pointer-events: none; }
+.finops-trend-tooltip { position: absolute; z-index: 7; bottom: calc(100% - var(--trend-axis-label-band)); left: 50%; display: grid; width: 180px; gap: 5px; border: 1px solid #d7e2f0; border-radius: 9px; background: #fff; box-shadow: 0 14px 34px rgba(16, 24, 40, .16); padding: 10px; opacity: 0; pointer-events: none; transform: translate(-50%, 5px); transition: opacity 150ms ease, transform 150ms ease; }
 .finops-trend-column:hover .finops-trend-tooltip,
 .finops-trend-column:focus .finops-trend-tooltip { opacity: 1; transform: translate(-50%, 0); }
 .finops-trend-tooltip b { color: #1d2939; font-size: 10px; }
@@ -7020,7 +7024,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
 .finops-executive-decision-grid > * { min-width: 0; height: 100%; }
 .finops-executive-decision-grid .finops-panel { display: grid; grid-template-rows: auto minmax(0, 1fr); }
 .finops-executive-trend .finops-trend-chart { min-height: 248px; }
-.finops-executive-trend .finops-trend-columns { height: 184px; }
+.finops-executive-trend .finops-trend-columns { height: 100%; }
 
 .finops-executive-donut-layout { display: grid; min-height: 248px; align-content: center; justify-items: center; gap: 11px; padding: 14px 14px 12px; }
 .finops-executive-donut-wrap { position: relative; width: 148px; height: 148px; }
@@ -7092,7 +7096,7 @@ body { background: radial-gradient(1100px 560px at 80% -10%, rgba(0,113,227,.05)
   .finops-executive-decision-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .finops-executive-trend { grid-column: 1 / -1; }
   .finops-executive-trend .finops-trend-chart { min-height: 274px; }
-  .finops-executive-trend .finops-trend-columns { height: 210px; }
+  .finops-executive-trend .finops-trend-columns { height: 100%; }
 }
 
 @media (max-width: 760px) {

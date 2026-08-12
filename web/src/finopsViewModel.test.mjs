@@ -18,6 +18,7 @@ import {
   finopsPolicyLabel,
   finopsBarPercent,
   niceFinOpsAxis,
+  formatFinOpsAxisCost,
   formatRelativeUpdateTime,
   gatewayUnmatchedEvidence,
 } from "./finopsViewModel.js";
@@ -284,6 +285,15 @@ test("finops chart axis is adaptive and bar proportions remain truthful", () => 
   assert.equal(finopsBarPercent(0, axis.max), 0);
   assert.ok(finopsBarPercent(0.0021, axis.max) < finopsBarPercent(0.0097, axis.max));
   assert.ok(finopsBarPercent(0.0021, axis.max) < 50);
+});
+
+
+test("cost axis keeps zero concise and all non-zero ticks monetary", () => {
+  assert.deepEqual(
+    [0, 0.5, 1, 1.5, 2].map(formatFinOpsAxisCost),
+    ["$0", "$0.50", "$1.00", "$1.50", "$2.00"],
+  );
+  assert.equal(formatFinOpsAxisCost(0.005), "$0.005");
 });
 
 
