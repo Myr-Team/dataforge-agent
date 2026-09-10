@@ -1,0 +1,961 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-10T11:31:26.0068373+08:00",
+  "subscription_display_name": "Microsoft Azure ai1-1",
+  "resource_groups": [
+    {
+      "name": "Agent-Demo-Fuzh",
+      "location": "eastasia"
+    },
+    {
+      "name": "rg-dataforge-dev",
+      "location": "eastus2"
+    }
+  ],
+  "container_apps": [
+    {
+      "name": "ca-dataforge-backend",
+      "resource_group": "rg-dataforge-dev",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-backend:tracefix-9d4b01d",
+      "environment": [
+        {
+          "name": "APPLICATIONINSIGHTS_CONNECTION_STRING",
+          "secret_ref": "appi-dataforge-ai2-connection"
+        },
+        {
+          "name": "AZURE_CLIENT_SECRET",
+          "secret_ref": "azure-client-secret"
+        },
+        {
+          "name": "AZURE_EXPERIMENTAL_ENABLE_GENAI_TRACING",
+          "source": "configuration"
+        },
+        {
+          "name": "AZURE_OPENAI_API_KEY",
+          "secret_ref": "azure-openai-key"
+        },
+        {
+          "name": "AZURE_REGION",
+          "source": "configuration"
+        },
+        {
+          "name": "AZURE_TENANT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "CONTAINER_APP_NAME",
+          "source": "configuration"
+        },
+        {
+          "name": "CONTENT_SAFETY_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "CONTENT_SAFETY_KEY",
+          "secret_ref": "cs-key"
+        },
+        {
+          "name": "DATAFORGE_BUILD_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DATAFORGE_VERSION",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_ACS_EMAIL_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_ACS_EMAIL_SENDER_ADDRESS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APIM_AUDIENCE",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APIM_EXPECTED_GATEWAY_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APIM_GATEWAY_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APIM_GATEWAY_URL",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APP_INSIGHTS_APPLICATION_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_APP_INSIGHTS_RESOURCE_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_CONTAINER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_HMAC_ACTIVE_KEY_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_HMAC_KEYS",
+          "secret_ref": "audit-hmac-prod"
+        },
+        {
+          "name": "DF_AUDIT_HMAC_SCOPE_KEY_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_LEGAL_HOLD_TAG",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_SEALED_CONTAINER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_STORAGE_ACCOUNT_RESOURCE_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_STORAGE_RESOURCE_GROUP",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AUDIT_STORAGE_SUBSCRIPTION_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AZURE_MONITOR_LOGS_WORKSPACE_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BUILD_SHA",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_CHAT_DEPLOYMENT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DASHBOARD_CACHE_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEFAULT_MODEL_ROUTE",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEMO_PERMISSIVE_ACCESS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEPLOY_MARKER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_EMBEDDING_DEPLOYMENT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_ENTRA_GROUP_GOVERNANCE_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_ENVIRONMENT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_EXTERNAL_PROVIDER_APIM_PROVISIONING_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_EXTERNAL_PROVIDER_ROUTING_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_ACTIONS_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_DEMO_SEED_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_DEMO_TENANT_REF",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_DEMO_WORKSPACE_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_EMAIL_ALERTS_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_EMAIL_CONFIGURATION_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_HMAC_SECRET",
+          "secret_ref": "df-finops-hmac"
+        },
+        {
+          "name": "DF_FINOPS_MEMBER_BUDGETS_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_PORTAL_URL",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_QUICK_MODEL_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_QUICK_MODEL_MAX_OUTPUT_TOKENS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_QUICK_MODEL_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_READ_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_SCOPED_AUTHZ_FAST_PATH",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_SQL_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_TENANT_ADMIN_ROLE",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_TENANT_OWNER_OIDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FOUNDRY_AGENT_REGISTERED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_HEALTH_PROBE_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_IMAGE_DEPLOYMENT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_IMAGE_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_INGEST_FILE_MAX_RETRIES",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_INGEST_FILE_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_INGEST_STALE_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_KEY_VAULT_URL",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MAF_AUTH_MODE",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MAF_MAX_REVISIONS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MAF_RUNTIME",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MAF_TRAFFIC_PERCENT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MARKET_CACHE_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MCP_HEALTH_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_MODEL_ROUTE_ALLOWLIST",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_PROVIDER_APIM_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_PROVIDER_CONNECTORS_ENABLED",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_REDIS_HOST_OVERRIDE",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_REDIS_URL",
+          "secret_ref": "redis-url"
+        },
+        {
+          "name": "DF_SEPARATE_ANALYSIS_CONVERSATIONS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_SPEECH_TIMEOUT_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_STORAGE_ACCOUNT",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_UPLOAD_INGEST_START_DELAY_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_USE_MAF",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WEB_PROXY_SECRET",
+          "secret_ref": "df-web-proxy-secret"
+        },
+        {
+          "name": "DF_WORKSPACE_CONTAINER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WORKSPACE_CONTEXT_CACHE_SECONDS",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WORKSPACE_OWNER_EMAIL",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WORKSPACE_OWNER_OID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WORKSPACE_OWNER_TENANT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WORKSPACE_RBAC_ENFORCED",
+          "source": "configuration"
+        },
+        {
+          "name": "FOUNDRY_AGENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "FOUNDRY_PROJECT_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_DATABASE",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_SERVER",
+          "source": "configuration"
+        },
+        {
+          "name": "MCP_MARKET_URL",
+          "source": "configuration"
+        },
+        {
+          "name": "OPENAI_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
+          "source": "configuration"
+        },
+        {
+          "name": "OTEL_RESOURCE_ATTRIBUTES",
+          "source": "configuration"
+        },
+        {
+          "name": "OTEL_SEMCONV_STABILITY_OPT_IN",
+          "source": "configuration"
+        },
+        {
+          "name": "OTEL_SERVICE_NAME",
+          "source": "configuration"
+        },
+        {
+          "name": "SEARCH_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "SEARCH_INDEX_NAME",
+          "source": "configuration"
+        },
+        {
+          "name": "SEARCH_KEY",
+          "secret_ref": "search-key"
+        },
+        {
+          "name": "SPEECH_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "SPEECH_KEY",
+          "secret_ref": "speech-key"
+        },
+        {
+          "name": "SPEECH_REGION",
+          "source": "configuration"
+        },
+        {
+          "name": "STORAGE_ACCOUNT_NAME",
+          "source": "configuration"
+        },
+        {
+          "name": "STORAGE_BLOB_ENDPOINT",
+          "source": "configuration"
+        },
+        {
+          "name": "UVICORN_HOST",
+          "source": "configuration"
+        },
+        {
+          "name": "UVICORN_PORT",
+          "source": "configuration"
+        }
+      ],
+      "min_replicas": 1,
+      "max_replicas": 3,
+      "target_port": 80,
+      "ingress_external": false
+    },
+    {
+      "name": "ca-dataforge-mcp",
+      "resource_group": "rg-dataforge-dev",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-mcp@sha256:ec1114172bb9a36b76c171d610591336e61bda84975b3cb0abb1ffbc88e1e2e1",
+      "environment": [],
+      "min_replicas": 1,
+      "max_replicas": 10,
+      "target_port": 80,
+      "ingress_external": false
+    },
+    {
+      "name": "ca-dataforge-redis",
+      "resource_group": "rg-dataforge-dev",
+      "image": "redis:7-alpine",
+      "environment": [
+        {
+          "name": "REDIS_PASSWORD",
+          "secret_ref": "redis-password"
+        },
+        {
+          "name": "REDISCLI_AUTH",
+          "secret_ref": "redis-password"
+        }
+      ],
+      "min_replicas": 1,
+      "max_replicas": 1,
+      "target_port": 6379,
+      "ingress_external": false
+    },
+    {
+      "name": "ca-dataforge-web",
+      "resource_group": "rg-dataforge-dev",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-web@sha256:79ccf9112c9a391cd96fc5c7ea4be920b9459750948c59dc3dcafe5210818e83",
+      "environment": [
+        {
+          "name": "DATAFORGE_BUILD_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BACKEND_UPSTREAM",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BUILD_SHA",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEPLOY_MARKER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_WEB_PROXY_SECRET",
+          "secret_ref": "df-web-proxy-secret"
+        },
+        {
+          "name": "DF_WORKSPACE_OWNER_TENANT_ID",
+          "source": "configuration"
+        }
+      ],
+      "min_replicas": 1,
+      "max_replicas": 2,
+      "target_port": 80,
+      "ingress_external": true
+    }
+  ],
+  "jobs": [
+    {
+      "name": "job-dataforge-finops-apim",
+      "resource_group": "rg-dataforge-dev",
+      "trigger_type": "Schedule",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-backend@sha256:d6359ce2fc53fb67ac39df30469fcd12c8d2a63fe75e8fd45c5c2872fe985e9a",
+      "environment": [
+        {
+          "name": "AZURE_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DATAFORGE_BUILD_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AZURE_MONITOR_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_AZURE_MONITOR_LOGS_WORKSPACE_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BUILD_SHA",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEPLOY_MARKER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_APIM_BACKFILL_MINUTES",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_HMAC_SECRET",
+          "secret_ref": "df-finops-hmac"
+        },
+        {
+          "name": "LINEAGE_SQL_DATABASE",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_SERVER",
+          "source": "configuration"
+        }
+      ],
+      "cron_expression": "*/5 * * * *"
+    },
+    {
+      "name": "job-dataforge-finops-migrate",
+      "resource_group": "rg-dataforge-dev",
+      "trigger_type": "Manual",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-backend@sha256:25131fdac9038365db32012d9f2c30808a8efb7b2b1c4019fb9c7a8c2a15e968",
+      "environment": [
+        {
+          "name": "LINEAGE_SQL_DATABASE",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_SERVER",
+          "source": "configuration"
+        }
+      ]
+    },
+    {
+      "name": "job-dataforge-finops-retention",
+      "resource_group": "rg-dataforge-dev",
+      "trigger_type": "Schedule",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-backend@sha256:d6359ce2fc53fb67ac39df30469fcd12c8d2a63fe75e8fd45c5c2872fe985e9a",
+      "environment": [
+        {
+          "name": "AZURE_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DATAFORGE_BUILD_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BUILD_SHA",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEPLOY_MARKER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_RETENTION_DAYS",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_DATABASE",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_SERVER",
+          "source": "configuration"
+        }
+      ],
+      "cron_expression": "0 2 * * *"
+    },
+    {
+      "name": "job-dataforge-finops-rollup",
+      "resource_group": "rg-dataforge-dev",
+      "trigger_type": "Schedule",
+      "image": "acrdataforgemyr0807.azurecr.io/dataforge-backend@sha256:d6359ce2fc53fb67ac39df30469fcd12c8d2a63fe75e8fd45c5c2872fe985e9a",
+      "environment": [
+        {
+          "name": "AZURE_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DATAFORGE_BUILD_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_BUILD_SHA",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_DEPLOY_MARKER",
+          "source": "configuration"
+        },
+        {
+          "name": "DF_FINOPS_ROLLUP_REFRESH_HOURS",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_DATABASE",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_MANAGED_IDENTITY_CLIENT_ID",
+          "source": "configuration"
+        },
+        {
+          "name": "LINEAGE_SQL_SERVER",
+          "source": "configuration"
+        }
+      ],
+      "cron_expression": "2-59/15 * * * *"
+    }
+  ],
+  "sql_databases": [
+    {
+      "name": "df_connector_demo",
+      "resource_group": "rg-dataforge-dev",
+      "server": "dfsqlmyr0807",
+      "sku": "Basic",
+      "status": "Online"
+    },
+    {
+      "name": "df_lineage",
+      "resource_group": "rg-dataforge-dev",
+      "server": "dfsqlmyr0807",
+      "sku": "Basic",
+      "status": "Online"
+    },
+    {
+      "name": "df_lineage_premerge_20260808",
+      "resource_group": "rg-dataforge-dev",
+      "server": "dfsqlmyr0807",
+      "sku": "Basic",
+      "status": "Online"
+    }
+  ],
+  "api_management": [
+    {
+      "name": "dataforge-ai-gateway-myr0807",
+      "resource_group": "Agent-Demo-Fuzh",
+      "sku": "BasicV2",
+      "apis": [],
+      "capacity": 1
+    },
+    {
+      "name": "dfmonapim-myr0807",
+      "resource_group": "rg-dataforge-dev",
+      "sku": "StandardV2",
+      "apis": [
+        {
+          "name": "dataforge-text",
+          "path": "openai"
+        }
+      ],
+      "capacity": 1
+    }
+  ],
+  "search_services": [
+    {
+      "name": "srch-dataforge-myr0807",
+      "resource_group": "rg-dataforge-dev",
+      "sku": "standard",
+      "replica_count": 1,
+      "partition_count": 1
+    }
+  ],
+  "foundry": [
+    {
+      "name": "agent-demo-foundry-ai2-myr0807",
+      "resource_group": "Agent-Demo-Fuzh",
+      "deployments": [
+        "gpt-5.1",
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-6-astra",
+        "gpt-image-2",
+        "text-embedding-3-small"
+      ]
+    }
+  ],
+  "supporting_resources": [
+    {
+      "name": "acrdataforgemyr0807",
+      "type": "Microsoft.ContainerRegistry/registries",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "acs-dataforge-myr0807",
+      "type": "Microsoft.Communication/CommunicationServices",
+      "resource_group": "rg-dataforge-dev",
+      "location": "global"
+    },
+    {
+      "name": "agent-demo-foundry-ai2-myr0807",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "resource_group": "Agent-Demo-Fuzh",
+      "location": "eastus2"
+    },
+    {
+      "name": "agent-demo-foundry-ai2-myr0807/Agent-Demo-proj",
+      "type": "Microsoft.CognitiveServices/accounts/projects",
+      "resource_group": "Agent-Demo-Fuzh",
+      "location": "eastus2"
+    },
+    {
+      "name": "appi-dataforge-ai2",
+      "type": "Microsoft.Insights/components",
+      "resource_group": "Agent-Demo-Fuzh",
+      "location": "eastus2"
+    },
+    {
+      "name": "appi-dataforge-dev",
+      "type": "Microsoft.Insights/components",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "Application Insights Smart Detection",
+      "type": "microsoft.insights/actiongroups",
+      "resource_group": "rg-dataforge-dev",
+      "location": "global"
+    },
+    {
+      "name": "Application Insights Smart Detection",
+      "type": "microsoft.insights/actiongroups",
+      "resource_group": "Agent-Demo-Fuzh",
+      "location": "global"
+    },
+    {
+      "name": "ca-dataforge-backend",
+      "type": "Microsoft.App/containerApps",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "ca-dataforge-mcp",
+      "type": "Microsoft.App/containerApps",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "ca-dataforge-redis",
+      "type": "Microsoft.App/containerApps",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "ca-dataforge-web",
+      "type": "Microsoft.App/containerApps",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "cae-dataforge-dev",
+      "type": "Microsoft.App/managedEnvironments",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "cs-dataforge-myr0807",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "dataforge-ai-gateway-myr0807",
+      "type": "Microsoft.ApiManagement/service",
+      "resource_group": "Agent-Demo-Fuzh",
+      "location": "eastus2"
+    },
+    {
+      "name": "dfconnmyr0807",
+      "type": "Microsoft.Storage/storageAccounts",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "dfmonapim-myr0807",
+      "type": "Microsoft.ApiManagement/service",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "dfsqlmyr0807",
+      "type": "Microsoft.Sql/servers",
+      "resource_group": "rg-dataforge-dev",
+      "location": "westus3"
+    },
+    {
+      "name": "dfsqlmyr0807/df_connector_demo",
+      "type": "Microsoft.Sql/servers/databases",
+      "resource_group": "rg-dataforge-dev",
+      "location": "westus3"
+    },
+    {
+      "name": "dfsqlmyr0807/df_lineage",
+      "type": "Microsoft.Sql/servers/databases",
+      "resource_group": "rg-dataforge-dev",
+      "location": "westus3"
+    },
+    {
+      "name": "dfsqlmyr0807/df_lineage_premerge_20260808",
+      "type": "Microsoft.Sql/servers/databases",
+      "resource_group": "rg-dataforge-dev",
+      "location": "westus3"
+    },
+    {
+      "name": "dfsqlmyr0807/master",
+      "type": "Microsoft.Sql/servers/databases",
+      "resource_group": "rg-dataforge-dev",
+      "location": "westus3"
+    },
+    {
+      "name": "ecs-dataforge-myr0807",
+      "type": "Microsoft.Communication/EmailServices",
+      "resource_group": "rg-dataforge-dev",
+      "location": "global"
+    },
+    {
+      "name": "ecs-dataforge-myr0807/AzureManagedDomain",
+      "type": "Microsoft.Communication/EmailServices/Domains",
+      "resource_group": "rg-dataforge-dev",
+      "location": "global"
+    },
+    {
+      "name": "id-dataforge-finops-jobs",
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "id-dataforge-sql-migration",
+      "type": "Microsoft.ManagedIdentity/userAssignedIdentities",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "job-dataforge-finops-apim",
+      "type": "Microsoft.App/jobs",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "job-dataforge-finops-migrate",
+      "type": "Microsoft.App/jobs",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "job-dataforge-finops-retention",
+      "type": "Microsoft.App/jobs",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "job-dataforge-finops-rollup",
+      "type": "Microsoft.App/jobs",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "kvdfmyr0807",
+      "type": "Microsoft.KeyVault/vaults",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "log-dataforge-dev",
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "speech-dataforge-myr0807",
+      "type": "Microsoft.CognitiveServices/accounts",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    },
+    {
+      "name": "srch-dataforge-myr0807",
+      "type": "Microsoft.Search/searchServices",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus"
+    },
+    {
+      "name": "stdataforgemyr0807",
+      "type": "Microsoft.Storage/storageAccounts",
+      "resource_group": "rg-dataforge-dev",
+      "location": "eastus2"
+    }
+  ]
+}
