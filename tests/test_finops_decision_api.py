@@ -726,12 +726,22 @@ def test_metric_evidence_endpoint_returns_subject_specific_bounded_requests(
 
     latency = client.get(
         "/api/finops/evidence",
-        params={"workspace_id": "ws-a", "metric_id": "p95"},
+        params={
+            "workspace_id": "ws-a",
+            "metric_id": "p95",
+            "from": "2026-07-24T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
         headers=owner_headers,
     )
     failures = client.get(
         "/api/finops/evidence",
-        params={"workspace_id": "ws-a", "policy_type": "error_rate"},
+        params={
+            "workspace_id": "ws-a",
+            "policy_type": "error_rate",
+            "from": "2026-07-24T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
         headers=owner_headers,
     )
 
@@ -803,7 +813,12 @@ def test_risk_decision_returns_policy_specific_evidence_sets(
 
     response = client.get(
         "/api/finops/risk/decision",
-        params={"workspace_id": "ws-a", "refresh": "1"},
+        params={
+            "workspace_id": "ws-a",
+            "refresh": "1",
+            "from": "2026-07-24T00:00:00Z",
+            "to": "2026-07-25T00:00:00Z",
+        },
         headers=owner_headers,
     )
 
